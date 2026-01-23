@@ -30,7 +30,8 @@ export default function OnboardingPage() {
     setBusy(true);
     setMsg(null);
 
-    const supabase = supabaseBrowser();
+    const supabase = supabaseBrowser;
+
 
     try {
       const { data: userData, error: userErr } = await supabase.auth.getUser();
