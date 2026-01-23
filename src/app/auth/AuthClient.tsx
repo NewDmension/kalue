@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+import { supabaseBrowser as supabase } from '@/lib/supabase/client';
+
 
 type Mode = 'signin' | 'signup';
 
