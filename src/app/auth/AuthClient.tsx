@@ -10,7 +10,8 @@ export default function AuthClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const next = searchParams.get('next') ?? '/app';
+  const nextRaw = searchParams.get('next');
+  const next = nextRaw && nextRaw.startsWith('/') ? nextRaw : '/app';
 
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
@@ -48,13 +49,17 @@ export default function AuthClient() {
 
         setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
 
-        // Si Supabase no exige confirmación, a veces ya hay sesión: intentamos redirigir
         const { data } = await supabase.auth.getSession();
-        if (data.session) router.push(next);
+        if (data.session) {
+          router.replace(next);
+          router.refresh();
+        }
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        router.push(next);
+
+        router.replace(next);
+        router.refresh();
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
