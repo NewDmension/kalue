@@ -24,6 +24,10 @@ export default function AuthClient() {
     [mode]
   );
 
+  const siteUrl =
+    process.env.NEXT_PUBLIC_SITE_URL ??
+    (typeof window !== 'undefined' ? window.location.origin : 'https://kalue.vercel.app');
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (busy) return;
@@ -33,10 +37,18 @@ export default function AuthClient() {
 
     try {
       if (mode === 'signup') {
-        const { error } = await supabase.auth.signUp({ email, password });
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: `${siteUrl}/auth/callback?next=${encodeURIComponent(next)}`,
+          },
+        });
         if (error) throw error;
-        setMsg('Cuenta creada. Si hay confirmación por email, revisa tu bandeja.');
-        // Si no hay confirmación por email, a veces ya hay sesión: intentamos redirigir
+
+        setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
+
+        // Si Supabase no exige confirmación, a veces ya hay sesión: intentamos redirigir
         const { data } = await supabase.auth.getSession();
         if (data.session) router.push(next);
       } else {
