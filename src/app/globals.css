@@ -1,26 +1,120 @@
-@import "tailwindcss";
+/* Tailwind v3 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
+/* ===== Tema Kalue (oscuro + glass) ===== */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --radius: 0.75rem;
+
+  /* Base (HSL) */
+  --background: 240 25% 6%;
+  --foreground: 0 0% 93%;
+
+  /* Superficies “glass” */
+  --card: 0 0% 100% / 0.06;
+  --card-foreground: 0 0% 93%;
+  --popover: 0 0% 100% / 0.06;
+  --popover-foreground: 0 0% 93%;
+
+  /* Primario (índigo) */
+  --primary: 239 84% 67%;
+  --primary-foreground: 0 0% 100%;
+
+  /* Neutros */
+  --secondary: 0 0% 100% / 0.08;
+  --secondary-foreground: 220 14% 96%;
+  --muted: 0 0% 100% / 0.08;
+  --muted-foreground: 0 0% 100% / 0.70;
+  --accent: 0 0% 100% / 0.10;
+  --accent-foreground: 0 0% 100%;
+
+  /* Controles */
+  --destructive: 0 84% 60%;
+  --border: 0 0% 100% / 0.12;
+  --input: 0 0% 100% / 0.12;
+  --ring: 239 100% 70%;
+
+  /* Glow (por defecto verde) */
+  --admin-glow: 152 69% 52%;
+  --admin-glow-alpha: 0.35;
+  --admin-glow-alpha-soft: 0.22;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+    outline-color: hsl(var(--ring) / 0.5);
+  }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  html, body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  .container-default {
+    max-width: 1200px;
+    margin-inline: auto;
+    padding-inline: 1rem;
+  }
+
+  .card-glass {
+    border-radius: 1rem;
+    border: 1px solid hsla(0,0%,100%,0.12);
+    background: hsla(0,0%,100%,0.06);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  }
+
+  .card-glass:hover {
+    box-shadow:
+      0 10px 30px rgba(0,0,0,0.35),
+      0 0 40px hsl(var(--admin-glow) / var(--admin-glow-alpha));
+  }
+
+  .admin-glow:hover {
+    box-shadow: 0 0 40px hsl(var(--admin-glow) / var(--admin-glow-alpha));
+  }
+
+  .admin-glow-soft:hover {
+    box-shadow: 0 0 30px hsl(var(--admin-glow) / var(--admin-glow-alpha-soft));
+  }
+
+  .admin-focus:focus-visible {
+    outline: 2px solid hsl(var(--admin-glow) / 0.35);
+    outline-offset: 3px;
+  }
+
+  .text-dim { color: hsla(0,0%,100%,0.7); }
+
+  .btn-ghost {
+    border-radius: 0.75rem;
+    border: 1px solid hsla(0,0%,100%,0.15);
+    background: hsla(0,0%,100%,0.05);
+    padding: 0.5rem 0.9rem;
+    font-size: 0.875rem;
+    color: hsla(0,0%,100%,0.85);
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+  }
+
+  .btn-ghost:hover {
+    background: hsla(0,0%,100%,0.10);
+    color: hsl(0 0% 100%);
+  }
+
+  .btn-primary {
+    border-radius: 0.75rem;
+    border: 1px solid hsl(var(--primary) / 0.35);
+    background: hsl(var(--primary) / 0.12);
+    padding: 0.5rem 0.9rem;
+    font-size: 0.875rem;
+    color: hsl(0 0% 100% / 0.9);
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+  }
+
+  .btn-primary:hover {
+    background: hsl(var(--primary) / 0.18);
+  }
 }
