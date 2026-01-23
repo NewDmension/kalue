@@ -12,10 +12,7 @@ type ApiResp = ApiOk | ApiErr;
 function isApiResp(v: unknown): v is ApiResp {
   if (typeof v !== 'object' || v === null) return false;
   const r = v as Record<string, unknown>;
-  return (
-    typeof r.ok === 'boolean' &&
-    (r.ok ? typeof r.next === 'string' : typeof r.error === 'string')
-  );
+  return typeof r.ok === 'boolean' && (r.ok ? typeof r.next === 'string' : typeof r.error === 'string');
 }
 
 export default function AuthClient() {
@@ -30,16 +27,9 @@ export default function AuthClient() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  const title = useMemo(
-    () => (mode === 'signin' ? 'Entrar' : 'Crear cuenta'),
-    [mode]
-  );
-
+  const title = useMemo(() => (mode === 'signin' ? 'Entrar' : 'Crear cuenta'), [mode]);
   const subtitle = useMemo(
-    () =>
-      mode === 'signin'
-        ? 'Accede a tu workspace de Kalue.'
-        : 'Crea tu cuenta. Luego crearemos tu workspace.',
+    () => (mode === 'signin' ? 'Accede a tu workspace de Kalue.' : 'Crea tu cuenta. Luego crearemos tu workspace.'),
     [mode]
   );
 
@@ -56,28 +46,22 @@ export default function AuthClient() {
       const res = await fetch(`${endpoint}?next=${encodeURIComponent(next)}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ email, password }),
       });
 
       const data = (await res.json().catch(() => null)) as unknown;
+      if (!isApiResp(data)) throw new Error('Respuesta inválida del servidor');
+      if (!res.ok || !data.ok) throw new Error(data.ok ? 'Error de autenticación' : data.error);
 
-      if (!isApiResp(data)) {
-        throw new Error(res.ok ? 'Respuesta inválida del servidor' : 'Error de autenticación');
-      }
-
-      if (!res.ok || !data.ok) {
-        throw new Error(data.ok ? 'Error de autenticación' : data.error);
-      }
-
-      // OK
       if (mode === 'signup') {
         setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
-        // Si no exige confirmación y ya hay sesión por cookies, entrará igualmente
+        // si ya hay sesión por cookies, al ir a /app entrará
         window.location.assign(data.next);
         return;
       }
 
-      // signin OK -> hard navigation para que SSR lea cookies
+      // signin OK (hard nav)
       window.location.assign(data.next);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
@@ -139,9 +123,7 @@ export default function AuthClient() {
         </button>
 
         {msg ? (
-          <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">
-            {msg}
-          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">{msg}</div>
         ) : null}
       </form>
     </div>

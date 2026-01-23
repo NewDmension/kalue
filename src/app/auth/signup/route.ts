@@ -1,23 +1,22 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 
-type SignUpBody = {
-  email: string;
-  password: string;
-};
+export const runtime = 'nodejs';
 
-function isSignUpBody(value: unknown): value is SignUpBody {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return typeof v.email === 'string' && typeof v.password === 'string';
+type Body = { email: string; password: string };
+
+function isBody(v: unknown): v is Body {
+  if (typeof v !== 'object' || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.email === 'string' && typeof r.password === 'string';
 }
 
 export async function POST(req: NextRequest) {
   const url = new URL(req.url);
   const next = url.searchParams.get('next') ?? '/app';
 
-  const json = (await req.json().catch(() => null)) as unknown;
-  if (!isSignUpBody(json)) {
+  const body = (await req.json().catch(() => null)) as unknown;
+  if (!isBody(body)) {
     return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
   }
 
@@ -41,8 +40,8 @@ export async function POST(req: NextRequest) {
   );
 
   const { error } = await supabase.auth.signUp({
-    email: json.email,
-    password: json.password,
+    email: body.email,
+    password: body.password,
     options: {
       emailRedirectTo: `${siteUrl}/auth/callback?next=${encodeURIComponent(next)}`,
     },

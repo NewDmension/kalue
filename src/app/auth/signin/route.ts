@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { supabaseRoute } from '@/lib/supabase/server-route';
+import { createServerClient } from '@supabase/ssr';
+
+export const runtime = 'nodejs';
 
 type Body = { email: string; password: string };
 
@@ -18,7 +20,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
   }
 
-  const { supabase, res } = supabaseRoute(req);
+  // IMPORTANTÍSIMO: creamos la respuesta OK primero y es ESA la que recibirá Set-Cookie
+  const res = NextResponse.json({ ok: true, next });
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
+    {
+      cookies: {
+        getAll: () => req.cookies.getAll(),
+        setAll: (cookiesToSet) => {
+          for (const { name, value, options } of cookiesToSet) {
+            res.cookies.set(name, value, options);
+          }
+        },
+      },
+    }
+  );
 
   const { error } = await supabase.auth.signInWithPassword({
     email: body.email,
@@ -29,6 +47,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: error.message }, { status: 401 });
   }
 
-  // OJO: devolvemos usando `res` para que incluya Set-Cookie
-  return NextResponse.json({ ok: true, next }, { headers: res.headers });
+  // devolvemos EXACTAMENTE el `res` que tiene las cookies
+  return res;
 }
