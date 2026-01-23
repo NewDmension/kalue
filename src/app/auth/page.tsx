@@ -13,9 +13,18 @@ export default function AuthPage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   const title = useMemo(() => (mode === 'signin' ? 'Entrar' : 'Crear cuenta'), [mode]);
+  const subtitle = useMemo(
+    () =>
+      mode === 'signin'
+        ? 'Accede a tu workspace de Kalue.'
+        : 'Crea tu cuenta. Luego crearemos tu workspace.',
+    [mode]
+  );
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (busy) return;
+
     setBusy(true);
     setMsg(null);
 
@@ -23,7 +32,7 @@ export default function AuthPage() {
       if (mode === 'signup') {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
-        setMsg('Cuenta creada. Revisa tu email si Supabase requiere confirmación.');
+        setMsg('Cuenta creada. Si hay confirmación por email, revisa tu bandeja.');
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
@@ -38,30 +47,33 @@ export default function AuthPage() {
   }
 
   return (
-    <div className="mx-auto max-w-[520px] card-glass p-6">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold text-white">{title}</h1>
+    <div className="w-full max-w-[560px] card-glass rounded-2xl border border-white/10 p-6 sm:p-7">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-white">{title}</h1>
+          <p className="mt-1 text-sm text-white/60">{subtitle}</p>
+        </div>
 
         <button
           type="button"
           onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
-          className="btn-ghost"
           disabled={busy}
+          className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10 disabled:opacity-60"
         >
           {mode === 'signin' ? 'Crear cuenta' : 'Entrar'}
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="mt-5 space-y-3">
+      <form onSubmit={handleSubmit} className="mt-6 space-y-4">
         <div>
           <p className="mb-1 text-xs text-white/60">Email</p>
           <input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
-            placeholder="you@domain.com"
             type="email"
             required
+            placeholder="you@domain.com"
+            className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
           />
         </div>
 
@@ -70,19 +82,27 @@ export default function AuthPage() {
           <input
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
-            placeholder="••••••••"
             type="password"
             required
+            placeholder="••••••••"
+            className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
           />
         </div>
 
-        <button type="submit" className="btn-primary w-full" disabled={busy}>
+        <button
+          type="submit"
+          disabled={busy}
+          className="w-full rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2.5 text-sm text-indigo-200 hover:bg-indigo-500/15 disabled:opacity-60"
+        >
           {busy ? 'Procesando…' : title}
         </button>
-      </form>
 
-      {msg ? <p className="mt-4 text-sm text-white/70">{msg}</p> : null}
+        {msg ? (
+          <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">
+            {msg}
+          </div>
+        ) : null}
+      </form>
     </div>
   );
 }
