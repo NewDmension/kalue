@@ -20,8 +20,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
   }
 
-  // IMPORTANTÍSIMO: creamos la respuesta OK primero y es ESA la que recibirá Set-Cookie
-  const res = NextResponse.json({ ok: true, next });
+  // IMPORTANTÍSIMO: respuesta final = redirect (más robusto para cookies)
+  const redirectTo = new URL(next, url.origin);
+  const res = NextResponse.redirect(redirectTo);
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
@@ -47,6 +48,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: error.message }, { status: 401 });
   }
 
-  // devolvemos EXACTAMENTE el `res` que tiene las cookies
   return res;
 }

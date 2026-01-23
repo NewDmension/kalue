@@ -41,9 +41,34 @@ export default function AuthClient() {
     setMsg(null);
 
     try {
-      const endpoint = mode === 'signup' ? '/auth/signup' : '/auth/signin';
+      if (mode === 'signin') {
+        // ESTE endpoint ahora REDIRIGE a /app y setea cookies
+        const res = await fetch(`/auth/signin?next=${encodeURIComponent(next)}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          credentials: 'include',
+          redirect: 'follow',
+          body: JSON.stringify({ email, password }),
+        });
 
-      const res = await fetch(`${endpoint}?next=${encodeURIComponent(next)}`, {
+        // Si el server te devolvió JSON de error, lo leemos
+        const contentType = res.headers.get('content-type') ?? '';
+        if (!res.ok) {
+          if (contentType.includes('application/json')) {
+            const data = (await res.json().catch(() => null)) as unknown;
+            if (isApiResp(data) && !data.ok) throw new Error(data.error);
+          }
+          throw new Error('Error de autenticación');
+        }
+
+        // Si todo fue bien, el redirect ya te lleva a /app
+        // pero por si fetch no navega (depende del browser), forzamos:
+        window.location.assign(next);
+        return;
+      }
+
+      // signup lo dejamos como JSON (y luego confirm email)
+      const res = await fetch(`/auth/signup?next=${encodeURIComponent(next)}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         credentials: 'include',
@@ -52,14 +77,9 @@ export default function AuthClient() {
 
       const data = (await res.json().catch(() => null)) as unknown;
       if (!isApiResp(data)) throw new Error('Respuesta inválida del servidor');
-      if (!res.ok || !data.ok) throw new Error(data.ok ? 'Error de autenticación' : data.error);
+      if (!res.ok || !data.ok) throw new Error(data.ok ? 'Error de registro' : data.error);
 
-      if (mode === 'signup') {
-        setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
-        window.location.assign(data.next);
-        return;
-      }
-
+      setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
       window.location.assign(data.next);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
@@ -73,11 +93,7 @@ export default function AuthClient() {
     <div className="w-full">
       {/* LOGO */}
       <div className="mb-6 flex items-center justify-center">
-        <img
-          src="/brand/kalue-logo.png"
-          alt="Kalue"
-          className="h-10 w-auto opacity-95"
-        />
+        <img src="/brand/kalue-logo.png" alt="Kalue" className="h-10 w-auto opacity-95" />
       </div>
 
       <div className="w-full card-glass rounded-2xl border border-white/10 p-6 sm:p-7">
@@ -131,9 +147,7 @@ export default function AuthClient() {
           </button>
 
           {msg ? (
-            <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">
-              {msg}
-            </div>
+            <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">{msg}</div>
           ) : null}
         </form>
       </div>
