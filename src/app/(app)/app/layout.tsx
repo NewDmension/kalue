@@ -34,7 +34,8 @@ function toMembershipRow(raw: MembershipRaw): MembershipRow {
 }
 
 export default async function AppLayout(props: { children: React.ReactNode }) {
-  const supabase = supabaseServer();
+  const supabase = await supabaseServer();
+
   const { data } = await supabase.auth.getUser();
 
   if (!data.user) redirect('/auth');
