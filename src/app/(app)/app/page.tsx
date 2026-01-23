@@ -2,7 +2,8 @@ import { redirect } from 'next/navigation';
 import { supabaseServer } from '@/lib/supabase/server';
 
 export default async function AppIndexPage() {
-  const supabase = supabaseServer();
+ const supabase = await supabaseServer();
+
 
   const { data } = await supabase.auth.getUser();
   if (!data.user) redirect('/auth');
