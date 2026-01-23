@@ -2,10 +2,18 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { supabaseBrowser as supabase } from '@/lib/supabase/client';
-
 
 type Mode = 'signin' | 'signup';
+
+type ApiOk = { ok: true; next: string };
+type ApiErr = { ok: false; error: string };
+type ApiResp = ApiOk | ApiErr;
+
+function isApiResp(v: unknown): v is ApiResp {
+  if (typeof v !== 'object' || v === null) return false;
+  const r = v as Record<string, unknown>;
+  return typeof r.ok === 'boolean' && (r.ok ? typeof r.next === 'string' : typeof r.error === 'string');
+}
 
 export default function AuthClient() {
   const router = useRouter();
@@ -26,10 +34,6 @@ export default function AuthClient() {
     [mode]
   );
 
-  const siteUrl =
-    process.env.NEXT_PUBLIC_SITE_URL ??
-    (typeof window !== 'undefined' ? window.location.origin : 'https://kalue.vercel.app');
-
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (busy) return;
@@ -38,30 +42,29 @@ export default function AuthClient() {
     setMsg(null);
 
     try {
+      const endpoint = mode === 'signup' ? '/auth/signup' : '/auth/signin';
+      const res = await fetch(`${endpoint}?next=${encodeURIComponent(next)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = (await res.json().catch(() => null)) as unknown;
+      if (!isApiResp(data)) throw new Error('Respuesta inválida del servidor');
+
+      if (!data.ok) throw new Error(data.error);
+
       if (mode === 'signup') {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            emailRedirectTo: `${siteUrl}/auth/callback?next=${encodeURIComponent(next)}`,
-          },
-        });
-        if (error) throw error;
-
         setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
-
-        const { data } = await supabase.auth.getSession();
-        if (data.session) {
-          router.replace(next);
-          router.refresh();
-        }
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-
-        router.replace(next);
+        // Si no exige confirmación y ya hay sesión por cookies, podemos entrar
+        router.replace(data.next);
         router.refresh();
+        return;
       }
+
+      // signin OK
+      router.replace(data.next);
+      router.refresh();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
       setMsg(message);
