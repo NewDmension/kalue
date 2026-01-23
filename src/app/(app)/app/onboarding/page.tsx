@@ -32,8 +32,6 @@ export default function OnboardingPage() {
 
   const supabase = supabaseBrowser();
 
-
-
     try {
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
