@@ -1,19 +1,11 @@
 'use client';
 
+import Image from 'next/image';
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { supabaseBrowser } from '@/lib/supabase/client';
 
 type Mode = 'signin' | 'signup';
-
-type ApiOk = { ok: true; next: string };
-type ApiErr = { ok: false; error: string };
-type ApiResp = ApiOk | ApiErr;
-
-function isApiResp(v: unknown): v is ApiResp {
-  if (typeof v !== 'object' || v === null) return false;
-  const r = v as Record<string, unknown>;
-  return typeof r.ok === 'boolean' && (r.ok ? typeof r.next === 'string' : typeof r.error === 'string');
-}
 
 export default function AuthClient() {
   const searchParams = useSearchParams();
@@ -24,8 +16,9 @@ export default function AuthClient() {
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string>('');
 
   const title = useMemo(() => (mode === 'signin' ? 'Entrar' : 'Crear cuenta'), [mode]);
   const subtitle = useMemo(
@@ -38,49 +31,52 @@ export default function AuthClient() {
     if (busy) return;
 
     setBusy(true);
-    setMsg(null);
+    setMsg('');
 
     try {
-      if (mode === 'signin') {
-        // ESTE endpoint ahora REDIRIGE a /app y setea cookies
-        const res = await fetch(`/auth/signin?next=${encodeURIComponent(next)}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          credentials: 'include',
-          redirect: 'follow',
-          body: JSON.stringify({ email, password }),
+      const supabase = supabaseBrowser();
+
+      if (mode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
         });
 
-        // Si el server te devolvió JSON de error, lo leemos
-        const contentType = res.headers.get('content-type') ?? '';
-        if (!res.ok) {
-          if (contentType.includes('application/json')) {
-            const data = (await res.json().catch(() => null)) as unknown;
-            if (isApiResp(data) && !data.ok) throw new Error(data.error);
-          }
-          throw new Error('Error de autenticación');
+        if (error) throw error;
+
+        // Si confirmación por email está ON, no habrá sesión aún.
+        if (!data.session) {
+          setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
+          return;
         }
 
-        // Si todo fue bien, el redirect ya te lleva a /app
-        // pero por si fetch no navega (depende del browser), forzamos:
-        window.location.assign(next);
+        // Si ya hay sesión, entra
+        window.location.href = next;
         return;
       }
 
-      // signup lo dejamos como JSON (y luego confirm email)
-      const res = await fetch(`/auth/signup?next=${encodeURIComponent(next)}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ email, password }),
+      // signin
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
       });
 
-      const data = (await res.json().catch(() => null)) as unknown;
-      if (!isApiResp(data)) throw new Error('Respuesta inválida del servidor');
-      if (!res.ok || !data.ok) throw new Error(data.ok ? 'Error de registro' : data.error);
+      if (error) {
+        if (error.message === 'Email not confirmed') {
+          setMsg('Email no confirmado. Revisa tu bandeja y confirma la cuenta.');
+        } else {
+          setMsg(error.message || 'Credenciales incorrectas');
+        }
+        return;
+      }
 
-      setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
-      window.location.assign(data.next);
+      if (!data.session) {
+        setMsg('Sesión no creada. Inténtalo de nuevo.');
+        return;
+      }
+
+      // hard redirect para que SSR lea cookies
+      window.location.href = next;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
       setMsg(message);
@@ -91,9 +87,16 @@ export default function AuthClient() {
 
   return (
     <div className="w-full">
-      {/* LOGO */}
-      <div className="mb-6 flex items-center justify-center">
-        <img src="/brand/kalue-logo.png" alt="Kalue" className="h-10 w-auto opacity-95" />
+      {/* LOGO (Sybana-style) */}
+      <div className="mb-6 flex justify-center">
+        <Image
+          src="/logo-kalue.png"
+          alt="Kalue"
+          width={220}
+          height={220}
+          priority
+          className="h-12 w-auto"
+        />
       </div>
 
       <div className="w-full card-glass rounded-2xl border border-white/10 p-6 sm:p-7">
@@ -105,7 +108,10 @@ export default function AuthClient() {
 
           <button
             type="button"
-            onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
+            onClick={() => {
+              setMsg('');
+              setMode((m) => (m === 'signin' ? 'signup' : 'signin'));
+            }}
             disabled={busy}
             className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10 disabled:opacity-60"
           >
@@ -121,6 +127,7 @@ export default function AuthClient() {
               onChange={(e) => setEmail(e.target.value)}
               type="email"
               required
+              autoComplete="email"
               placeholder="you@domain.com"
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
             />
@@ -133,10 +140,13 @@ export default function AuthClient() {
               onChange={(e) => setPassword(e.target.value)}
               type="password"
               required
+              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
               placeholder="••••••••"
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
             />
           </div>
+
+          {msg ? <p className="text-sm text-rose-200">{msg}</p> : null}
 
           <button
             type="submit"
@@ -145,10 +155,6 @@ export default function AuthClient() {
           >
             {busy ? 'Procesando…' : title}
           </button>
-
-          {msg ? (
-            <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">{msg}</div>
-          ) : null}
         </form>
       </div>
     </div>
