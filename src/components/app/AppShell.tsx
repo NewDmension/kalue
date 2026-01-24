@@ -1,3 +1,4 @@
+// src/components/AppShell.tsx
 'use client';
 
 import { useMemo, useState } from 'react';
@@ -43,10 +44,7 @@ const NAV = [
 
 type NavKey = (typeof NAV)[number]['key'];
 
-export default function AppShell(props: {
-  children: React.ReactNode;
-  initialMemberships: MembershipRow[];
-}) {
+export default function AppShell(props: { children: React.ReactNode; initialMemberships: MembershipRow[] }) {
   const tNav = useTranslations('nav');
   const tCommon = useTranslations('common');
 
@@ -69,13 +67,9 @@ export default function AppShell(props: {
 
   async function signOut() {
     await supabase.auth.signOut();
-    // ✅ Login es HOME
     router.push('/');
     router.refresh();
   }
-
-  // ✅ Onboarding ya no vive en /app/onboarding
-  const isOnboarding = pathname?.startsWith('/onboarding') ?? false;
 
   return (
     <div className="min-h-screen">
@@ -101,9 +95,7 @@ export default function AppShell(props: {
           </button>
 
           <div className="min-w-0 text-center">
-            <p className="text-sm font-semibold text-white truncate">
-              {active?.name ?? tCommon('brand')}
-            </p>
+            <p className="text-sm font-semibold text-white truncate">{active?.name ?? tCommon('brand')}</p>
             <p className="text-[11px] text-white/55 truncate">{active?.slug ?? tNav('workspace')}</p>
           </div>
 
@@ -134,28 +126,21 @@ export default function AppShell(props: {
         </div>
       ) : null}
 
-      {/* Desktop layout: FULL WIDTH */}
+      {/* Desktop layout: siempre con sidebar */}
       <div className="w-full px-6 py-6">
-        <div
-          className={cx(
-            'grid w-full gap-6',
-            isOnboarding ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-[240px_1fr]'
-          )}
-        >
-          {!isOnboarding ? (
-            <aside className="hidden md:block">
-              <div className="sticky top-6">
-                <div className="card-glass border border-white/10 p-4 rounded-2xl">
-                  <SidebarContent
-                    activeWorkspace={active}
-                    pathname={pathname ?? ''}
-                    onNavigate={() => undefined}
-                    onSignOut={signOut}
-                  />
-                </div>
+        <div className="grid w-full gap-6 grid-cols-1 md:grid-cols-[240px_1fr]">
+          <aside className="hidden md:block">
+            <div className="sticky top-6">
+              <div className="card-glass border border-white/10 p-4 rounded-2xl">
+                <SidebarContent
+                  activeWorkspace={active}
+                  pathname={pathname ?? ''}
+                  onNavigate={() => undefined}
+                  onSignOut={signOut}
+                />
               </div>
-            </aside>
-          ) : null}
+            </div>
+          </aside>
 
           <main className="min-w-0">{props.children}</main>
         </div>
@@ -175,7 +160,6 @@ function SidebarContent(props: {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Brand + Workspace switch */}
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-white">{tCommon('brand')}</p>
@@ -194,7 +178,6 @@ function SidebarContent(props: {
         </button>
       </div>
 
-      {/* Nav */}
       <nav className="flex flex-col gap-1">
         {NAV.map((it) => {
           const active = props.pathname === it.href || props.pathname.startsWith(it.href + '/');
@@ -208,8 +191,7 @@ function SidebarContent(props: {
               onClick={props.onNavigate}
               className={cx(
                 'group flex items-center gap-3 rounded-xl px-2 py-2 text-sm transition',
-                active ? 'text-white' : 'text-white/80 hover:text-white',
-                active ? 'bg-white/5' : 'hover:bg-white/5'
+                active ? 'text-white bg-white/5' : 'text-white/80 hover:text-white hover:bg-white/5'
               )}
             >
               <span
