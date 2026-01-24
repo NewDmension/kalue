@@ -8,7 +8,7 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 type Mode = 'signin' | 'signup';
 
 function getNextAfterLogin(): string {
-  // Por defecto: onboarding
+  // Default: onboarding (tu home privado)
   let next = '/onboarding';
 
   try {
@@ -57,13 +57,11 @@ export default function LoginClient() {
         });
         if (error) throw error;
 
-        // Si requiere confirmación, no habrá sesión
         if (!data.session) {
           setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
           return;
         }
 
-        // Si hay sesión, vamos directos a onboarding
         window.location.href = next;
         return;
       }
@@ -87,7 +85,6 @@ export default function LoginClient() {
         return;
       }
 
-      // Hard redirect para que SSR/middleware lean cookies sb-*
       window.location.href = next;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
@@ -99,12 +96,10 @@ export default function LoginClient() {
 
   return (
     <div className="w-full max-w-[520px]">
-      {/* Top-right: idioma */}
       <div className="flex justify-end mb-3">
         <LanguageSwitcher />
       </div>
 
-      {/* LOGO x3 */}
       <div className="mb-8 flex justify-center">
         <img
           src="/brand/kalue-logo.png"
