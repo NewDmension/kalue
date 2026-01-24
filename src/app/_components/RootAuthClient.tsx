@@ -83,14 +83,14 @@ export default function RootAuthClient() {
 
   return (
     <div className="w-full max-w-[520px]">
-      {/* LOGO (robusto, sin next/image) */}
-      <div className="mb-6 flex justify-center">
+      {/* LOGO (x3, robusto, sin next/image) */}
+      <div className="mb-8 flex justify-center">
         <img
           src="/logo-kalue.png"
           alt="Kalue"
-          width={240}
-          height={96}
-          className="h-12 w-auto"
+          width={720}
+          height={288}
+          className="h-36 w-auto"
           loading="eager"
           decoding="async"
         />
