@@ -4,6 +4,7 @@
     "tagline": "Lead ops system"
   },
   "nav": {
+    "dashboard": "Dashboard",
     "inbox": "Inbox",
     "leads": "Leads",
     "pipeline": "Pipeline",

@@ -3,6 +3,7 @@
 
 import { useMemo, useState } from 'react';
 import {
+  Home,
   Inbox,
   Users,
   Workflow,
@@ -32,8 +33,10 @@ function cx(...parts: Array<string | false | null | undefined>): string {
 
 /**
  * ✅ Rutas nuevas (sin /app)
+ * ✅ Añadimos Dashboard/Onboarding antes de Inbox
  */
 const NAV = [
+  { href: '/onboarding', key: 'dashboard', icon: Home },
   { href: '/inbox', key: 'inbox', icon: Inbox },
   { href: '/leads', key: 'leads', icon: Users },
   { href: '/pipeline', key: 'pipeline', icon: Workflow },
@@ -44,7 +47,10 @@ const NAV = [
 
 type NavKey = (typeof NAV)[number]['key'];
 
-export default function AppShell(props: { children: React.ReactNode; initialMemberships: MembershipRow[] }) {
+export default function AppShell(props: {
+  children: React.ReactNode;
+  initialMemberships: MembershipRow[];
+}) {
   const tNav = useTranslations('nav');
   const tCommon = useTranslations('common');
 
@@ -72,7 +78,7 @@ export default function AppShell(props: { children: React.ReactNode; initialMemb
   }
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen w-full">
       {/* Fondo global elegante */}
       <div className="pointer-events-none fixed inset-0 -z-10">
         <div className="absolute inset-0 bg-[radial-gradient(900px_550px_at_15%_15%,rgba(99,102,241,0.16),transparent_60%)]" />
@@ -95,7 +101,9 @@ export default function AppShell(props: { children: React.ReactNode; initialMemb
           </button>
 
           <div className="min-w-0 text-center">
-            <p className="text-sm font-semibold text-white truncate">{active?.name ?? tCommon('brand')}</p>
+            <p className="text-sm font-semibold text-white truncate">
+              {active?.name ?? tCommon('brand')}
+            </p>
             <p className="text-[11px] text-white/55 truncate">{active?.slug ?? tNav('workspace')}</p>
           </div>
 
@@ -126,24 +134,31 @@ export default function AppShell(props: { children: React.ReactNode; initialMemb
         </div>
       ) : null}
 
-      {/* Desktop layout: siempre con sidebar */}
-      <div className="w-full px-6 py-6">
-        <div className="grid w-full gap-6 grid-cols-1 md:grid-cols-[240px_1fr]">
-          <aside className="hidden md:block">
-            <div className="sticky top-6">
-              <div className="card-glass border border-white/10 p-4 rounded-2xl">
-                <SidebarContent
-                  activeWorkspace={active}
-                  pathname={pathname ?? ''}
-                  onNavigate={() => undefined}
-                  onSignOut={signOut}
-                />
-              </div>
+      {/* Desktop layout: full width real */}
+      <div className="hidden md:flex min-h-screen w-full">
+        {/* Sidebar pegado a la izquierda */}
+        <aside className="w-[260px] shrink-0">
+          <div className="sticky top-0 h-screen p-4">
+            <div className="h-full card-glass border border-white/10 p-4 rounded-2xl">
+              <SidebarContent
+                activeWorkspace={active}
+                pathname={pathname ?? ''}
+                onNavigate={() => undefined}
+                onSignOut={signOut}
+              />
             </div>
-          </aside>
+          </div>
+        </aside>
 
-          <main className="min-w-0">{props.children}</main>
-        </div>
+        {/* Main ocupa todo el ancho restante */}
+        <main className="min-w-0 flex-1 p-4 lg:p-6">
+          {props.children}
+        </main>
+      </div>
+
+      {/* Mobile main (sin sidebar fijo) */}
+      <div className="md:hidden w-full px-4 py-4">
+        <main className="min-w-0">{props.children}</main>
       </div>
     </div>
   );
@@ -159,7 +174,7 @@ function SidebarContent(props: {
   const tCommon = useTranslations('common');
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex h-full flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-white">{tCommon('brand')}</p>
@@ -180,7 +195,7 @@ function SidebarContent(props: {
 
       <nav className="flex flex-col gap-1">
         {NAV.map((it) => {
-          const active = props.pathname === it.href || props.pathname.startsWith(it.href + '/');
+          const isActive = props.pathname === it.href || props.pathname.startsWith(it.href + '/');
           const Icon = it.icon;
           const label = tNav(it.key as NavKey);
 
@@ -191,13 +206,13 @@ function SidebarContent(props: {
               onClick={props.onNavigate}
               className={cx(
                 'group flex items-center gap-3 rounded-xl px-2 py-2 text-sm transition',
-                active ? 'text-white bg-white/5' : 'text-white/80 hover:text-white hover:bg-white/5'
+                isActive ? 'text-white bg-white/5' : 'text-white/80 hover:text-white hover:bg-white/5'
               )}
             >
               <span
                 className={cx(
                   'inline-flex h-9 w-9 items-center justify-center rounded-xl border transition',
-                  active
+                  isActive
                     ? 'border-indigo-400/25 bg-indigo-500/10'
                     : 'border-white/10 bg-white/5 group-hover:bg-white/10'
                 )}
@@ -210,7 +225,7 @@ function SidebarContent(props: {
               <span
                 className={cx(
                   'ml-auto h-2 w-2 rounded-full transition',
-                  active ? 'bg-indigo-300 opacity-100' : 'bg-white/20 opacity-0 group-hover:opacity-100'
+                  isActive ? 'bg-indigo-300 opacity-100' : 'bg-white/20 opacity-0 group-hover:opacity-100'
                 )}
               />
             </Link>
@@ -218,13 +233,15 @@ function SidebarContent(props: {
         })}
       </nav>
 
-      <button
-        type="button"
-        onClick={() => void props.onSignOut()}
-        className="mt-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm text-white/80 hover:bg-white/10"
-      >
-        {tNav('signOut')}
-      </button>
+      <div className="mt-auto">
+        <button
+          type="button"
+          onClick={() => void props.onSignOut()}
+          className="w-full rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm text-white/80 hover:bg-white/10"
+        >
+          {tNav('signOut')}
+        </button>
+      </div>
     </div>
   );
 }
