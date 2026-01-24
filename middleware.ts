@@ -11,11 +11,11 @@ function isPublicAsset(pathname: string): boolean {
   return /\.(png|jpg|jpeg|gif|svg|webp|ico|txt|xml|json|map)$/i.test(pathname);
 }
 
-const intl = createIntlMiddleware({
+const intlMiddleware = createIntlMiddleware({
   locales: [...LOCALES],
   defaultLocale: DEFAULT_LOCALE,
   localePrefix: 'never',
-  localeDetection: false,
+  localeDetection: false, // controlado por cookie
 });
 
 function ensureLocaleCookie(req: NextRequest, res: NextResponse) {
@@ -29,34 +29,40 @@ function ensureLocaleCookie(req: NextRequest, res: NextResponse) {
   });
 }
 
-function isPublicRoute(pathname: string): boolean {
-  // públicas: login y auth callbacks
-  if (pathname === '/') return true;
-  if (pathname.startsWith('/auth')) return true;
-  return false;
-}
-
 export async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
-  if (isPublicAsset(pathname)) return NextResponse.next();
+  if (isPublicAsset(pathname)) {
+    return NextResponse.next();
+  }
 
-  // i18n
-  const res = intl(req);
-  ensureLocaleCookie(req, res);
+  // 1) i18n
+  const intlRes = intlMiddleware(req);
+  ensureLocaleCookie(req, intlRes);
 
-  // auth gate para todo lo que NO sea público
-  if (isPublicRoute(pathname)) return res;
+  // 2) Proteger SOLO el área privada (tú ya la tienes en /(private))
+  const isProtected =
+    pathname === '/onboarding' ||
+    pathname.startsWith('/inbox') ||
+    pathname.startsWith('/leads') ||
+    pathname.startsWith('/pipeline') ||
+    pathname.startsWith('/integrations') ||
+    pathname.startsWith('/campaigns') ||
+    pathname.startsWith('/settings');
+
+  if (!isProtected) return intlRes;
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
     {
       cookies: {
-        getAll: () => req.cookies.getAll(),
-        setAll: (cookiesToSet) => {
+        getAll() {
+          return req.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
           for (const { name, value, options } of cookiesToSet) {
-            res.cookies.set(name, value, options);
+            intlRes.cookies.set(name, value, options);
           }
         },
       },
@@ -67,12 +73,15 @@ export async function middleware(req: NextRequest) {
 
   if (!data.user) {
     const url = req.nextUrl.clone();
-    url.pathname = '/';
-    url.searchParams.set('next', `${req.nextUrl.pathname}${req.nextUrl.search}`);
+    url.pathname = '/'; // ✅ login en home
+
+    const fullNext = `${req.nextUrl.pathname}${req.nextUrl.search}`;
+    url.searchParams.set('next', fullNext);
+
     return NextResponse.redirect(url);
   }
 
-  return res;
+  return intlRes;
 }
 
 export const config = {
