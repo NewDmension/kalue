@@ -1,28 +1,24 @@
 // src/app/page.tsx
 export default function HomePage() {
   return (
-    <main className="min-h-screen w-full px-6 py-10 text-white">
-      <div className="card-glass rounded-2xl border border-white/10 p-8">
-        <h1 className="text-3xl font-semibold">Kalue — OK</h1>
-        <p className="mt-2 text-white/70">
-          Si ves esto, la ruta <code className="text-white/85">/</code> está funcionando en Vercel.
+    <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+      <div
+        style={{
+          padding: 24,
+          borderRadius: 16,
+          border: '1px solid rgba(255,255,255,0.15)',
+          background: 'rgba(255,255,255,0.06)',
+          color: 'white',
+          fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
+          maxWidth: 720,
+          width: '92%',
+        }}
+      >
+        <h1 style={{ margin: 0, fontSize: 28 }}>HOME OK</h1>
+        <p style={{ marginTop: 8, opacity: 0.75 }}>
+          Si ves esto en producción, el enrutado funciona. Si sigue 404, el problema es de
+          despliegue/config, no de LoginClient.
         </p>
-
-        <div className="mt-6 grid gap-3 text-sm text-white/70">
-          <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-            <p className="font-medium text-white/85">Debug</p>
-            <p className="mt-1 text-white/60">
-              Página renderizada desde <code className="text-white/85">src/app/page.tsx</code>
-            </p>
-          </div>
-
-          <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-            <p className="font-medium text-white/85">Siguiente paso</p>
-            <p className="mt-1 text-white/60">
-              Cuando esto se vea, volvemos a poner el login.
-            </p>
-          </div>
-        </div>
       </div>
     </main>
   );
