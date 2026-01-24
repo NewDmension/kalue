@@ -1,10 +1,26 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 
+function isPublicAsset(pathname: string): boolean {
+  if (pathname.startsWith('/_next')) return true;
+  if (pathname === '/favicon.ico') return true;
+  if (pathname.startsWith('/brand/')) return true;
+
+  // extensiones típicas de assets
+  return /\.(png|jpg|jpeg|gif|svg|webp|ico|txt|xml|json|map)$/i.test(pathname);
+}
+
 export async function middleware(req: NextRequest) {
+  const pathname = req.nextUrl.pathname;
+
+  // Nunca interceptar assets
+  if (isPublicAsset(pathname)) {
+    return NextResponse.next();
+  }
+
   const res = NextResponse.next();
 
-  const isProtected = req.nextUrl.pathname.startsWith('/app');
+  const isProtected = pathname.startsWith('/app');
   if (!isProtected) return res;
 
   const supabase = createServerClient(
@@ -29,7 +45,11 @@ export async function middleware(req: NextRequest) {
   if (!data.user) {
     const url = req.nextUrl.clone();
     url.pathname = '/auth';
-    url.searchParams.set('next', req.nextUrl.pathname);
+
+    // Guarda ruta exacta (path + query) para volver
+    const fullNext = `${req.nextUrl.pathname}${req.nextUrl.search}`;
+    url.searchParams.set('next', fullNext);
+
     return NextResponse.redirect(url);
   }
 
