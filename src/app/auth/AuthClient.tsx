@@ -15,22 +15,17 @@ export default function AuthClient() {
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string>('');
+  const [msg, setMsg] = useState<string | null>(null);
 
   const title = useMemo(() => (mode === 'signin' ? 'Entrar' : 'Crear cuenta'), [mode]);
-  const subtitle = useMemo(
-    () => (mode === 'signin' ? 'Accede a tu workspace de Kalue.' : 'Crea tu cuenta. Luego crearemos tu workspace.'),
-    [mode]
-  );
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (busy) return;
 
     setBusy(true);
-    setMsg('');
+    setMsg(null);
 
     try {
       const supabase = supabaseBrowser();
@@ -40,10 +35,8 @@ export default function AuthClient() {
           email: email.trim(),
           password,
         });
-
         if (error) throw error;
 
-        // Si confirm email está ON, no hay sesión aún
         if (!data.session) {
           setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
           return;
@@ -62,7 +55,7 @@ export default function AuthClient() {
         if (error.message === 'Email not confirmed') {
           setMsg('Email no confirmado. Revisa tu bandeja y confirma la cuenta.');
         } else {
-          setMsg(error.message || 'Credenciales incorrectas');
+          setMsg(error.message);
         }
         return;
       }
@@ -72,7 +65,6 @@ export default function AuthClient() {
         return;
       }
 
-      // EXACTO como Sybana: hard redirect para SSR
       window.location.href = next;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
@@ -83,8 +75,7 @@ export default function AuthClient() {
   }
 
   return (
-    <div className="w-full">
-      {/* LOGO */}
+    <div className="w-full max-w-[520px]">
       <div className="mb-6 flex justify-center">
         <Image
           src="/logo-kalue.png"
@@ -96,37 +87,31 @@ export default function AuthClient() {
         />
       </div>
 
-      <div className="w-full card-glass rounded-2xl border border-white/10 p-6 sm:p-7">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold text-white">{title}</h1>
-            <p className="mt-1 text-sm text-white/60">{subtitle}</p>
-          </div>
+      <div className="mx-auto card-glass p-6 rounded-2xl border border-white/10">
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-xl font-semibold text-white">{title}</h1>
 
           <button
             type="button"
-            onClick={() => {
-              setMsg('');
-              setMode((m) => (m === 'signin' ? 'signup' : 'signin'));
-            }}
+            onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
+            className="btn-ghost"
             disabled={busy}
-            className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10 disabled:opacity-60"
           >
             {mode === 'signin' ? 'Crear cuenta' : 'Entrar'}
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+        <form onSubmit={handleSubmit} className="mt-5 space-y-3">
           <div>
             <p className="mb-1 text-xs text-white/60">Email</p>
             <input
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              type="email"
-              required
-              autoComplete="email"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
               placeholder="you@domain.com"
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
+              type="email"
+              autoComplete="email"
+              required
             />
           </div>
 
@@ -135,24 +120,20 @@ export default function AuthClient() {
             <input
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              type="password"
-              required
-              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
               placeholder="••••••••"
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
+              type="password"
+              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+              required
             />
           </div>
 
-          {msg ? <p className="text-sm text-rose-200">{msg}</p> : null}
-
-          <button
-            type="submit"
-            disabled={busy}
-            className="w-full rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2.5 text-sm text-indigo-200 hover:bg-indigo-500/15 disabled:opacity-60"
-          >
+          <button type="submit" className="btn-primary w-full" disabled={busy}>
             {busy ? 'Procesando…' : title}
           </button>
         </form>
+
+        {msg ? <p className="mt-4 text-sm text-white/70">{msg}</p> : null}
       </div>
     </div>
   );
