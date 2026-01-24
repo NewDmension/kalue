@@ -1,3 +1,4 @@
+// src/middleware.ts
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import createIntlMiddleware from 'next-intl/middleware';
@@ -7,15 +8,14 @@ function isPublicAsset(pathname: string): boolean {
   if (pathname.startsWith('/_next')) return true;
   if (pathname === '/favicon.ico') return true;
   if (pathname.startsWith('/brand/')) return true;
-
   return /\.(png|jpg|jpeg|gif|svg|webp|ico|txt|xml|json|map)$/i.test(pathname);
 }
 
-const intlMiddleware = createIntlMiddleware({
+const intl = createIntlMiddleware({
   locales: [...LOCALES],
   defaultLocale: DEFAULT_LOCALE,
   localePrefix: 'never',
-  localeDetection: false, // controlado por cookie
+  localeDetection: false,
 });
 
 function ensureLocaleCookie(req: NextRequest, res: NextResponse) {
@@ -29,46 +29,34 @@ function ensureLocaleCookie(req: NextRequest, res: NextResponse) {
   });
 }
 
-const PROTECTED_PREFIXES = [
-  '/onboarding',
-  '/inbox',
-  '/leads',
-  '/pipeline',
-  '/integrations',
-  '/campaigns',
-  '/settings',
-] as const;
-
-function isProtectedPath(pathname: string): boolean {
-  return PROTECTED_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'));
+function isPublicRoute(pathname: string): boolean {
+  // públicas: login y auth callbacks
+  if (pathname === '/') return true;
+  if (pathname.startsWith('/auth')) return true;
+  return false;
 }
 
 export async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
-  // Nunca interceptar assets
-  if (isPublicAsset(pathname)) {
-    return NextResponse.next();
-  }
+  if (isPublicAsset(pathname)) return NextResponse.next();
 
-  // 1) i18n (no reescribe URLs)
-  const intlRes = intlMiddleware(req);
-  ensureLocaleCookie(req, intlRes);
+  // i18n
+  const res = intl(req);
+  ensureLocaleCookie(req, res);
 
-  // 2) Auth sólo para rutas privadas
-  if (!isProtectedPath(pathname)) return intlRes;
+  // auth gate para todo lo que NO sea público
+  if (isPublicRoute(pathname)) return res;
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
     {
       cookies: {
-        getAll() {
-          return req.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
+        getAll: () => req.cookies.getAll(),
+        setAll: (cookiesToSet) => {
           for (const { name, value, options } of cookiesToSet) {
-            intlRes.cookies.set(name, value, options);
+            res.cookies.set(name, value, options);
           }
         },
       },
@@ -80,15 +68,11 @@ export async function middleware(req: NextRequest) {
   if (!data.user) {
     const url = req.nextUrl.clone();
     url.pathname = '/';
-
-    // Guarda ruta exacta (path + query) para volver
-    const fullNext = `${req.nextUrl.pathname}${req.nextUrl.search}`;
-    url.searchParams.set('next', fullNext);
-
+    url.searchParams.set('next', `${req.nextUrl.pathname}${req.nextUrl.search}`);
     return NextResponse.redirect(url);
   }
 
-  return intlRes;
+  return res;
 }
 
 export const config = {
