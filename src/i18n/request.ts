@@ -2,16 +2,17 @@
 import { cookies, headers } from 'next/headers';
 import { DEFAULT_LOCALE, isAppLocale, type AppLocale } from './config';
 
-function normalizeLocale(raw: string | undefined | null): AppLocale {
+type Messages = Record<string, unknown>;
+
+function normalizeLocale(raw: unknown): AppLocale {
   return isAppLocale(raw) ? raw : DEFAULT_LOCALE;
 }
 
 async function readLocaleFromCookie(): Promise<AppLocale | null> {
   try {
     const cookieStore = await cookies();
-    const c = cookieStore.get('NEXT_LOCALE')?.value ?? null;
-    if (!c) return null;
-    return isAppLocale(c) ? c : null;
+    const raw = cookieStore.get('NEXT_LOCALE')?.value ?? null;
+    return raw && isAppLocale(raw) ? raw : null;
   } catch {
     return null;
   }
@@ -20,9 +21,8 @@ async function readLocaleFromCookie(): Promise<AppLocale | null> {
 async function readLocaleFromAcceptLanguage(): Promise<AppLocale> {
   try {
     const h = await headers();
-    const al = h.get('accept-language') ?? '';
-    const lower = al.toLowerCase();
-    if (lower.includes('en')) return 'en';
+    const al = (h.get('accept-language') ?? '').toLowerCase();
+    if (al.includes('en')) return 'en';
     return DEFAULT_LOCALE;
   } catch {
     return DEFAULT_LOCALE;
@@ -30,14 +30,27 @@ async function readLocaleFromAcceptLanguage(): Promise<AppLocale> {
 }
 
 export async function getRequestLocale(): Promise<AppLocale> {
-  const fromCookie = await readLocaleFromCookie();
-  if (fromCookie) return fromCookie;
-  return readLocaleFromAcceptLanguage();
+  return (await readLocaleFromCookie()) ?? (await readLocaleFromAcceptLanguage());
 }
 
-export async function loadMessages(locale: AppLocale): Promise<Record<string, unknown>> {
+/**
+ * Import estático (sin template string) -> evita crashes en build/prod.
+ * Tus JSON están en /src/messages/*.json
+ */
+const LOADERS: Record<AppLocale, () => Promise<{ default: Messages }>> = {
+  es: () => import('../messages/es.json'),
+  en: () => import('../messages/en.json'),
+};
+
+export async function loadMessages(locale: AppLocale): Promise<Messages> {
   const safe = normalizeLocale(locale);
-  // OJO: tus messages están en /src/messages (no en /src/i18n/messages)
-  const mod = (await import(`../messages/${safe}.json`)) as { default: Record<string, unknown> };
-  return mod.default;
+
+  try {
+    const mod = await LOADERS[safe]();
+    return mod.default;
+  } catch (err) {
+    // Esto SÍ aparece en Vercel logs y nos dice el motivo real
+    console.error('[i18n] Failed to load messages for locale:', safe, err);
+    return {};
+  }
 }
