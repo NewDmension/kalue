@@ -1,8 +1,9 @@
 // middleware.ts
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
-import createIntlMiddleware from 'next-intl/middleware';
-import { DEFAULT_LOCALE, LOCALES, isAppLocale } from '@/i18n/config';
+
+// ⚠️ Import relativo (edge-safe)
+import { DEFAULT_LOCALE, isAppLocale } from './src/i18n/config';
 
 function isPublicAsset(pathname: string): boolean {
   if (pathname.startsWith('/_next')) return true;
@@ -11,12 +12,17 @@ function isPublicAsset(pathname: string): boolean {
   return /\.(png|jpg|jpeg|gif|svg|webp|ico|txt|xml|json|map)$/i.test(pathname);
 }
 
-const intl = createIntlMiddleware({
-  locales: [...LOCALES],
-  defaultLocale: DEFAULT_LOCALE,
-  localePrefix: 'never',
-  localeDetection: false, // controlado por cookie
-});
+function isProtectedPath(pathname: string): boolean {
+  return (
+    pathname === '/onboarding' ||
+    pathname.startsWith('/inbox') ||
+    pathname.startsWith('/leads') ||
+    pathname.startsWith('/pipeline') ||
+    pathname.startsWith('/integrations') ||
+    pathname.startsWith('/campaigns') ||
+    pathname.startsWith('/settings')
+  );
+}
 
 function ensureLocaleCookie(req: NextRequest, res: NextResponse) {
   const raw = req.cookies.get('NEXT_LOCALE')?.value;
@@ -29,33 +35,21 @@ function ensureLocaleCookie(req: NextRequest, res: NextResponse) {
   });
 }
 
-function isProtectedPath(pathname: string): boolean {
-  // Todo lo privado (sin /app)
-  return (
-    pathname === '/onboarding' ||
-    pathname.startsWith('/inbox') ||
-    pathname.startsWith('/leads') ||
-    pathname.startsWith('/pipeline') ||
-    pathname.startsWith('/integrations') ||
-    pathname.startsWith('/campaigns') ||
-    pathname.startsWith('/settings')
-  );
-}
-
 export async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
-  // assets fuera
-  if (isPublicAsset(pathname)) return NextResponse.next();
+  if (isPublicAsset(pathname)) {
+    return NextResponse.next();
+  }
 
-  // i18n (no cambia URL)
-  const res = intl(req);
+  const res = NextResponse.next();
   ensureLocaleCookie(req, res);
 
-  // público: "/" (login) y el resto no protegido
-  if (!isProtectedPath(pathname)) return res;
+  // público (incluye "/")
+  if (!isProtectedPath(pathname)) {
+    return res;
+  }
 
-  // auth gate
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
@@ -77,7 +71,7 @@ export async function middleware(req: NextRequest) {
 
   if (!data.user) {
     const url = req.nextUrl.clone();
-    url.pathname = '/'; // login es home
+    url.pathname = '/';
     url.searchParams.set('next', `${req.nextUrl.pathname}${req.nextUrl.search}`);
     return NextResponse.redirect(url);
   }
