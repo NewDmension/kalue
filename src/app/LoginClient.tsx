@@ -1,3 +1,4 @@
+// src/app/LoginClient.tsx
 'use client';
 
 import { useMemo, useState } from 'react';
@@ -6,33 +7,22 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 type Mode = 'signin' | 'signup';
 
-function normalizeNext(nextRaw: string | null): string {
-  const fallback = '/onboarding';
+function getNextAfterLogin(): string {
+  // Por defecto: onboarding
+  let next = '/onboarding';
 
-  const raw = (nextRaw ?? '').trim();
-  if (!raw) return fallback;
-  if (!raw.startsWith('/')) return fallback;
-
-  // compat rutas antiguas
-  if (raw === '/app') return '/onboarding';
-  if (raw.startsWith('/app/')) return raw.replace('/app/', '/');
-
-  return raw;
-}
-
-function readNextFromWindow(): string {
   try {
-    if (typeof window === 'undefined') return '/onboarding';
     const params = new URLSearchParams(window.location.search);
-    return normalizeNext(params.get('next'));
+    const raw = params.get('next');
+    if (raw && raw.startsWith('/')) next = raw;
   } catch {
-    return '/onboarding';
+    // noop
   }
+
+  return next;
 }
 
 export default function LoginClient() {
-  const next = useMemo(() => readNextFromWindow(), []);
-
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -58,6 +48,7 @@ export default function LoginClient() {
 
     try {
       const supabase = supabaseBrowser();
+      const next = getNextAfterLogin();
 
       if (mode === 'signup') {
         const { data, error } = await supabase.auth.signUp({
@@ -66,11 +57,13 @@ export default function LoginClient() {
         });
         if (error) throw error;
 
+        // Si requiere confirmación, no habrá sesión
         if (!data.session) {
           setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
           return;
         }
 
+        // Si hay sesión, vamos directos a onboarding
         window.location.href = next;
         return;
       }
@@ -81,11 +74,11 @@ export default function LoginClient() {
       });
 
       if (error) {
-        if (error.message === 'Email not confirmed') {
-          setMsg('Email no confirmado. Revisa tu bandeja y confirma la cuenta.');
-        } else {
-          setMsg(error.message);
-        }
+        setMsg(
+          error.message === 'Email not confirmed'
+            ? 'Email no confirmado. Revisa tu bandeja y confirma la cuenta.'
+            : error.message
+        );
         return;
       }
 
@@ -106,8 +99,8 @@ export default function LoginClient() {
 
   return (
     <div className="w-full max-w-[520px]">
-      {/* Idioma */}
-      <div className="mb-4 flex justify-end">
+      {/* Top-right: idioma */}
+      <div className="flex justify-end mb-3">
         <LanguageSwitcher />
       </div>
 
