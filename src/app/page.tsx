@@ -1,4 +1,3 @@
-// src/app/page.tsx
 'use client';
 
 import { useMemo, useState } from 'react';
@@ -8,11 +7,24 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 type Mode = 'signin' | 'signup';
 
-export default function HomeLoginPage() {
+function normalizeNext(nextRaw: string | null): string {
+  // Default: onboarding (como acordamos)
+  const fallback = '/onboarding';
+
+  const raw = (nextRaw ?? '').trim();
+  if (!raw) return fallback;
+  if (!raw.startsWith('/')) return fallback;
+
+  // Si arrastra rutas antiguas /app/..., las pasamos a la nueva estructura
+  if (raw === '/app') return '/onboarding';
+  if (raw.startsWith('/app/')) return raw.replace('/app/', '/');
+
+  return raw;
+}
+
+export default function LoginClient() {
   const searchParams = useSearchParams();
-  const nextRaw = searchParams.get('next');
-  // si no hay next, vamos DIRECTO a onboarding (sin /app)
-  const next = nextRaw && nextRaw.startsWith('/') ? nextRaw : '/onboarding';
+  const next = normalizeNext(searchParams.get('next'));
 
   const [mode, setMode] = useState<Mode>('signin');
   const [email, setEmail] = useState('');
@@ -75,7 +87,7 @@ export default function HomeLoginPage() {
         return;
       }
 
-      // Hard redirect para que el server lea cookies
+      // Hard redirect para que SSR + middleware lean cookies sb-*
       window.location.href = next;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
@@ -86,85 +98,83 @@ export default function HomeLoginPage() {
   }
 
   return (
-    <div className="min-h-screen w-full px-4 py-10 text-white flex items-center justify-center">
-      <div className="w-full max-w-[520px]">
-        {/* Switch idioma arriba a la derecha */}
-        <div className="flex justify-end mb-3">
-          <LanguageSwitcher />
-        </div>
+    <div className="w-full max-w-[520px]">
+      {/* Header: idioma */}
+      <div className="mb-4 flex justify-end">
+        <LanguageSwitcher />
+      </div>
 
-        {/* LOGO grande */}
-        <div className="mb-8 flex justify-center">
-          <img
-            src="/brand/kalue-logo.png"
-            alt="Kalue"
-            width={720}
-            height={288}
-            className="h-36 w-auto"
-            loading="eager"
-            decoding="async"
-          />
-        </div>
+      {/* LOGO (x3) */}
+      <div className="mb-8 flex justify-center">
+        <img
+          src="/brand/kalue-logo.png"
+          alt="Kalue"
+          width={720}
+          height={288}
+          className="h-36 w-auto"
+          loading="eager"
+          decoding="async"
+        />
+      </div>
 
-        <div className="w-full card-glass rounded-2xl border border-white/10 p-6 sm:p-7">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h1 className="text-2xl font-semibold text-white">{title}</h1>
-              <p className="mt-1 text-sm text-white/60">{subtitle}</p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
-              disabled={busy}
-              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10 disabled:opacity-60"
-            >
-              {mode === 'signin' ? 'Crear cuenta' : 'Entrar'}
-            </button>
+      <div className="w-full card-glass rounded-2xl border border-white/10 p-6 sm:p-7">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold text-white">{title}</h1>
+            <p className="mt-1 text-sm text-white/60">{subtitle}</p>
           </div>
 
-          <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-            <div>
-              <p className="mb-1 text-xs text-white/60">Email</p>
-              <input
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                type="email"
-                required
-                autoComplete="email"
-                placeholder="you@domain.com"
-                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
-              />
-            </div>
-
-            <div>
-              <p className="mb-1 text-xs text-white/60">Password</p>
-              <input
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                type="password"
-                required
-                autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-                placeholder="••••••••"
-                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={busy}
-              className="w-full rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2.5 text-sm text-indigo-200 hover:bg-indigo-500/15 disabled:opacity-60"
-            >
-              {busy ? 'Procesando…' : title}
-            </button>
-
-            {msg ? (
-              <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">
-                {msg}
-              </div>
-            ) : null}
-          </form>
+          <button
+            type="button"
+            onClick={() => setMode((m) => (m === 'signin' ? 'signup' : 'signin'))}
+            disabled={busy}
+            className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10 disabled:opacity-60"
+          >
+            {mode === 'signin' ? 'Crear cuenta' : 'Entrar'}
+          </button>
         </div>
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div>
+            <p className="mb-1 text-xs text-white/60">Email</p>
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              type="email"
+              required
+              autoComplete="email"
+              placeholder="you@domain.com"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
+            />
+          </div>
+
+          <div>
+            <p className="mb-1 text-xs text-white/60">Password</p>
+            <input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              required
+              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+              placeholder="••••••••"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white/90 placeholder:text-white/35 outline-none focus:border-indigo-400/50"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={busy}
+            className="w-full rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2.5 text-sm text-indigo-200 hover:bg-indigo-500/15 disabled:opacity-60"
+          >
+            {busy ? 'Procesando…' : title}
+          </button>
+
+          {msg ? (
+            <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">
+              {msg}
+            </div>
+          ) : null}
+        </form>
       </div>
     </div>
   );
