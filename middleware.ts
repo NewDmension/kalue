@@ -1,4 +1,4 @@
-// src/middleware.ts
+// middleware.ts
 import { NextResponse, type NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import createIntlMiddleware from 'next-intl/middleware';
@@ -8,13 +8,10 @@ function isPublicAsset(pathname: string): boolean {
   if (pathname.startsWith('/_next')) return true;
   if (pathname === '/favicon.ico') return true;
   if (pathname.startsWith('/brand/')) return true;
-
-  // extensiones típicas de assets
   return /\.(png|jpg|jpeg|gif|svg|webp|ico|txt|xml|json|map)$/i.test(pathname);
 }
 
-// i18n (sin prefijo de locale en URL)
-const intlMiddleware = createIntlMiddleware({
+const intl = createIntlMiddleware({
   locales: [...LOCALES],
   defaultLocale: DEFAULT_LOCALE,
   localePrefix: 'never',
@@ -33,31 +30,32 @@ function ensureLocaleCookie(req: NextRequest, res: NextResponse) {
 }
 
 function isProtectedPath(pathname: string): boolean {
-  // ✅ Home público: login
-  if (pathname === '/') return false;
-
-  // ✅ Todo lo demás privado (según tu enfoque actual)
-  // Si luego quieres permitir otras páginas públicas, las excluimos aquí.
-  return true;
+  // Todo lo privado (sin /app)
+  return (
+    pathname === '/onboarding' ||
+    pathname.startsWith('/inbox') ||
+    pathname.startsWith('/leads') ||
+    pathname.startsWith('/pipeline') ||
+    pathname.startsWith('/integrations') ||
+    pathname.startsWith('/campaigns') ||
+    pathname.startsWith('/settings')
+  );
 }
 
 export async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
-  if (isPublicAsset(pathname)) {
-    return NextResponse.next();
-  }
+  // assets fuera
+  if (isPublicAsset(pathname)) return NextResponse.next();
 
-  // 1) i18n
-  const res = intlMiddleware(req);
+  // i18n (no cambia URL)
+  const res = intl(req);
   ensureLocaleCookie(req, res);
 
-  // Nunca bloquear API
-  if (pathname.startsWith('/api')) return res;
-
-  // 2) Auth para rutas privadas
+  // público: "/" (login) y el resto no protegido
   if (!isProtectedPath(pathname)) return res;
 
+  // auth gate
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
@@ -79,11 +77,8 @@ export async function middleware(req: NextRequest) {
 
   if (!data.user) {
     const url = req.nextUrl.clone();
-    url.pathname = '/';
-
-    const fullNext = `${req.nextUrl.pathname}${req.nextUrl.search}`;
-    url.searchParams.set('next', fullNext);
-
+    url.pathname = '/'; // login es home
+    url.searchParams.set('next', `${req.nextUrl.pathname}${req.nextUrl.search}`);
     return NextResponse.redirect(url);
   }
 
