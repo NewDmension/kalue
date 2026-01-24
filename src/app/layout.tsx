@@ -1,32 +1,24 @@
+// src/app/layout.tsx
 import type { Metadata } from 'next';
 import './globals.css';
-
 import { NextIntlClientProvider } from 'next-intl';
 import { cookies } from 'next/headers';
+import { DEFAULT_LOCALE, isAppLocale, type AppLocale } from '@/i18n/config';
+import { loadMessages } from '@/i18n/request';
 
 export const metadata: Metadata = {
   title: 'Kalue',
   description: 'Lead operations system',
 };
 
-function normalizeLocale(raw: string | undefined): 'es' | 'en' {
-  return raw === 'en' ? 'en' : 'es';
-}
-
-async function loadMessages(locale: 'es' | 'en'): Promise<Record<string, unknown>> {
-  try {
-    const mod = await import(`@/messages/${locale}.json`);
-    return (mod as { default: Record<string, unknown> }).default;
-  } catch {
-    const mod = await import(`@/messages/es.json`);
-    return (mod as { default: Record<string, unknown> }).default;
-  }
+function pickLocaleFromCookie(raw: string | undefined | null): AppLocale {
+  return isAppLocale(raw) ? raw : DEFAULT_LOCALE;
 }
 
 export default async function RootLayout(props: { children: React.ReactNode }) {
-  const cookieStore = await cookies(); // 👈 IMPORTANTE en Next 16
-  const cookieLocale = cookieStore.get('NEXT_LOCALE')?.value;
-  const locale = normalizeLocale(cookieLocale);
+  const cookieStore = await cookies();
+  const raw = cookieStore.get('NEXT_LOCALE')?.value ?? null;
+  const locale = pickLocaleFromCookie(raw);
 
   const messages = await loadMessages(locale);
 

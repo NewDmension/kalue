@@ -1,31 +1,43 @@
-// File: src/i18n/request.ts
+// src/i18n/request.ts
 import { cookies, headers } from 'next/headers';
-import { getRequestConfig } from 'next-intl/server';
 import { DEFAULT_LOCALE, isAppLocale, type AppLocale } from './config';
 
-function pickLocaleFromAcceptLanguage(al: string): AppLocale {
-  const lower = al.toLowerCase();
-  if (lower.includes('en')) return 'en';
-  return 'es';
+function normalizeLocale(raw: string | undefined | null): AppLocale {
+  return isAppLocale(raw) ? raw : DEFAULT_LOCALE;
 }
 
-export default getRequestConfig(async () => {
-  // ✅ Next 16: cookies() y headers() son async en types
-  const cookieStore = await cookies();
-  const headerStore = await headers();
+async function readLocaleFromCookie(): Promise<AppLocale | null> {
+  try {
+    const cookieStore = await cookies();
+    const c = cookieStore.get('NEXT_LOCALE')?.value ?? null;
+    if (!c) return null;
+    return isAppLocale(c) ? c : null;
+  } catch {
+    return null;
+  }
+}
 
-  const rawCookieLocale = cookieStore.get('NEXT_LOCALE')?.value;
-  const localeFromCookie: AppLocale | null = isAppLocale(rawCookieLocale) ? rawCookieLocale : null;
+async function readLocaleFromAcceptLanguage(): Promise<AppLocale> {
+  try {
+    const h = await headers();
+    const al = h.get('accept-language') ?? '';
+    const lower = al.toLowerCase();
+    if (lower.includes('en')) return 'en';
+    return DEFAULT_LOCALE;
+  } catch {
+    return DEFAULT_LOCALE;
+  }
+}
 
-  const al = headerStore.get('accept-language') ?? '';
-  const localeFromHeader: AppLocale = pickLocaleFromAcceptLanguage(al);
+export async function getRequestLocale(): Promise<AppLocale> {
+  const fromCookie = await readLocaleFromCookie();
+  if (fromCookie) return fromCookie;
+  return readLocaleFromAcceptLanguage();
+}
 
-  const locale: AppLocale = localeFromCookie ?? localeFromHeader ?? DEFAULT_LOCALE;
-
-  const messages = (await import(`../messages/${locale}.json`)).default;
-
-  return {
-    locale,
-    messages,
-  };
-});
+export async function loadMessages(locale: AppLocale): Promise<Record<string, unknown>> {
+  const safe = normalizeLocale(locale);
+  // OJO: tus messages están en /src/messages (no en /src/i18n/messages)
+  const mod = (await import(`../messages/${safe}.json`)) as { default: Record<string, unknown> };
+  return mod.default;
+}
