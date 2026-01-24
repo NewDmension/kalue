@@ -1,6 +1,5 @@
 'use client';
 
-import Image from 'next/image';
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabaseBrowser } from '@/lib/supabase/client';
@@ -45,13 +44,11 @@ export default function RootAuthClient() {
         });
         if (error) throw error;
 
-        // Si hay confirmación por email, no habrá sesión todavía
         if (!data.session) {
           setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
           return;
         }
 
-        // Si hay sesión, hard redirect para que SSR lea cookies sb-*
         window.location.href = next;
         return;
       }
@@ -75,7 +72,6 @@ export default function RootAuthClient() {
         return;
       }
 
-      // Importante: hard redirect para SSR/cookies
       window.location.href = next;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
@@ -87,15 +83,16 @@ export default function RootAuthClient() {
 
   return (
     <div className="w-full max-w-[520px]">
-      {/* LOGO */}
+      {/* LOGO (robusto, sin next/image) */}
       <div className="mb-6 flex justify-center">
-        <Image
+        <img
           src="/brand/kalue-logo.png"
           alt="Kalue"
           width={240}
           height={96}
-          priority
           className="h-12 w-auto"
+          loading="eager"
+          decoding="async"
         />
       </div>
 
