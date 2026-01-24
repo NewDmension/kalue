@@ -33,7 +33,7 @@ function cx(...parts: Array<string | false | null | undefined>): string {
 
 /**
  * ✅ Rutas nuevas (sin /app)
- * ✅ Añadimos Dashboard/Onboarding antes de Inbox
+ * ✅ Dashboard/Onboarding antes de Inbox
  */
 const NAV = [
   { href: '/onboarding', key: 'dashboard', icon: Home },
@@ -104,7 +104,9 @@ export default function AppShell(props: {
             <p className="text-sm font-semibold text-white truncate">
               {active?.name ?? tCommon('brand')}
             </p>
-            <p className="text-[11px] text-white/55 truncate">{active?.slug ?? tNav('workspace')}</p>
+            <p className="text-[11px] text-white/55 truncate">
+              {active?.slug ?? tNav('workspace')}
+            </p>
           </div>
 
           <button
@@ -134,12 +136,12 @@ export default function AppShell(props: {
         </div>
       ) : null}
 
-      {/* Desktop layout: full width real */}
-      <div className="hidden md:flex min-h-screen w-full">
-        {/* Sidebar pegado a la izquierda */}
-        <aside className="w-[260px] shrink-0">
-          <div className="sticky top-0 h-screen p-4">
-            <div className="h-full card-glass border border-white/10 p-4 rounded-2xl">
+      {/* Desktop layout: sidebar con ALTURA NATURAL (como antes) + full width horizontal */}
+      <div className="hidden md:block w-full px-6 py-6">
+        <div className="flex w-full items-start gap-6">
+          {/* Sidebar pegado a la izquierda, sin sticky, sin h-screen */}
+          <aside className="shrink-0">
+            <div className="card-glass border border-white/10 p-4 rounded-2xl">
               <SidebarContent
                 activeWorkspace={active}
                 pathname={pathname ?? ''}
@@ -147,13 +149,11 @@ export default function AppShell(props: {
                 onSignOut={signOut}
               />
             </div>
-          </div>
-        </aside>
+          </aside>
 
-        {/* Main ocupa todo el ancho restante */}
-        <main className="min-w-0 flex-1 p-4 lg:p-6">
-          {props.children}
-        </main>
+          {/* Main ocupa todo el ancho restante */}
+          <main className="min-w-0 flex-1">{props.children}</main>
+        </div>
       </div>
 
       {/* Mobile main (sin sidebar fijo) */}
@@ -174,7 +174,7 @@ function SidebarContent(props: {
   const tCommon = useTranslations('common');
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-white">{tCommon('brand')}</p>
@@ -233,7 +233,7 @@ function SidebarContent(props: {
         })}
       </nav>
 
-      <div className="mt-auto">
+      <div className="mt-2">
         <button
           type="button"
           onClick={() => void props.onSignOut()}

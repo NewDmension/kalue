@@ -18,9 +18,8 @@ export default async function RootLayout(props: { children: React.ReactNode }) {
     <html lang={locale}>
       <body>
         <NextIntlClientProvider locale={locale} messages={messages}>
-          <div className="min-h-screen">
-            <div className="container-default py-8">{props.children}</div>
-          </div>
+          {/* ✅ Full width global. Nada de container aquí */}
+          <div className="min-h-screen w-full">{props.children}</div>
         </NextIntlClientProvider>
       </body>
     </html>
