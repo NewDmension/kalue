@@ -1,21 +1,9 @@
 // src/app/page.tsx
-import { Suspense } from 'react';
-import LoginClient from './LoginClient';
-
-export default function HomePage() {
+export default function Page() {
   return (
-    <div className="min-h-screen w-full px-4 py-10 text-white">
-      <div className="mx-auto w-full max-w-[560px]">
-        <Suspense
-          fallback={
-            <div className="card-glass rounded-2xl border border-white/10 p-6">
-              Cargando...
-            </div>
-          }
-        >
-          <LoginClient />
-        </Suspense>
-      </div>
-    </div>
+    <main style={{ padding: 24, color: 'white' }}>
+      <h1>ROOT OK</h1>
+      <p>Si ves esto, la ruta / existe y se renderiza.</p>
+    </main>
   );
 }
