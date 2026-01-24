@@ -47,9 +47,23 @@
     outline-color: hsl(var(--ring) / 0.5);
   }
 
-  html, body {
+  html,
+  body {
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
+  }
+
+  /* Inputs base: mantener estilo dark/glass */
+  input,
+  textarea,
+  select {
+    color: rgba(255, 255, 255, 0.92);
+    background-color: transparent;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: rgba(255, 255, 255, 0.35);
   }
 }
 
@@ -62,15 +76,15 @@
 
   .card-glass {
     border-radius: 1rem;
-    border: 1px solid hsla(0,0%,100%,0.12);
-    background: hsla(0,0%,100%,0.06);
+    border: 1px solid hsla(0, 0%, 100%, 0.12);
+    background: hsla(0, 0%, 100%, 0.06);
     backdrop-filter: blur(8px);
-    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   }
 
   .card-glass:hover {
     box-shadow:
-      0 10px 30px rgba(0,0,0,0.35),
+      0 10px 30px rgba(0, 0, 0, 0.35),
       0 0 40px hsl(var(--admin-glow) / var(--admin-glow-alpha));
   }
 
@@ -87,20 +101,22 @@
     outline-offset: 3px;
   }
 
-  .text-dim { color: hsla(0,0%,100%,0.7); }
+  .text-dim {
+    color: hsla(0, 0%, 100%, 0.7);
+  }
 
   .btn-ghost {
     border-radius: 0.75rem;
-    border: 1px solid hsla(0,0%,100%,0.15);
-    background: hsla(0,0%,100%,0.05);
+    border: 1px solid hsla(0, 0%, 100%, 0.15);
+    background: hsla(0, 0%, 100%, 0.05);
     padding: 0.5rem 0.9rem;
     font-size: 0.875rem;
-    color: hsla(0,0%,100%,0.85);
+    color: hsla(0, 0%, 100%, 0.85);
     transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
   }
 
   .btn-ghost:hover {
-    background: hsla(0,0%,100%,0.10);
+    background: hsla(0, 0%, 100%, 0.1);
     color: hsl(0 0% 100%);
   }
 
@@ -130,10 +146,18 @@
   select:-webkit-autofill,
   select:-webkit-autofill:hover,
   select:-webkit-autofill:focus {
-    -webkit-text-fill-color: rgba(255, 255, 255, 0.9);
-    caret-color: rgba(255, 255, 255, 0.9);
-    -webkit-box-shadow: 0 0 0px 1000px rgba(255, 255, 255, 0.06) inset;
-    box-shadow: 0 0 0px 1000px rgba(255, 255, 255, 0.06) inset;
+    /* Texto SIEMPRE visible */
+    -webkit-text-fill-color: rgba(255, 255, 255, 0.92);
+    caret-color: rgba(255, 255, 255, 0.92);
+
+    /* Mata el azul/blanco del autofill y lo deja en glass oscuro */
+    -webkit-box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.05) inset;
+    box-shadow: 0 0 0 1000px rgba(255, 255, 255, 0.05) inset;
+
+    /* Mantén borde glass */
     border: 1px solid hsla(0, 0%, 100%, 0.12);
+
+    /* Evita “flash” del autofill */
+    transition: background-color 9999s ease-out 0s;
   }
 }
