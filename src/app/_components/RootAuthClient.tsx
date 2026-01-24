@@ -86,7 +86,7 @@ export default function RootAuthClient() {
       {/* LOGO (robusto, sin next/image) */}
       <div className="mb-6 flex justify-center">
         <img
-          src="/brand/kalue-logo.png"
+          src="/brand/logo-kalue.png"
           alt="Kalue"
           width={240}
           height={96}
