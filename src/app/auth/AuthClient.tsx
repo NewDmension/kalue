@@ -9,7 +9,6 @@ type Mode = 'signin' | 'signup';
 
 export default function AuthClient() {
   const searchParams = useSearchParams();
-
   const nextRaw = searchParams.get('next');
   const next = nextRaw && nextRaw.startsWith('/') ? nextRaw : '/app';
 
@@ -44,18 +43,16 @@ export default function AuthClient() {
 
         if (error) throw error;
 
-        // Si confirmación por email está ON, no habrá sesión aún.
+        // Si confirm email está ON, no hay sesión aún
         if (!data.session) {
           setMsg('Cuenta creada. Revisa tu email para confirmar la cuenta.');
           return;
         }
 
-        // Si ya hay sesión, entra
         window.location.href = next;
         return;
       }
 
-      // signin
       const { data, error } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
@@ -75,7 +72,7 @@ export default function AuthClient() {
         return;
       }
 
-      // hard redirect para que SSR lea cookies
+      // EXACTO como Sybana: hard redirect para SSR
       window.location.href = next;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Error inesperado';
@@ -87,13 +84,13 @@ export default function AuthClient() {
 
   return (
     <div className="w-full">
-      {/* LOGO (Sybana-style) */}
+      {/* LOGO */}
       <div className="mb-6 flex justify-center">
         <Image
           src="/logo-kalue.png"
           alt="Kalue"
           width={220}
-          height={220}
+          height={80}
           priority
           className="h-12 w-auto"
         />
