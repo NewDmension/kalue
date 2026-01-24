@@ -1,0 +1,39 @@
+{
+  "common": {
+    "brand": "Kalue",
+    "tagline": "Lead ops system"
+  },
+  "nav": {
+    "inbox": "Inbox",
+    "leads": "Leads",
+    "pipeline": "Pipeline",
+    "integrations": "Integrations",
+    "campaigns": "Campaigns",
+    "settings": "Settings",
+    "signOut": "Cerrar sesión",
+    "menu": "Menú",
+    "workspace": "workspace",
+    "workspaceSelectorTitle": "Selector de workspace (v1: fijo al primero)"
+  },
+  "onboarding": {
+    "title": "Crea tu workspace",
+    "subtitle": "Este será el espacio privado de tu empresa. Luego podrás crear pipelines, inbox y campañas.",
+    "left": {
+      "whatTitle": "Qué se crea ahora",
+      "whatBodyPrefix": "1 workspace + tu membership como",
+      "whatRole": "owner",
+      "afterTitle": "Después",
+      "afterBody": "Entrarás al inbox y empezaremos a montar pipelines y leads."
+    },
+    "form": {
+      "label": "Nombre del workspace",
+      "placeholder": "Ej: Kalue Studio",
+      "skip": "Saltar por ahora",
+      "create": "Crear workspace",
+      "creating": "Creando…",
+      "hint": "Puedes renombrar el workspace más adelante.",
+      "errorNameRequired": "Escribe un nombre para tu workspace.",
+      "errorCreateWorkspace": "No se pudo crear el workspace."
+    }
+  }
+}

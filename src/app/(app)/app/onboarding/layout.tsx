@@ -7,7 +7,5 @@ export default async function OnboardingLayout(props: { children: React.ReactNod
   const { data } = await supabase.auth.getUser();
   if (!data.user) redirect('/auth');
 
-  // Aquí luego meteremos: si ya tiene workspace -> redirect('/app')
-  // (cuando tengamos bien la query de memberships)
-  return <>{props.children}</>;
+  return <div className="min-h-screen w-full">{props.children}</div>;
 }

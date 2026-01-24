@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabaseBrowser } from '@/lib/supabase/client';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 type Mode = 'signin' | 'signup';
 
@@ -83,6 +84,11 @@ export default function RootAuthClient() {
 
   return (
     <div className="w-full max-w-[520px]">
+      {/* Top row: idioma */}
+      <div className="mb-4 flex justify-end">
+        <LanguageSwitcher />
+      </div>
+
       {/* LOGO (x3, robusto, sin next/image) */}
       <div className="mb-8 flex justify-center">
         <img
