@@ -29,6 +29,20 @@ function ensureLocaleCookie(req: NextRequest, res: NextResponse) {
   });
 }
 
+const PROTECTED_PREFIXES = [
+  '/onboarding',
+  '/inbox',
+  '/leads',
+  '/pipeline',
+  '/integrations',
+  '/campaigns',
+  '/settings',
+] as const;
+
+function isProtectedPath(pathname: string): boolean {
+  return PROTECTED_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'));
+}
+
 export async function middleware(req: NextRequest) {
   const pathname = req.nextUrl.pathname;
 
@@ -37,13 +51,12 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  // 1) i18n (no reescribe URLs, sólo prepara locale/mensajes)
+  // 1) i18n (no reescribe URLs)
   const intlRes = intlMiddleware(req);
   ensureLocaleCookie(req, intlRes);
 
-  // 2) Auth sólo para /app
-  const isProtected = pathname.startsWith('/app');
-  if (!isProtected) return intlRes;
+  // 2) Auth sólo para rutas privadas
+  if (!isProtectedPath(pathname)) return intlRes;
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
@@ -66,7 +79,7 @@ export async function middleware(req: NextRequest) {
 
   if (!data.user) {
     const url = req.nextUrl.clone();
-    url.pathname = '/auth';
+    url.pathname = '/';
 
     // Guarda ruta exacta (path + query) para volver
     const fullNext = `${req.nextUrl.pathname}${req.nextUrl.search}`;

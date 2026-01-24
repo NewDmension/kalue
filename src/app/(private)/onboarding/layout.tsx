@@ -5,7 +5,7 @@ export default async function OnboardingLayout(props: { children: React.ReactNod
   const supabase = await supabaseServer();
 
   const { data } = await supabase.auth.getUser();
-  if (!data.user) redirect('/auth');
+  if (!data.user) redirect('/');
 
   return <div className="min-h-screen w-full">{props.children}</div>;
 }

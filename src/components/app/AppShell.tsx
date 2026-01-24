@@ -29,13 +29,16 @@ function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
 
+/**
+ * ✅ Rutas nuevas (sin /app)
+ */
 const NAV = [
-  { href: '/app/inbox', key: 'inbox', icon: Inbox },
-  { href: '/app/leads', key: 'leads', icon: Users },
-  { href: '/app/pipeline', key: 'pipeline', icon: Workflow },
-  { href: '/app/integrations', key: 'integrations', icon: Plug },
-  { href: '/app/campaigns', key: 'campaigns', icon: Megaphone },
-  { href: '/app/settings', key: 'settings', icon: Settings },
+  { href: '/inbox', key: 'inbox', icon: Inbox },
+  { href: '/leads', key: 'leads', icon: Users },
+  { href: '/pipeline', key: 'pipeline', icon: Workflow },
+  { href: '/integrations', key: 'integrations', icon: Plug },
+  { href: '/campaigns', key: 'campaigns', icon: Megaphone },
+  { href: '/settings', key: 'settings', icon: Settings },
 ] as const;
 
 type NavKey = (typeof NAV)[number]['key'];
@@ -66,20 +69,24 @@ export default function AppShell(props: {
 
   async function signOut() {
     await supabase.auth.signOut();
-    router.push('/auth');
+    // ✅ Login es HOME
+    router.push('/');
     router.refresh();
   }
 
-  const isOnboarding = pathname?.startsWith('/app/onboarding') ?? false;
+  // ✅ Onboarding ya no vive en /app/onboarding
+  const isOnboarding = pathname?.startsWith('/onboarding') ?? false;
 
   return (
     <div className="min-h-screen">
+      {/* Fondo global elegante */}
       <div className="pointer-events-none fixed inset-0 -z-10">
         <div className="absolute inset-0 bg-[radial-gradient(900px_550px_at_15%_15%,rgba(99,102,241,0.16),transparent_60%)]" />
         <div className="absolute inset-0 bg-[radial-gradient(900px_550px_at_85%_70%,rgba(16,185,129,0.12),transparent_60%)]" />
         <div className="absolute inset-0 bg-[radial-gradient(700px_400px_at_50%_95%,rgba(255,255,255,0.06),transparent_60%)]" />
       </div>
 
+      {/* Topbar móvil */}
       <div className="md:hidden sticky top-0 z-40 border-b border-white/10 bg-black/35 backdrop-blur-[10px]">
         <div className="flex items-center justify-between px-4 py-3">
           <button
@@ -94,7 +101,9 @@ export default function AppShell(props: {
           </button>
 
           <div className="min-w-0 text-center">
-            <p className="text-sm font-semibold text-white truncate">{active?.name ?? tCommon('brand')}</p>
+            <p className="text-sm font-semibold text-white truncate">
+              {active?.name ?? tCommon('brand')}
+            </p>
             <p className="text-[11px] text-white/55 truncate">{active?.slug ?? tNav('workspace')}</p>
           </div>
 
@@ -110,6 +119,7 @@ export default function AppShell(props: {
         </div>
       </div>
 
+      {/* Mobile drawer */}
       {mobileOpen ? (
         <div className="fixed inset-0 z-50 md:hidden">
           <div className="absolute inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
@@ -124,6 +134,7 @@ export default function AppShell(props: {
         </div>
       ) : null}
 
+      {/* Desktop layout: FULL WIDTH */}
       <div className="w-full px-6 py-6">
         <div
           className={cx(
@@ -164,6 +175,7 @@ function SidebarContent(props: {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Brand + Workspace switch */}
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-semibold text-white">{tCommon('brand')}</p>
@@ -182,6 +194,7 @@ function SidebarContent(props: {
         </button>
       </div>
 
+      {/* Nav */}
       <nav className="flex flex-col gap-1">
         {NAV.map((it) => {
           const active = props.pathname === it.href || props.pathname.startsWith(it.href + '/');

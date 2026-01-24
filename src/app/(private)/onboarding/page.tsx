@@ -24,6 +24,7 @@ export default function OnboardingPage() {
 
   async function createWorkspace() {
     if (busy) return;
+
     const trimmed = name.trim();
     if (!trimmed) {
       setMsg(t('form.errorNameRequired'));
@@ -38,14 +39,17 @@ export default function OnboardingPage() {
     try {
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
+
       if (!userData.user) {
-        router.push('/auth?next=/app/onboarding');
+        // Login es HOME (/)
+        router.push(`/?next=${encodeURIComponent('/onboarding')}`);
         router.refresh();
         return;
       }
 
       const slug = slugify(trimmed) || `ws-${userData.user.id.slice(0, 8)}`;
 
+      // 1) crear workspace
       const { data: ws, error: wsErr } = await supabase
         .from('workspaces')
         .insert([{ name: trimmed, slug, created_by: userData.user.id }])
@@ -55,12 +59,14 @@ export default function OnboardingPage() {
       if (wsErr) throw wsErr;
       if (!ws?.id) throw new Error(t('form.errorCreateWorkspace'));
 
+      // 2) crear membership owner
       const { error: mErr } = await supabase.from('workspace_members').insert([
         { workspace_id: ws.id, user_id: userData.user.id, role: 'owner' },
       ]);
+
       if (mErr) throw mErr;
 
-      router.push('/app/inbox');
+      router.push('/inbox');
       router.refresh();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unexpected error';
@@ -114,7 +120,7 @@ export default function OnboardingPage() {
             <div className="mt-6 flex items-center justify-end gap-3">
               <button
                 type="button"
-                onClick={() => router.push('/app/inbox')}
+                onClick={() => router.push('/inbox')}
                 disabled={busy}
                 className="rounded-xl border border-white/15 bg-white/5 px-5 py-2.5 text-sm text-white/80 hover:bg-white/10 disabled:opacity-60"
               >
