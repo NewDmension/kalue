@@ -28,7 +28,9 @@ type Lead = {
   notes?: string | null;
 };
 
-type LeadsListResponse = { ok: true; leads: Lead[] } | { ok: false; error: string };
+type LeadsListResponse =
+  | { ok: true; leads: Lead[] }
+  | { ok: false; error: string };
 
 type LeadNotificationItem = {
   id: string;
@@ -58,7 +60,7 @@ async function getAccessToken(): Promise<string | null> {
 }
 
 /* =======================
-   Modal: Confirm
+Modal: Confirm
 ======================= */
 
 type ConfirmModalProps = {
@@ -82,7 +84,9 @@ function ConfirmModal(props: ConfirmModalProps) {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-lg font-semibold text-white">{props.title}</p>
-            {props.description ? <p className="mt-1 text-sm text-white/60">{props.description}</p> : null}
+            {props.description ? (
+              <p className="mt-1 text-sm text-white/60">{props.description}</p>
+            ) : null}
           </div>
 
           <button
@@ -125,7 +129,7 @@ function ConfirmModal(props: ConfirmModalProps) {
 }
 
 /* =======================
-   Modal: Edit lead (basic)
+Modal: Edit lead (basic)
 ======================= */
 
 type LeadEditDraft = {
@@ -155,7 +159,7 @@ function EditLeadModal(props: EditLeadModalProps) {
 
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 backdrop-blur-[6px] p-4">
-      <div className="w-full max-w-[720px] rounded-2xl border border-white/15 bg-black/70 shadow-2xl p-5">
+      <div className="w-full max-w-[720px] rounded-2xl border border-white/15 bg-black/70 p-5 shadow-2xl">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-lg font-semibold text-white">Editar lead</p>
@@ -177,7 +181,9 @@ function EditLeadModal(props: EditLeadModalProps) {
             <p className="mb-1 text-xs text-white/60">Nombre</p>
             <input
               value={draft.full_name}
-              onChange={(e) => setDraft((p) => ({ ...p, full_name: e.target.value }))}
+              onChange={(e) =>
+                setDraft((p) => ({ ...p, full_name: e.target.value }))
+              }
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
             />
           </div>
@@ -186,7 +192,9 @@ function EditLeadModal(props: EditLeadModalProps) {
             <p className="mb-1 text-xs text-white/60">Teléfono</p>
             <input
               value={draft.phone}
-              onChange={(e) => setDraft((p) => ({ ...p, phone: e.target.value }))}
+              onChange={(e) =>
+                setDraft((p) => ({ ...p, phone: e.target.value }))
+              }
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
             />
           </div>
@@ -195,7 +203,9 @@ function EditLeadModal(props: EditLeadModalProps) {
             <p className="mb-1 text-xs text-white/60">Email</p>
             <input
               value={draft.email}
-              onChange={(e) => setDraft((p) => ({ ...p, email: e.target.value }))}
+              onChange={(e) =>
+                setDraft((p) => ({ ...p, email: e.target.value }))
+              }
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
             />
           </div>
@@ -204,7 +214,9 @@ function EditLeadModal(props: EditLeadModalProps) {
             <p className="mb-1 text-xs text-white/60">Profesión</p>
             <input
               value={draft.profession}
-              onChange={(e) => setDraft((p) => ({ ...p, profession: e.target.value }))}
+              onChange={(e) =>
+                setDraft((p) => ({ ...p, profession: e.target.value }))
+              }
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
             />
           </div>
@@ -213,7 +225,9 @@ function EditLeadModal(props: EditLeadModalProps) {
             <p className="mb-1 text-xs text-white/60">Pain</p>
             <input
               value={draft.biggest_pain}
-              onChange={(e) => setDraft((p) => ({ ...p, biggest_pain: e.target.value }))}
+              onChange={(e) =>
+                setDraft((p) => ({ ...p, biggest_pain: e.target.value }))
+              }
               className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
             />
           </div>
@@ -244,7 +258,7 @@ function EditLeadModal(props: EditLeadModalProps) {
 }
 
 /* =======================
-   Round selector (Sybana UIX)
+Round selector (Sybana UIX)
 ======================= */
 
 function RoundSelectButton(props: {
@@ -262,17 +276,24 @@ function RoundSelectButton(props: {
       aria-pressed={props.selected}
       className={cx(
         'relative inline-flex h-7 w-7 items-center justify-center rounded-full border transition',
-        props.selected ? 'border-indigo-400/50 bg-indigo-500/20' : 'border-white/15 bg-white/5 hover:bg-white/10',
-        props.disabled ? 'opacity-60 cursor-not-allowed' : ''
+        props.selected
+          ? 'border-indigo-400/50 bg-indigo-500/20'
+          : 'border-white/15 bg-white/5 hover:bg-white/10',
+        props.disabled ? 'cursor-not-allowed opacity-60' : ''
       )}
     >
-      <span className={cx('h-3.5 w-3.5 rounded-full transition', props.selected ? 'bg-indigo-300' : 'bg-white/20')} />
+      <span
+        className={cx(
+          'h-3.5 w-3.5 rounded-full transition',
+          props.selected ? 'bg-indigo-300' : 'bg-white/20'
+        )}
+      />
     </button>
   );
 }
 
 /* =======================
-   Labels helpers
+Labels helpers
 ======================= */
 
 function leadMatchesSelectedLabelsAny(lead: Lead, selected: Set<string>): boolean {
@@ -289,8 +310,37 @@ function leadMatchesSelectedLabelsAny(lead: Lead, selected: Set<string>): boolea
   return false;
 }
 
+function leadHasEmail(lead: Lead): boolean {
+  const e = (lead.email ?? '').trim();
+  return e.length > 0;
+}
+
+function mergeLabels(existing: string[] | null | undefined, addLabel: LeadLabel): string[] {
+  const curr = Array.isArray(existing) ? existing : [];
+  const addNorm = normalizeLabel(addLabel) ?? addLabel;
+
+  // Mantener el string original del label (tal cual en LEAD_LABELS), pero evitar duplicados por normalizeLabel()
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of curr) {
+    const n = normalizeLabel(raw);
+    const key = n ?? raw.trim().toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(raw);
+  }
+
+  if (!seen.has(addNorm)) {
+    out.push(addLabel);
+  }
+
+  return out;
+}
+
 /* =======================
-   Page
+Page
 ======================= */
 
 export default function LeadsPage() {
@@ -301,7 +351,9 @@ export default function LeadsPage() {
   const [loading, setLoading] = useState(true);
 
   const [unreadLeadIds, setUnreadLeadIds] = useState<Set<string>>(new Set());
-  const [unreadNotificationByLead, setUnreadNotificationByLead] = useState<Map<string, string>>(new Map());
+  const [unreadNotificationByLead, setUnreadNotificationByLead] = useState<Map<string, string>>(
+    new Map()
+  );
 
   const [query, setQuery] = useState('');
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
@@ -311,6 +363,9 @@ export default function LeadsPage() {
 
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState<Set<string>>(new Set());
+
+  // ✅ NUEVO: filtro “solo con email”
+  const [onlyWithEmail, setOnlyWithEmail] = useState(false);
 
   const PAGE_SIZE = 15;
 
@@ -322,6 +377,11 @@ export default function LeadsPage() {
 
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
+
+  // ✅ NUEVO: asignación masiva de etiqueta
+  const [bulkLabel, setBulkLabel] = useState<LeadLabel | ''>('');
+  const [bulkLabelOpen, setBulkLabelOpen] = useState(false);
+  const [bulkLabelConfirmOpen, setBulkLabelConfirmOpen] = useState(false);
 
   const [markAllBellOpen, setMarkAllBellOpen] = useState(false);
   const [markAllBellLoading, setMarkAllBellLoading] = useState(false);
@@ -361,7 +421,11 @@ export default function LeadsPage() {
     try {
       const [leadsRes, unreadRes] = await Promise.all([
         fetch('/api/marketing/leads/list', { method: 'GET', cache: 'no-store', headers }),
-        fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', { method: 'GET', cache: 'no-store', headers }),
+        fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', {
+          method: 'GET',
+          cache: 'no-store',
+          headers,
+        }),
       ]);
 
       if (leadsRes.ok) {
@@ -438,6 +502,9 @@ export default function LeadsPage() {
 
     list = list.filter((l) => leadMatchesSelectedLabelsAny(l, selectedLabels));
 
+    // ✅ NUEVO: filtro “solo con email”
+    if (onlyWithEmail) list = list.filter((l) => leadHasEmail(l));
+
     const q = query.trim().toLowerCase();
     if (q) {
       list = list.filter((l) => {
@@ -449,16 +516,26 @@ export default function LeadsPage() {
     }
 
     const sorted = [...list].sort((a, b) => {
-      if (sortMode === 'recent') return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-      if (sortMode === 'oldest') return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      if (sortMode === 'az') return (a.full_name ?? '').localeCompare(b.full_name ?? '', 'es', { sensitivity: 'base' });
-      return (b.full_name ?? '').localeCompare(a.full_name ?? '', 'es', { sensitivity: 'base' });
+      if (sortMode === 'recent')
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      if (sortMode === 'oldest')
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      if (sortMode === 'az')
+        return (a.full_name ?? '').localeCompare(b.full_name ?? '', 'es', {
+          sensitivity: 'base',
+        });
+      return (b.full_name ?? '').localeCompare(a.full_name ?? '', 'es', {
+        sensitivity: 'base',
+      });
     });
 
     return sorted;
-  }, [items, query, filterMode, sortMode, unreadLeadIds, selectedLabels, statusFilter]);
+  }, [items, query, filterMode, sortMode, unreadLeadIds, selectedLabels, statusFilter, onlyWithEmail]);
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(filtered.length / PAGE_SIZE)), [filtered.length]);
+  const totalPages = useMemo(
+    () => Math.max(1, Math.ceil(filtered.length / PAGE_SIZE)),
+    [filtered.length]
+  );
 
   const setPagePersisted = useCallback(
     (nextPage: number) => {
@@ -470,7 +547,7 @@ export default function LeadsPage() {
 
   useEffect(() => {
     const rawFromUrl = searchParams.get('page');
-    const parsedFromUrl = rawFromUrl ? Number.parseInt(rawFromUrl, 10) : NaN;
+    const parsedFromUrl = rawFromUrl ? Number.parseInt(rawFromUrl, 10) : Number.NaN;
 
     if (Number.isFinite(parsedFromUrl) && parsedFromUrl > 0) {
       setPage(parsedFromUrl);
@@ -480,7 +557,7 @@ export default function LeadsPage() {
 
     try {
       const raw = sessionStorage.getItem(PAGE_STORAGE_KEY);
-      const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+      const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
       if (Number.isFinite(parsed) && parsed > 0) setPage(parsed);
     } catch {
       // ignore
@@ -525,7 +602,7 @@ export default function LeadsPage() {
 
     setPage(1);
     setSelectedLeadIds(new Set());
-  }, [pageHydrated, query, filterMode, sortMode, selectedLabels, statusFilter]);
+  }, [pageHydrated, query, filterMode, sortMode, selectedLabels, statusFilter, onlyWithEmail]);
 
   const pagedItems = useMemo(() => {
     const start = (page - 1) * PAGE_SIZE;
@@ -828,6 +905,50 @@ export default function LeadsPage() {
     }
   }
 
+  // ✅ NUEVO: aplica etiqueta a “seleccionados” (y opcionalmente solo a los que tengan email)
+  async function bulkAssignLabelToSelected() {
+    if (!bulkLabel || selectedLeadIds.size === 0) return;
+
+    setBulkLoading(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) return;
+
+      // OJO: aquí asumimos que tu endpoint update acepta `labels`.
+      // Si tu endpoint aún no lo hace, dímelo y te doy el route.ts para soportarlo.
+      const selectedIds = Array.from(selectedLeadIds);
+      for (const leadId of selectedIds) {
+        const lead = items.find((x) => x.id === leadId);
+        if (!lead) continue;
+
+        // Si está activo el filtro “solo con email”, puedes querer que NO toque los que no tienen email
+        if (onlyWithEmail && !leadHasEmail(lead)) continue;
+
+        const nextLabels = mergeLabels(lead.labels, bulkLabel);
+
+        const res = await fetch(`/api/admin/leadhub/leads/${leadId}/update`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({ labels: nextLabels }),
+        });
+
+        const data = (await res.json()) as { ok: true; lead: Lead } | { ok: false; error: string };
+        if (!res.ok || !data.ok) {
+          // seguimos con el resto (mejor UX), pero no rompemos el loop
+          continue;
+        }
+      }
+
+      setBulkLabelConfirmOpen(false);
+      setBulkLabelOpen(false);
+      setBulkLabel('');
+      clearSelection();
+      await load();
+    } finally {
+      setBulkLoading(false);
+    }
+  }
+
   function Paginator(props: { compact?: boolean }) {
     return (
       <div className={cx('flex items-center gap-2', props.compact ? 'justify-end' : '')}>
@@ -839,7 +960,7 @@ export default function LeadsPage() {
             'rounded-xl border px-3 py-2 text-xs transition',
             canPrev
               ? 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
-              : 'border-white/5 bg-white/5 text-white/30 cursor-not-allowed'
+              : 'cursor-not-allowed border-white/5 bg-white/5 text-white/30'
           )}
         >
           ← Anterior
@@ -877,7 +998,7 @@ export default function LeadsPage() {
             'rounded-xl border px-3 py-2 text-xs transition',
             canNext
               ? 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
-              : 'border-white/5 bg-white/5 text-white/30 cursor-not-allowed'
+              : 'cursor-not-allowed border-white/5 bg-white/5 text-white/30'
           )}
         >
           Siguiente →
@@ -886,15 +1007,25 @@ export default function LeadsPage() {
     );
   }
 
+  const selectedWithEmailCount = useMemo(() => {
+    if (selectedLeadIds.size === 0) return 0;
+    let n = 0;
+    for (const id of selectedLeadIds) {
+      const lead = items.find((x) => x.id === id);
+      if (lead && leadHasEmail(lead)) n += 1;
+    }
+    return n;
+  }, [selectedLeadIds, items]);
+
   return (
     <div className="container-default py-8 text-white">
       <div className="mb-6 flex flex-col gap-2">
         <h1 className="text-2xl font-semibold">Leads</h1>
 
-        <p className="text-sm text-white/70 max-w-2xl">
+        <p className="max-w-2xl text-sm text-white/70">
           Bandeja de leads recibidos desde integraciones (Meta, etc.).{' '}
           <span className="text-white/60">Pendientes:</span>{' '}
-          <span className="text-white/85 font-medium">{unreadCount}</span>
+          <span className="font-medium text-white/85">{unreadCount}</span>
         </p>
 
         <div className="mt-2 flex flex-col gap-3">
@@ -983,6 +1114,21 @@ export default function LeadsPage() {
                 Etiquetas{selectedLabels.size > 0 ? ` (${selectedLabels.size})` : ''}
               </button>
 
+              {/* ✅ NUEVO: toggle solo con email */}
+              <button
+                type="button"
+                onClick={() => setOnlyWithEmail((v) => !v)}
+                className={cx(
+                  'rounded-xl border px-3 py-2 text-xs transition',
+                  onlyWithEmail
+                    ? 'border-indigo-400/40 bg-indigo-500/15 text-indigo-200'
+                    : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+                )}
+                title="Mostrar solo leads que tengan email"
+              >
+                Solo con email
+              </button>
+
               <span className="ml-1 text-xs text-white/50">({filtered.length} en vista)</span>
 
               <div className="ml-0 sm:ml-2">
@@ -1007,7 +1153,7 @@ export default function LeadsPage() {
                 className={cx(
                   'rounded-xl border px-3 py-2 text-xs transition',
                   bulkLoading || selectedLeadIds.size === 0
-                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    ? 'cursor-not-allowed border-white/10 bg-white/5 text-white/40'
                     : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
                 )}
               >
@@ -1021,7 +1167,7 @@ export default function LeadsPage() {
                 className={cx(
                   'rounded-xl border px-3 py-2 text-xs transition',
                   bulkLoading || selectedLeadIds.size === 0
-                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    ? 'cursor-not-allowed border-white/10 bg-white/5 text-white/40'
                     : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
                 )}
               >
@@ -1035,7 +1181,7 @@ export default function LeadsPage() {
                 className={cx(
                   'rounded-xl border px-3 py-2 text-xs transition',
                   bulkLoading || filtered.length === 0
-                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    ? 'cursor-not-allowed border-white/10 bg-white/5 text-white/40'
                     : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
                 )}
               >
@@ -1049,11 +1195,27 @@ export default function LeadsPage() {
                 className={cx(
                   'rounded-xl border px-3 py-2 text-xs transition',
                   bulkLoading || filtered.length === 0
-                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    ? 'cursor-not-allowed border-white/10 bg-white/5 text-white/40'
                     : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
                 )}
               >
                 Marcar TODOS (vista) no leídos
+              </button>
+
+              {/* ✅ NUEVO: botón para abrir asignación masiva de etiqueta */}
+              <button
+                type="button"
+                disabled={bulkLoading || selectedLeadIds.size === 0}
+                onClick={() => setBulkLabelOpen((v) => !v)}
+                className={cx(
+                  'rounded-xl border px-3 py-2 text-xs transition',
+                  bulkLoading || selectedLeadIds.size === 0
+                    ? 'cursor-not-allowed border-white/10 bg-white/5 text-white/40'
+                    : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
+                )}
+                title="Asignar una etiqueta a todos los seleccionados"
+              >
+                Asignar etiqueta (selección)
               </button>
 
               {selectedLeadIds.size > 0 ? (
@@ -1064,7 +1226,7 @@ export default function LeadsPage() {
                   className={cx(
                     'rounded-xl border px-3 py-2 text-xs transition',
                     bulkLoading
-                      ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                      ? 'cursor-not-allowed border-white/10 bg-white/5 text-white/40'
                       : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10'
                   )}
                 >
@@ -1073,6 +1235,69 @@ export default function LeadsPage() {
               ) : null}
             </div>
           </div>
+
+          {/* ✅ NUEVO: panel asignación etiqueta */}
+          {bulkLabelOpen ? (
+            <div className="card-glass rounded-2xl border border-white/10 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-white">Asignar etiqueta a seleccionados</p>
+                  <p className="mt-1 text-xs text-white/60">
+                    Seleccionados: <span className="text-white/80">{selectedLeadIds.size}</span>
+                    {onlyWithEmail ? (
+                      <>
+                        {' '}
+                        · Con email:{' '}
+                        <span className="text-white/80">{selectedWithEmailCount}</span>
+                      </>
+                    ) : null}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setBulkLabelOpen(false)}
+                  className="self-start rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10 sm:self-auto"
+                >
+                  Cerrar
+                </button>
+              </div>
+
+              <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+                <select
+                  value={bulkLabel}
+                  onChange={(e) => setBulkLabel(e.target.value as LeadLabel)}
+                  className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/85 outline-none focus:border-indigo-400/50 sm:w-[280px]"
+                  title="Elige etiqueta"
+                >
+                  <option value="">Elige etiqueta…</option>
+                  {LEAD_LABELS.map((lab) => (
+                    <option key={lab} value={lab}>
+                      {lab}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  type="button"
+                  disabled={bulkLoading || !bulkLabel || selectedLeadIds.size === 0}
+                  onClick={() => setBulkLabelConfirmOpen(true)}
+                  className={cx(
+                    'rounded-xl border px-4 py-2 text-xs transition',
+                    bulkLoading || !bulkLabel || selectedLeadIds.size === 0
+                      ? 'cursor-not-allowed border-white/10 bg-white/5 text-white/40'
+                      : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
+                  )}
+                >
+                  Aplicar etiqueta
+                </button>
+
+                <p className="text-xs text-white/50">
+                  Se añade sin duplicar (por normalizeLabel).
+                </p>
+              </div>
+            </div>
+          ) : null}
 
           {labelsOpen ? (
             <div className="card-glass rounded-2xl border border-white/10 p-4">
@@ -1099,7 +1324,7 @@ export default function LeadsPage() {
                 <button
                   type="button"
                   onClick={() => setLabelsOpen(false)}
-                  className="self-start sm:self-auto rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
+                  className="self-start rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10 sm:self-auto"
                 >
                   Cerrar
                 </button>
@@ -1132,7 +1357,8 @@ export default function LeadsPage() {
 
               {selectedLabels.size > 0 ? (
                 <div className="mt-3 text-xs text-white/60">
-                  Seleccionadas: <span className="text-white/80">{Array.from(selectedLabels).join(', ')}</span>
+                  Seleccionadas:{' '}
+                  <span className="text-white/80">{Array.from(selectedLabels).join(', ')}</span>
                 </div>
               ) : null}
             </div>
@@ -1154,7 +1380,7 @@ export default function LeadsPage() {
                 title={allSelectedOnPage ? 'Deseleccionar página' : 'Seleccionar página'}
                 onClick={toggleSelectAllOnPage}
               />
-              <span className="text-xs text-white/70 select-none">Seleccionar todos (esta página)</span>
+              <span className="select-none text-xs text-white/70">Seleccionar todos (esta página)</span>
             </div>
 
             <div className="flex items-center justify-end gap-3">
@@ -1199,19 +1425,29 @@ export default function LeadsPage() {
 
                     router.push(`/leads/${l.id}?page=${page}`);
                   }}
-                  className={cx('group h-full cursor-pointer rounded-2xl text-left', selected ? 'ring-2 ring-indigo-400/35' : '')}
+                  className={cx(
+                    'group h-full cursor-pointer rounded-2xl text-left',
+                    selected ? 'ring-2 ring-indigo-400/35' : ''
+                  )}
                 >
                   <div className="card-glass flex h-full flex-col gap-2 p-5 transition-transform duration-150 hover:-translate-y-1">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span
-                            className={cx('h-2 w-2 shrink-0 rounded-full', isUnread ? 'bg-sky-400' : 'bg-white/25')}
+                            className={cx(
+                              'h-2 w-2 shrink-0 rounded-full',
+                              isUnread ? 'bg-sky-400' : 'bg-white/25'
+                            )}
                             title={isUnread ? 'Pendiente de leer' : 'Leído'}
                           />
-                          <h2 className="truncate text-base font-semibold text-white">{l.full_name ?? 'Sin nombre'}</h2>
+                          <h2 className="truncate text-base font-semibold text-white">
+                            {l.full_name ?? 'Sin nombre'}
+                          </h2>
                         </div>
-                        <p className="text-xs text-white/60">{new Date(l.created_at).toLocaleString()}</p>
+                        <p className="text-xs text-white/60">
+                          {new Date(l.created_at).toLocaleString()}
+                        </p>
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -1285,7 +1521,9 @@ export default function LeadsPage() {
 
                     <div className="mt-auto flex items-center justify-between pt-4 text-xs text-white/60">
                       <span>Status: {l.status}</span>
-                      <span className="text-indigo-300 transition-transform group-hover:translate-x-1">Ver detalle →</span>
+                      <span className="text-indigo-300 transition-transform group-hover:translate-x-1">
+                        Ver detalle →
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -1295,9 +1533,12 @@ export default function LeadsPage() {
 
           <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-xs text-white/60">
-              Mostrando <span className="font-medium text-white/80">{(page - 1) * PAGE_SIZE + 1}</span> -{' '}
-              <span className="font-medium text-white/80">{Math.min(page * PAGE_SIZE, filtered.length)}</span> de{' '}
-              <span className="font-medium text-white/80">{filtered.length}</span>
+              Mostrando{' '}
+              <span className="font-medium text-white/80">{(page - 1) * PAGE_SIZE + 1}</span> -{' '}
+              <span className="font-medium text-white/80">
+                {Math.min(page * PAGE_SIZE, filtered.length)}
+              </span>{' '}
+              de <span className="font-medium text-white/80">{filtered.length}</span>
             </div>
 
             <Paginator />
@@ -1332,6 +1573,24 @@ export default function LeadsPage() {
             loading={markAllBellLoading}
             onClose={() => setMarkAllBellOpen(false)}
             onConfirm={() => void markAllBellRead()}
+          />
+
+          {/* ✅ NUEVO: confirmación de asignación masiva */}
+          <ConfirmModal
+            open={bulkLabelConfirmOpen}
+            title="Asignar etiqueta"
+            description={
+              bulkLabel
+                ? `Se añadirá la etiqueta "${bulkLabel}" a ${selectedLeadIds.size} lead(s)${
+                    onlyWithEmail ? ` (solo aplicará a los que tengan email)` : ''
+                  }. ¿Continuar?`
+                : 'Elige una etiqueta primero.'
+            }
+            confirmText="Sí, aplicar"
+            cancelText="Cancelar"
+            loading={bulkLoading}
+            onClose={() => setBulkLabelConfirmOpen(false)}
+            onConfirm={() => void bulkAssignLabelToSelected()}
           />
         </>
       )}

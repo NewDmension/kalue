@@ -7,7 +7,7 @@ function getBearerToken(req: Request): string | null {
   return m ? m[1] : null;
 }
 
-export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const token = getBearerToken(req);
   if (!token) return NextResponse.json({ ok: false, error: 'No auth' }, { status: 401 });
 
@@ -21,12 +21,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     global: { headers: { Authorization: `Bearer ${token}` } },
   });
 
-  const { data, error } = await supabase
-    .from('leads')
-    .select('*')
-    .eq('id', id)
-    .single();
-
+  const { error } = await supabase.from('leads').delete().eq('id', id);
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 400 });
-  return NextResponse.json({ ok: true, lead: data });
+
+  return NextResponse.json({ ok: true });
 }
