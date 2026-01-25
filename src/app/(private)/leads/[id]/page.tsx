@@ -64,7 +64,7 @@ export default function LeadDetailPage() {
         return;
       }
 
-      const res = await fetch(`/api/admin/leadhub/leads/${leadId}/get`, {
+      const res = await fetch(`/api/marketing/leads/${leadId}`, {
         method: 'GET',
         cache: 'no-store',
         headers: { authorization: `Bearer ${token}` },
