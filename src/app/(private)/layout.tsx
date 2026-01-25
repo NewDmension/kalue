@@ -35,19 +35,19 @@ function isMembershipRowArray(value: unknown): value is MembershipRow[] {
   });
 }
 
-function getPathnameFromHeaders(): string {
-  // Next suele exponer `next-url` en headers durante el render server.
-  // Si no existe, devolvemos '' (fallback).
-  const h = headers();
+async function getPathnameFromHeaders(): Promise<string> {
+  // En Next 16.1.x, headers() puede ser async -> Promise<ReadonlyHeaders>
+  const h = await headers();
   const nextUrl = h.get('next-url') ?? '';
 
   if (!nextUrl) return '';
+
   try {
-    // A veces viene como URL absoluta
+    // A veces viene como URL absoluta, a veces ya es pathname
     if (nextUrl.startsWith('http://') || nextUrl.startsWith('https://')) {
       return new URL(nextUrl).pathname;
     }
-    return nextUrl; // a veces ya es pathname
+    return nextUrl;
   } catch {
     return '';
   }
@@ -62,7 +62,7 @@ export default async function PrivateLayout(props: { children: React.ReactNode }
   // ✅ Sin user => login
   if (userErr || !user) redirect('/');
 
-  const pathname = getPathnameFromHeaders();
+  const pathname = await getPathnameFromHeaders();
   const isOnboardingRoute = pathname === '/onboarding' || pathname.startsWith('/onboarding/');
 
   const { data: membershipsRaw, error } = await supabase
