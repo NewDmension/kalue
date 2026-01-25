@@ -89,16 +89,40 @@ export default function AppShell(props: {
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // ✅ Cerrar drawer al navegar (evita “sidebar duplicado”)
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
+  // ✅ Cerrar drawer al pasar a desktop (>= md)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const mql = window.matchMedia('(min-width: 768px)');
+    const onChange = () => {
+      if (mql.matches) setMobileOpen(false);
+    };
+
+    onChange();
+
+    if (typeof mql.addEventListener === 'function') {
+      mql.addEventListener('change', onChange);
+      return () => mql.removeEventListener('change', onChange);
+    }
+
+    // Fallback older Safari
+    mql.addListener(onChange);
+    return () => mql.removeListener(onChange);
+  }, []);
+
   // Workspace context (persistido)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
 
-  // 1) cargar desde storage al montar (client)
   useEffect(() => {
     const stored = safeGetActiveWorkspaceId();
     if (stored) setActiveWorkspaceId(stored);
   }, []);
 
-  // 2) normalizar cuando cambian workspaces (fallback al primero si no válido)
   useEffect(() => {
     if (workspaces.length === 0) {
       if (activeWorkspaceId !== null) setActiveWorkspaceId(null);
