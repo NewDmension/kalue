@@ -1,6 +1,5 @@
 // src/app/(private)/layout.tsx
 import { redirect } from 'next/navigation';
-import { headers } from 'next/headers';
 import AppShell from '@/components/app/AppShell';
 import { supabaseServer } from '@/lib/supabase/server';
 
@@ -35,24 +34,6 @@ function isMembershipRowArray(value: unknown): value is MembershipRow[] {
   });
 }
 
-async function getPathnameFromHeaders(): Promise<string> {
-  // En Next 16.1.x, headers() puede ser async -> Promise<ReadonlyHeaders>
-  const h = await headers();
-  const nextUrl = h.get('next-url') ?? '';
-
-  if (!nextUrl) return '';
-
-  try {
-    // A veces viene como URL absoluta, a veces ya es pathname
-    if (nextUrl.startsWith('http://') || nextUrl.startsWith('https://')) {
-      return new URL(nextUrl).pathname;
-    }
-    return nextUrl;
-  } catch {
-    return '';
-  }
-}
-
 export default async function PrivateLayout(props: { children: React.ReactNode }) {
   const supabase = await supabaseServer();
 
@@ -62,9 +43,6 @@ export default async function PrivateLayout(props: { children: React.ReactNode }
   // ✅ Sin user => login
   if (userErr || !user) redirect('/');
 
-  const pathname = await getPathnameFromHeaders();
-  const isOnboardingRoute = pathname === '/onboarding' || pathname.startsWith('/onboarding/');
-
   const { data: membershipsRaw, error } = await supabase
     .from('workspace_members')
     .select('workspace_id, role, workspaces:workspaces(id, name, slug)')
@@ -72,21 +50,12 @@ export default async function PrivateLayout(props: { children: React.ReactNode }
 
   if (error) {
     console.error('[private-layout] memberships query error', error);
-    // Si estamos en onboarding, dejamos renderizar para poder crear workspace.
-    if (!isOnboardingRoute) redirect('/onboarding');
   }
 
   const initialMemberships: MembershipRow[] = isMembershipRowArray(membershipsRaw)
     ? membershipsRaw
     : [];
 
-  // ✅ Si no tiene memberships:
-  // - En /onboarding: permitimos entrar (para crear workspace)
-  // - En el resto: forzamos onboarding
-  if (initialMemberships.length === 0 && !isOnboardingRoute) {
-    redirect('/onboarding');
-  }
-
-  // ✅ AppShell visible siempre (incluido onboarding)
+  // ✅ NO redirect aquí (evita loops). El guard se hace en AppShell (client).
   return <AppShell initialMemberships={initialMemberships}>{props.children}</AppShell>;
 }
