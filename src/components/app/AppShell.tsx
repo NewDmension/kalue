@@ -1,7 +1,7 @@
 // src/components/AppShell.tsx
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import {
   Home,
   Inbox,
@@ -29,6 +29,26 @@ type MembershipRow = {
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
+}
+
+const ACTIVE_WORKSPACE_KEY = 'kalue.activeWorkspaceId';
+
+function safeGetActiveWorkspaceId(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(ACTIVE_WORKSPACE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetActiveWorkspaceId(id: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(ACTIVE_WORKSPACE_KEY, id);
+  } catch {
+    // ignore
+  }
 }
 
 /**
@@ -69,7 +89,37 @@ export default function AppShell(props: {
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  const active = workspaces[0] ?? null;
+  // Workspace context (persistido)
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+
+  // 1) cargar desde storage al montar (client)
+  useEffect(() => {
+    const stored = safeGetActiveWorkspaceId();
+    if (stored) setActiveWorkspaceId(stored);
+  }, []);
+
+  // 2) normalizar cuando cambian workspaces (fallback al primero si no válido)
+  useEffect(() => {
+    if (workspaces.length === 0) {
+      if (activeWorkspaceId !== null) setActiveWorkspaceId(null);
+      return;
+    }
+
+    const exists =
+      activeWorkspaceId !== null ? workspaces.some((w) => w.id === activeWorkspaceId) : false;
+
+    if (!activeWorkspaceId || !exists) {
+      const fallback = workspaces[0]!.id;
+      setActiveWorkspaceId(fallback);
+      safeSetActiveWorkspaceId(fallback);
+    }
+  }, [workspaces, activeWorkspaceId]);
+
+  const active = useMemo(() => {
+    if (workspaces.length === 0) return null;
+    if (!activeWorkspaceId) return workspaces[0] ?? null;
+    return workspaces.find((w) => w.id === activeWorkspaceId) ?? workspaces[0] ?? null;
+  }, [workspaces, activeWorkspaceId]);
 
   async function signOut() {
     await supabase.auth.signOut();
@@ -136,10 +186,9 @@ export default function AppShell(props: {
         </div>
       ) : null}
 
-      {/* Desktop layout: sidebar con ALTURA NATURAL (como antes) + full width horizontal */}
+      {/* Desktop layout: sidebar con ALTURA NATURAL + full width horizontal */}
       <div className="hidden md:block w-full px-6 py-6">
         <div className="flex w-full items-start gap-6">
-          {/* Sidebar pegado a la izquierda, sin sticky, sin h-screen */}
           <aside className="shrink-0">
             <div className="card-glass border border-white/10 p-4 rounded-2xl">
               <SidebarContent
@@ -151,7 +200,6 @@ export default function AppShell(props: {
             </div>
           </aside>
 
-          {/* Main ocupa todo el ancho restante */}
           <main className="min-w-0 flex-1">{props.children}</main>
         </div>
       </div>
