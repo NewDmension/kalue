@@ -1,29 +1,11 @@
-import { redirect } from 'next/navigation';
-import { supabaseServer } from '@/lib/supabase/server';
-
-type MembershipRow = {
-  workspace_id: string;
-};
-
-export default async function AppIndexPage() {
-  const supabase = await supabaseServer();
-
-  const { data: userData } = await supabase.auth.getUser();
-  if (!userData.user) redirect('/auth');
-
-  const { data: memberships, error } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .limit(1);
-
-  if (error) {
-    // Si RLS bloquea o falta tabla, que no pete silencioso:
-    redirect('/app/onboarding');
-  }
-
-  if (!memberships || memberships.length === 0) {
-    redirect('/app/onboarding');
-  }
-
-  redirect('/app/inbox');
+// src/app/(private)/settings/page.tsx
+export default function SettingsPage() {
+  return (
+    <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
+      <h1 className="text-2xl font-semibold">Settings</h1>
+      <p className="mt-2 text-sm text-white/70">
+        Preferencias del workspace, usuarios, permisos, integraciones y billing (más adelante).
+      </p>
+    </div>
+  );
 }

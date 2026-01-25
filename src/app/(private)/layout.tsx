@@ -1,4 +1,5 @@
 // src/app/(private)/layout.tsx
+import { redirect } from 'next/navigation';
 import AppShell from '@/components/app/AppShell';
 import { supabaseServer } from '@/lib/supabase/server';
 
@@ -36,11 +37,11 @@ function isMembershipRowArray(value: unknown): value is MembershipRow[] {
 export default async function PrivateLayout(props: { children: React.ReactNode }) {
   const supabase = await supabaseServer();
 
-  const { data: userData } = await supabase.auth.getUser();
+  const { data: userData, error: userErr } = await supabase.auth.getUser();
   const user = userData.user;
 
-  // Si no hay user, devolvemos children (tu middleware/layout de onboarding ya decide redirecciones)
-  if (!user) return <>{props.children}</>;
+  // ✅ No user => login (tu login vive en '/')
+  if (userErr || !user) redirect('/');
 
   const { data: membershipsRaw, error } = await supabase
     .from('workspace_members')
@@ -48,13 +49,17 @@ export default async function PrivateLayout(props: { children: React.ReactNode }
     .eq('user_id', user.id);
 
   if (error) {
-    // No petamos render por esto
     console.error('[private-layout] memberships query error', error);
+    // Si hay error real (RLS/tabla/etc), mandamos a onboarding igualmente
+    redirect('/onboarding');
   }
 
   const initialMemberships: MembershipRow[] = isMembershipRowArray(membershipsRaw)
     ? membershipsRaw
     : [];
+
+  // ✅ Si no tiene workspaces aún => onboarding (crear workspace + membership)
+  if (initialMemberships.length === 0) redirect('/onboarding');
 
   return <AppShell initialMemberships={initialMemberships}>{props.children}</AppShell>;
 }
