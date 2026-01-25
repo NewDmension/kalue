@@ -1,5 +1,6 @@
 // src/app/(private)/layout.tsx
 import { redirect } from 'next/navigation';
+import { headers } from 'next/headers';
 import AppShell from '@/components/app/AppShell';
 import { supabaseServer } from '@/lib/supabase/server';
 
@@ -34,14 +35,35 @@ function isMembershipRowArray(value: unknown): value is MembershipRow[] {
   });
 }
 
+function getPathnameFromHeaders(): string {
+  // Next suele exponer `next-url` en headers durante el render server.
+  // Si no existe, devolvemos '' (fallback).
+  const h = headers();
+  const nextUrl = h.get('next-url') ?? '';
+
+  if (!nextUrl) return '';
+  try {
+    // A veces viene como URL absoluta
+    if (nextUrl.startsWith('http://') || nextUrl.startsWith('https://')) {
+      return new URL(nextUrl).pathname;
+    }
+    return nextUrl; // a veces ya es pathname
+  } catch {
+    return '';
+  }
+}
+
 export default async function PrivateLayout(props: { children: React.ReactNode }) {
   const supabase = await supabaseServer();
 
   const { data: userData, error: userErr } = await supabase.auth.getUser();
   const user = userData.user;
 
-  // ✅ No user => login (tu login vive en '/')
+  // ✅ Sin user => login
   if (userErr || !user) redirect('/');
+
+  const pathname = getPathnameFromHeaders();
+  const isOnboardingRoute = pathname === '/onboarding' || pathname.startsWith('/onboarding/');
 
   const { data: membershipsRaw, error } = await supabase
     .from('workspace_members')
@@ -50,16 +72,21 @@ export default async function PrivateLayout(props: { children: React.ReactNode }
 
   if (error) {
     console.error('[private-layout] memberships query error', error);
-    // Si hay error real (RLS/tabla/etc), mandamos a onboarding igualmente
-    redirect('/onboarding');
+    // Si estamos en onboarding, dejamos renderizar para poder crear workspace.
+    if (!isOnboardingRoute) redirect('/onboarding');
   }
 
   const initialMemberships: MembershipRow[] = isMembershipRowArray(membershipsRaw)
     ? membershipsRaw
     : [];
 
-  // ✅ Si no tiene workspaces aún => onboarding (crear workspace + membership)
-  if (initialMemberships.length === 0) redirect('/onboarding');
+  // ✅ Si no tiene memberships:
+  // - En /onboarding: permitimos entrar (para crear workspace)
+  // - En el resto: forzamos onboarding
+  if (initialMemberships.length === 0 && !isOnboardingRoute) {
+    redirect('/onboarding');
+  }
 
+  // ✅ AppShell visible siempre (incluido onboarding)
   return <AppShell initialMemberships={initialMemberships}>{props.children}</AppShell>;
 }
