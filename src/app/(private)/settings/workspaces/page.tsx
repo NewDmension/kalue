@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { getActiveWorkspaceId, setActiveWorkspaceId, clearActiveWorkspaceId } from '@/lib/activeWorkspace';
 
@@ -34,11 +34,13 @@ export default function WorkspacesSettingsPage() {
   const [renameName, setRenameName] = useState<string>('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  const activeId = useMemo(() => getActiveWorkspaceId(), []);
+  // ✅ antes lo calculabas una vez y luego no se actualizaba
+  const [activeId, setActiveId] = useState<string | null>(() => getActiveWorkspaceId());
 
   const fetchList = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
+
     try {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token ?? null;
@@ -50,6 +52,7 @@ export default function WorkspacesSettingsPage() {
       });
 
       const json: unknown = await res.json().catch(() => null);
+
       if (!res.ok) {
         const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to load workspaces';
         const detail = isRecord(json) && typeof json.detail === 'string' ? json.detail : null;
@@ -78,9 +81,14 @@ export default function WorkspacesSettingsPage() {
 
       setItems(parsed);
 
-      // Si no hay active workspace, setear el primero
+      // ✅ Si no hay active workspace, setear el primero
       const current = getActiveWorkspaceId();
-      if (!current && parsed[0]?.id) setActiveWorkspaceId(parsed[0].id);
+      if (!current && parsed[0]?.id) {
+        setActiveWorkspaceId(parsed[0].id);
+        setActiveId(parsed[0].id);
+      } else {
+        setActiveId(current);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unexpected error');
     } finally {
@@ -98,6 +106,7 @@ export default function WorkspacesSettingsPage() {
 
     setBusy(true);
     setError(null);
+
     try {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token ?? null;
@@ -110,6 +119,7 @@ export default function WorkspacesSettingsPage() {
       });
 
       const json: unknown = await res.json().catch(() => null);
+
       if (!res.ok) {
         const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to create workspace';
         const detail = isRecord(json) && typeof json.detail === 'string' ? json.detail : null;
@@ -117,7 +127,10 @@ export default function WorkspacesSettingsPage() {
       }
 
       const wsId = isRecord(json) && isRecord(json.workspace) ? getString(json.workspace, 'id') : null;
-      if (wsId) setActiveWorkspaceId(wsId);
+      if (wsId) {
+        setActiveWorkspaceId(wsId);
+        setActiveId(wsId);
+      }
 
       setNewName('');
       await fetchList();
@@ -135,6 +148,7 @@ export default function WorkspacesSettingsPage() {
 
     setBusy(true);
     setError(null);
+
     try {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token ?? null;
@@ -147,6 +161,7 @@ export default function WorkspacesSettingsPage() {
       });
 
       const json: unknown = await res.json().catch(() => null);
+
       if (!res.ok) {
         const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to rename workspace';
         const detail = isRecord(json) && typeof json.detail === 'string' ? json.detail : null;
@@ -168,6 +183,7 @@ export default function WorkspacesSettingsPage() {
 
     setBusy(true);
     setError(null);
+
     try {
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token ?? null;
@@ -180,6 +196,7 @@ export default function WorkspacesSettingsPage() {
       });
 
       const json: unknown = await res.json().catch(() => null);
+
       if (!res.ok) {
         const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to delete workspace';
         const detail = isRecord(json) && typeof json.detail === 'string' ? json.detail : null;
@@ -187,7 +204,10 @@ export default function WorkspacesSettingsPage() {
       }
 
       const current = getActiveWorkspaceId();
-      if (current === deleteId) clearActiveWorkspaceId();
+      if (current === deleteId) {
+        clearActiveWorkspaceId();
+        setActiveId(null);
+      }
 
       setDeleteId(null);
       await fetchList();
@@ -205,7 +225,9 @@ export default function WorkspacesSettingsPage() {
         <div className="mt-1 text-sm text-white/70">Crea, renombra y gestiona tus workspaces.</div>
 
         {error ? (
-          <div className="mt-4 text-sm text-red-200 bg-red-500/10 border border-red-300/20 rounded-xl p-3">{error}</div>
+          <div className="mt-4 text-sm text-red-200 bg-red-500/10 border border-red-300/20 rounded-xl p-3">
+            {error}
+          </div>
         ) : null}
 
         <div className="mt-6 flex gap-3 items-end">
@@ -238,7 +260,10 @@ export default function WorkspacesSettingsPage() {
           ) : (
             <div className="space-y-3">
               {items.map((w) => (
-                <div key={w.id} className="rounded-2xl border border-white/10 bg-black/20 p-4 flex items-center justify-between">
+                <div
+                  key={w.id}
+                  className="rounded-2xl border border-white/10 bg-black/20 p-4 flex items-center justify-between"
+                >
                   <div>
                     <div className="text-white font-semibold flex items-center gap-2">
                       {w.name}
@@ -256,7 +281,10 @@ export default function WorkspacesSettingsPage() {
 
                   <div className="flex gap-2">
                     <button
-                      onClick={() => setActiveWorkspaceId(w.id)}
+                      onClick={() => {
+                        setActiveWorkspaceId(w.id);
+                        setActiveId(w.id);
+                      }}
                       className="px-4 py-2 rounded-2xl bg-white/10 hover:bg-white/15 text-white text-xs border border-white/10"
                       disabled={busy}
                     >
@@ -289,7 +317,7 @@ export default function WorkspacesSettingsPage() {
           )}
         </div>
 
-        {/* Modal rename (simple inline) */}
+        {/* Modal rename */}
         {renameId ? (
           <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
             <div className="card-glass rounded-2xl p-6 border border-white/10 bg-white/5 w-full max-w-lg">
