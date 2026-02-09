@@ -23,6 +23,10 @@ function getString(v: unknown, key: string): string | null {
   return typeof x === 'string' ? x : null;
 }
 
+function cx(...parts: Array<string | false | null | undefined>): string {
+  return parts.filter(Boolean).join(' ');
+}
+
 export default function WorkspacesSettingsPage() {
   const [items, setItems] = useState<WorkspaceItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -225,59 +229,64 @@ export default function WorkspacesSettingsPage() {
 
   return (
     <div className="p-6 text-white">
-      {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">Workspaces</h1>
         <p className="mt-1 text-sm text-white/70">Crea, renombra y gestiona tus workspaces.</p>
       </div>
 
       {error ? (
-        <div className="mb-6 rounded-2xl border border-red-300/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+        <div className="mb-6 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-200">
           {error}
         </div>
       ) : null}
 
-      {/* Layout: izquierda (1/3) crear, derecha (2/3) listado */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* LEFT: Create (≈ 1/3) */}
+        {/* LEFT: create (1/3) */}
         <div className="card-glass rounded-2xl border border-white/10 bg-white/5 p-5 lg:col-span-1">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-lg font-semibold text-white">Nuevo workspace</div>
-              <div className="mt-1 text-sm text-white/60">Crea un espacio para tu equipo y tus integraciones.</div>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-lg font-semibold text-white">Nuevo workspace</p>
+              <p className="mt-1 text-sm text-white/70">
+                Crea un espacio para tu equipo y tus integraciones.
+              </p>
             </div>
-            <span className="rounded-full bg-indigo-500/15 px-3 py-1 text-xs font-medium text-indigo-200">
-              Setup
-            </span>
+            <span className="rounded-full bg-indigo-500/20 px-3 py-1 text-xs font-medium text-indigo-200">Setup</span>
           </div>
 
           <div className="mt-4">
-            <label className="mb-2 block text-xs text-white/60">Nombre</label>
+            <p className="mb-2 text-xs text-white/60">Nombre</p>
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white/90 outline-none focus:border-indigo-400/50"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 placeholder:text-white/40 outline-none focus:border-indigo-400/50"
               placeholder="Ej: Mi agencia"
               autoComplete="organization"
             />
           </div>
 
           <div className="mt-4 flex items-center justify-end">
+            {/* ✅ EXACTO al de "+ Nueva campaña" */}
             <button
+              type="button"
               onClick={() => void createWorkspace()}
               disabled={!canCreate}
-              className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-5 py-2.5 text-sm font-medium text-indigo-200 hover:bg-indigo-500/15 disabled:opacity-50"
+              className={cx(
+                'inline-flex items-center rounded-xl border px-4 py-2 text-sm transition',
+                !canCreate
+                  ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                  : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
+              )}
             >
-              {busy ? 'Creando…' : 'Crear workspace'}
+              {busy ? 'Creando…' : '+ Crear workspace'}
             </button>
           </div>
 
           <p className="mt-3 text-xs text-white/45">
-            Tip: después podrás renombrarlo, cambiar el workspace activo y configurar integraciones.
+            Tip: podrás renombrarlo y cambiar el workspace activo cuando quieras.
           </p>
         </div>
 
-        {/* RIGHT: List (≈ 2/3) */}
+        {/* RIGHT: list (2/3) */}
         <div className="card-glass rounded-2xl border border-white/10 bg-white/5 p-6 lg:col-span-2">
           <div className="mb-3 text-sm text-white/60">Tus workspaces</div>
 
@@ -290,27 +299,27 @@ export default function WorkspacesSettingsPage() {
               {items.map((w) => (
                 <div
                   key={w.id}
-                  className="flex items-center justify-between rounded-2xl border border-white/10 bg-black/20 p-4"
+                  className="rounded-2xl border border-white/10 bg-black/20 p-4 flex items-center justify-between"
                 >
                   <div>
-                    <div className="flex items-center gap-2 text-white font-semibold">
+                    <div className="text-white font-semibold flex items-center gap-2">
                       {w.name}
-                      <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-xs text-white/70">
+                      <span className="text-xs px-2 py-1 rounded-full border border-white/10 bg-white/5 text-white/70">
                         {w.role}
                       </span>
                       {activeId === w.id ? (
-                        <span className="rounded-full border border-emerald-300/20 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-200">
+                        <span className="text-xs px-2 py-1 rounded-full border border-emerald-300/20 bg-emerald-500/10 text-emerald-200">
                           activo
                         </span>
                       ) : null}
                     </div>
-                    <div className="mt-1 text-xs text-white/50">{w.slug}</div>
+                    <div className="text-xs text-white/50 mt-1">{w.slug}</div>
                   </div>
 
                   <div className="flex gap-2">
                     <button
                       onClick={() => setActiveWorkspaceId(w.id)}
-                      className="rounded-xl border border-white/10 bg-white/10 px-4 py-2 text-xs text-white hover:bg-white/15 disabled:opacity-60"
+                      className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs border border-white/10"
                       disabled={busy}
                     >
                       Usar
@@ -321,7 +330,7 @@ export default function WorkspacesSettingsPage() {
                         setRenameId(w.id);
                         setRenameName(w.name);
                       }}
-                      className="rounded-xl border border-white/10 bg-white/10 px-4 py-2 text-xs text-white hover:bg-white/15 disabled:opacity-60"
+                      className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs border border-white/10"
                       disabled={busy}
                     >
                       Renombrar
@@ -329,7 +338,7 @@ export default function WorkspacesSettingsPage() {
 
                     <button
                       onClick={() => setDeleteId(w.id)}
-                      className="rounded-xl border border-red-300/20 bg-red-500/10 px-4 py-2 text-xs text-red-200 hover:bg-red-500/15 disabled:opacity-60"
+                      className="px-4 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/15 text-red-200 text-xs border border-red-300/20"
                       disabled={busy || w.role !== 'owner'}
                       title={w.role !== 'owner' ? 'Solo owner puede borrar' : 'Borrar workspace'}
                     >
@@ -345,35 +354,53 @@ export default function WorkspacesSettingsPage() {
 
       {/* Modal rename */}
       {renameId ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="card-glass w-full max-w-lg rounded-2xl border border-white/10 bg-white/5 p-6">
-            <div className="text-lg font-semibold text-white">Renombrar workspace</div>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-[6px] flex items-center justify-center p-4 z-[99]">
+          <div className="w-full max-w-[560px] card-glass rounded-2xl border border-white/10 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-lg font-semibold text-white">Renombrar workspace</p>
+                <p className="mt-2 text-sm text-white/70">Cambia el nombre visible del workspace.</p>
+              </div>
 
-            <div className="mt-4">
-              <input
-                value={renameName}
-                onChange={(e) => setRenameName(e.target.value)}
-                className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white/90 outline-none focus:border-indigo-400/50"
-              />
-            </div>
-
-            <div className="mt-6 flex justify-end gap-3">
               <button
-                className="rounded-xl border border-white/10 bg-white/10 px-5 py-2.5 text-sm text-white hover:bg-white/15 disabled:opacity-60"
+                type="button"
                 onClick={() => {
                   setRenameId(null);
                   setRenameName('');
                 }}
                 disabled={busy}
+                className={cx(
+                  'rounded-xl border px-3 py-2 text-sm transition',
+                  busy
+                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10'
+                )}
               >
-                Cancelar
+                Cerrar
               </button>
+            </div>
+
+            <div className="mt-4">
+              <input
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 outline-none focus:border-indigo-400/50"
+              />
+            </div>
+
+            <div className="mt-5 flex items-center justify-center">
               <button
-                className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-5 py-2.5 text-sm font-medium text-indigo-200 hover:bg-indigo-500/15 disabled:opacity-60"
+                type="button"
                 onClick={() => void renameWorkspace()}
                 disabled={busy}
+                className={cx(
+                  'rounded-xl border px-4 py-2 text-sm transition',
+                  busy
+                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
+                )}
               >
-                Guardar
+                {busy ? 'Guardando…' : 'Guardar'}
               </button>
             </div>
           </div>
@@ -382,27 +409,58 @@ export default function WorkspacesSettingsPage() {
 
       {/* Modal delete */}
       {deleteId ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="card-glass w-full max-w-lg rounded-2xl border border-white/10 bg-white/5 p-6">
-            <div className="text-lg font-semibold text-white">Borrar workspace</div>
-            <div className="mt-2 text-sm text-white/70">
-              Esta acción es irreversible. Se eliminará el workspace y sus memberships.
-            </div>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-[6px] flex items-center justify-center p-4 z-[99]">
+          <div className="w-full max-w-[560px] card-glass rounded-2xl border border-white/10 p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-lg font-semibold text-white">Borrar workspace</p>
+                <p className="mt-2 text-sm text-white/70">
+                  Esta acción es irreversible. Se eliminará el workspace y sus memberships.
+                </p>
+              </div>
 
-            <div className="mt-6 flex justify-end gap-3">
               <button
-                className="rounded-xl border border-white/10 bg-white/10 px-5 py-2.5 text-sm text-white hover:bg-white/15 disabled:opacity-60"
+                type="button"
                 onClick={() => setDeleteId(null)}
                 disabled={busy}
+                className={cx(
+                  'rounded-xl border px-3 py-2 text-sm transition',
+                  busy
+                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10'
+                )}
               >
-                Cancelar
+                Cerrar
               </button>
+            </div>
+
+            <div className="mt-5 flex items-center justify-center gap-2">
               <button
-                className="rounded-xl border border-red-300/20 bg-red-500/10 px-5 py-2.5 text-sm font-medium text-red-200 hover:bg-red-500/15 disabled:opacity-60"
+                type="button"
+                onClick={() => setDeleteId(null)}
+                disabled={busy}
+                className={cx(
+                  'rounded-xl border px-4 py-2 text-sm transition',
+                  busy
+                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+                )}
+              >
+                Volver
+              </button>
+
+              <button
+                type="button"
                 onClick={() => void deleteWorkspace()}
                 disabled={busy}
+                className={cx(
+                  'rounded-xl border px-4 py-2 text-sm transition',
+                  busy
+                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    : 'border-red-400/30 bg-red-500/10 text-red-200 hover:bg-red-500/15'
+                )}
               >
-                Sí, borrar
+                {busy ? 'Borrando…' : 'Sí, borrar'}
               </button>
             </div>
           </div>
