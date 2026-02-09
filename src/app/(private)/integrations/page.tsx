@@ -7,11 +7,13 @@ import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
 type ProviderKey = 'meta';
 
+type IntegrationStatus = 'draft' | 'connected' | 'error';
+
 type IntegrationItem = {
   id: string;
   provider: ProviderKey;
   name: string;
-  status: 'draft' | 'connected' | 'error';
+  status: IntegrationStatus;
   created_at: string;
 };
 
@@ -51,7 +53,7 @@ function getProvider(v: unknown): ProviderKey | null {
   return p === 'meta' ? 'meta' : null;
 }
 
-function getStatus(v: unknown): IntegrationItem['status'] {
+function getStatus(v: unknown): IntegrationStatus {
   if (!isRecord(v)) return 'draft';
   const s = v['status'];
   return s === 'connected' || s === 'error' || s === 'draft' ? s : 'draft';
@@ -74,6 +76,10 @@ async function safeJson(res: Response): Promise<unknown> {
     return { _nonJson: true, text };
   }
 }
+
+/* =======================
+   Modal: Info
+======================= */
 
 type InfoModalProps = {
   open: boolean;
@@ -119,24 +125,33 @@ function InfoModal(props: InfoModalProps) {
   );
 }
 
-type ProviderPickerModalProps = {
+/* =======================
+   Modal: Create Wizard (GHL style)
+======================= */
+
+type CreateWizardModalProps = {
   open: boolean;
+  provider: ProviderDef | null;
   busy: boolean;
+  name: string;
+  setName: (v: string) => void;
   onClose: () => void;
-  onPick: (p: ProviderKey) => void;
+  onCreate: () => void;
 };
 
-function ProviderPickerModal(props: ProviderPickerModalProps) {
-  if (!props.open) return null;
+function CreateWizardModal(props: CreateWizardModalProps) {
+  if (!props.open || !props.provider) return null;
+
+  const canCreate = !props.busy && props.name.trim().length > 0;
 
   return (
     <div className="fixed inset-0 z-[99] flex items-center justify-center bg-black/60 backdrop-blur-[6px] p-4">
       <div className="w-full max-w-[620px] card-glass rounded-2xl border border-white/10 p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-lg font-semibold text-white">Elegir proveedor</p>
+            <p className="text-lg font-semibold text-white">Crear integración</p>
             <p className="mt-1 text-sm text-white/70">
-              Selecciona la plataforma que quieres conectar. Luego crearás la instancia y harás OAuth en su pantalla.
+              {props.provider.title} · {props.provider.badge}
             </p>
           </div>
 
@@ -155,31 +170,57 @@ function ProviderPickerModal(props: ProviderPickerModalProps) {
           </button>
         </div>
 
-        <div className="mt-4 space-y-2">
-          {PROVIDERS.map((p) => (
-            <button
-              key={p.key}
-              type="button"
-              onClick={() => props.onPick(p.key)}
-              disabled={props.busy}
-              className={cx(
-                'w-full rounded-2xl border p-4 text-left transition',
-                props.busy
-                  ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
-                  : 'border-white/10 bg-white/5 hover:bg-white/10'
-              )}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-white">{p.title}</div>
-                  <div className="text-xs text-white/60 mt-1">{p.subtitle}</div>
-                </div>
-                <span className="shrink-0 rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-200">
-                  {p.badge}
-                </span>
-              </div>
-            </button>
-          ))}
+        <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+          <p className="text-sm text-white/90 font-semibold">{props.provider.title}</p>
+          <p className="mt-1 text-xs text-white/60">{props.provider.subtitle}</p>
+        </div>
+
+        <div className="mt-4">
+          <p className="text-xs text-white/60 mb-1">Nombre de la integración</p>
+          <input
+            value={props.name}
+            onChange={(e) => props.setName(e.target.value)}
+            placeholder="Ej: Meta Clínica Ana · Campaña Febrero"
+            className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 placeholder:text-white/40 outline-none focus:border-indigo-400/50"
+          />
+          <p className="mt-2 text-xs text-white/50">
+            Consejo: usa un nombre que te ayude a distinguir “cuenta / clínica / campaña”.
+          </p>
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={props.onClose}
+            disabled={props.busy}
+            className={cx(
+              'rounded-xl border px-4 py-2 text-sm transition',
+              props.busy
+                ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+            )}
+          >
+            Cancelar
+          </button>
+
+          {/* ✅ mismo estilo que “+ Nueva campaña” */}
+          <button
+            type="button"
+            onClick={props.onCreate}
+            disabled={!canCreate}
+            className={cx(
+              'inline-flex items-center rounded-xl border px-4 py-2 text-sm transition',
+              !canCreate
+                ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
+            )}
+          >
+            {props.busy ? 'Creando…' : '+ Crear integración'}
+          </button>
+        </div>
+
+        <div className="mt-4 text-xs text-white/45">
+          Después de crearla, entrarás a “Configurar” para hacer OAuth y el mapping de campos.
         </div>
       </div>
     </div>
@@ -193,12 +234,12 @@ export default function IntegracionesPage() {
 
   const [items, setItems] = useState<IntegrationItem[]>([]);
 
-  // ✅ importante: NO preseleccionamos provider
-  const [provider, setProvider] = useState<ProviderKey | null>(null);
-  const [providerOpen, setProviderOpen] = useState<boolean>(false);
+  // Wizard modal state
+  const [wizardOpen, setWizardOpen] = useState<boolean>(false);
+  const [wizardProvider, setWizardProvider] = useState<ProviderDef | null>(null);
+  const [wizardName, setWizardName] = useState<string>('');
 
-  const [name, setName] = useState<string>('');
-
+  // info modal
   const [infoOpen, setInfoOpen] = useState<boolean>(false);
   const [infoTitle, setInfoTitle] = useState<string>('Listo');
   const [infoDesc, setInfoDesc] = useState<string>('');
@@ -236,9 +277,7 @@ export default function IntegracionesPage() {
       const raw = await safeJson(res);
       if (!res.ok) {
         const msg =
-          isRecord(raw) && typeof raw['error'] === 'string'
-            ? String(raw['error'])
-            : `Respuesta inválida (${res.status})`;
+          isRecord(raw) && typeof raw['error'] === 'string' ? String(raw['error']) : `Respuesta inválida (${res.status})`;
         setError(msg);
         setItems([]);
         setLoading(false);
@@ -277,20 +316,19 @@ export default function IntegracionesPage() {
     void load();
   }, [load]);
 
-  const canCreate = !busy && !loading && provider !== null && name.trim().length > 0;
+  const openWizard = useCallback((p: ProviderDef) => {
+    setWizardProvider(p);
+    setWizardName('');
+    setWizardOpen(true);
+  }, []);
 
   const createIntegration = useCallback(async () => {
     if (busy) return;
 
-    const nm = name.trim();
+    const nm = wizardName.trim();
     if (!nm) return;
 
-    if (!provider) {
-      setInfoTitle('Falta proveedor');
-      setInfoDesc('Selecciona un proveedor antes de crear la integración.');
-      setInfoOpen(true);
-      return;
-    }
+    if (!wizardProvider) return;
 
     const token = await getAccessToken();
     if (!token) {
@@ -318,7 +356,7 @@ export default function IntegracionesPage() {
           'content-type': 'application/json',
           'x-workspace-id': workspaceId,
         },
-        body: JSON.stringify({ provider, name: nm }),
+        body: JSON.stringify({ provider: wizardProvider.key, name: nm }),
       });
 
       const raw = await safeJson(res);
@@ -331,8 +369,10 @@ export default function IntegracionesPage() {
         return;
       }
 
-      setName('');
-      setProvider(null);
+      setWizardOpen(false);
+      setWizardProvider(null);
+      setWizardName('');
+
       setInfoTitle('Integración creada');
       setInfoDesc('Ahora puedes entrar a “Configurar” para conectar con OAuth.');
       setInfoOpen(true);
@@ -345,7 +385,7 @@ export default function IntegracionesPage() {
       setInfoDesc(e instanceof Error ? e.message : 'Error desconocido');
       setInfoOpen(true);
     }
-  }, [busy, load, name, provider, workspaceId]);
+  }, [busy, load, wizardName, wizardProvider, workspaceId]);
 
   return (
     <div className="container-default py-8 text-white">
@@ -368,107 +408,43 @@ export default function IntegracionesPage() {
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-white">Nueva integración</h2>
-              <p className="text-sm text-white/70">Crea una conexión y luego haz OAuth.</p>
+              <p className="text-sm text-white/70">Elige una plataforma y sigue el asistente.</p>
             </div>
             <span className="rounded-full bg-indigo-500/20 px-3 py-1 text-xs font-medium text-indigo-200">Setup</span>
           </div>
 
-          <div className="mt-4">
-            <p className="text-xs text-white/60 mb-2">Proveedor</p>
+          <p className="text-xs text-white/60 mb-2">Plataformas</p>
 
-            {provider ? (
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-white truncate">
-                    {PROVIDERS.find((p) => p.key === provider)?.title ?? provider}
-                  </div>
-                  <div className="text-xs text-white/60">
-                    {PROVIDERS.find((p) => p.key === provider)?.subtitle ?? ''}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-200">
-                    {PROVIDERS.find((p) => p.key === provider)?.badge ?? 'Setup'}
-                  </span>
-
-                  <button
-                    type="button"
-                    onClick={() => setProviderOpen(true)}
-                    disabled={busy}
-                    className={cx(
-                      'rounded-xl border px-3 py-2 text-xs transition',
-                      busy
-                        ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
-                        : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
-                    )}
-                  >
-                    Cambiar
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setProvider(null)}
-                    disabled={busy}
-                    className={cx(
-                      'rounded-xl border px-3 py-2 text-xs transition',
-                      busy
-                        ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
-                        : 'border-red-400/20 bg-red-500/10 text-red-200 hover:bg-red-500/15'
-                    )}
-                  >
-                    Quitar
-                  </button>
-                </div>
-              </div>
-            ) : (
+          <div className="space-y-2">
+            {PROVIDERS.map((p) => (
               <button
+                key={p.key}
                 type="button"
-                onClick={() => setProviderOpen(true)}
+                onClick={() => openWizard(p)}
                 disabled={busy}
                 className={cx(
-                  'w-full rounded-2xl border p-3 text-left transition',
+                  'w-full rounded-2xl border p-4 text-left transition',
                   busy
-                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
-                    : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
-                )}
-              >
-                <div className="text-sm font-semibold text-white/90">Elegir proveedor</div>
-                <div className="text-xs text-white/60 mt-1">
-                  Selecciona qué plataforma quieres conectar (Meta hoy; más después).
-                </div>
-              </button>
-            )}
-
-            <p className="text-xs text-white/60 mt-4 mb-2">Nombre de la integración</p>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Ej: Meta de Clínica Ana / Campaña Febrero"
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/90 placeholder:text-white/40 outline-none focus:border-indigo-400/50"
-            />
-
-            <div className="mt-4 flex items-center justify-end">
-              {/* ✅ botón estilo “+ Nueva campaña” */}
-              <button
-                type="button"
-                onClick={() => void createIntegration()}
-                disabled={!canCreate}
-                className={cx(
-                  'inline-flex items-center rounded-xl border px-4 py-2 text-sm transition',
-                  !canCreate
                     ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
                     : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
                 )}
               >
-                {busy ? 'Creando…' : '+ Crear integración'}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold truncate">{p.title}</div>
+                    <div className="text-xs text-white/70 mt-1">{p.subtitle}</div>
+                  </div>
+                  <span className="shrink-0 rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-200">
+                    {p.badge}
+                  </span>
+                </div>
               </button>
-            </div>
-
-            <p className="mt-4 text-xs text-white/45">
-              Aquí solo creas la instancia. La configuración (OAuth + mapping) vive dentro de su pantalla.
-            </p>
+            ))}
           </div>
+
+          <p className="mt-4 text-xs text-white/45">
+            El asistente crea la instancia. La pantalla “Configurar” hará OAuth + mapping.
+          </p>
         </div>
 
         {/* Lista (2/3) */}
@@ -527,14 +503,16 @@ export default function IntegracionesPage() {
         </div>
       </div>
 
-      <ProviderPickerModal
-        open={providerOpen}
+      <CreateWizardModal
+        open={wizardOpen}
+        provider={wizardProvider}
         busy={busy}
-        onClose={() => setProviderOpen(false)}
-        onPick={(p) => {
-          setProvider(p);
-          setProviderOpen(false);
+        name={wizardName}
+        setName={setWizardName}
+        onClose={() => {
+          if (!busy) setWizardOpen(false);
         }}
+        onCreate={() => void createIntegration()}
       />
 
       <InfoModal open={infoOpen} title={infoTitle} description={infoDesc} onClose={() => setInfoOpen(false)} />
