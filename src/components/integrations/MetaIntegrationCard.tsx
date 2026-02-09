@@ -1,0 +1,271 @@
+'use client';
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { supabase } from '@/lib/supabaseClient';
+
+type MetaStatusResp =
+  | {
+      exists: false;
+      status: 'disconnected';
+      config: { step: null; page_id: null; page_name: null };
+    }
+  | {
+      exists: true;
+      id: string;
+      status: string;
+      connected_at: string | null;
+      updated_at: string | null;
+      config: { step: string | null; page_id: string | null; page_name: string | null };
+    };
+
+type MetaPage = { id: string; name: string };
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+function getString(v: unknown): string | null {
+  return typeof v === 'string' ? v : null;
+}
+
+function getPagesFromJson(v: unknown): MetaPage[] {
+  if (!isRecord(v)) return [];
+  const pages = v.pages;
+  if (!Array.isArray(pages)) return [];
+  const out: MetaPage[] = [];
+  for (const p of pages) {
+    if (!isRecord(p)) continue;
+    const id = getString(p.id);
+    const name = getString(p.name);
+    if (id && name) out.push({ id, name });
+  }
+  return out;
+}
+
+export default function MetaIntegrationCard(props: { workspaceId: string }) {
+
+  const { workspaceId } = props;
+
+  const [loading, setLoading] = useState<boolean>(true);
+  const [status, setStatus] = useState<MetaStatusResp | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [pages, setPages] = useState<MetaPage[]>([]);
+  const [selectedPageId, setSelectedPageId] = useState<string>('');
+
+  const fetchStatus = useCallback(async (): Promise<void> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error('No session token');
+
+      const res = await fetch('/api/integrations/meta/status', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'x-workspace-id': workspaceId,
+        },
+      });
+
+      const json: unknown = await res.json();
+      if (!res.ok) {
+        const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to load status';
+        throw new Error(msg);
+      }
+
+      setStatus(json as MetaStatusResp);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Unknown error');
+      setStatus(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    void fetchStatus();
+  }, [fetchStatus]);
+
+  const handleConnect = useCallback(async (): Promise<void> => {
+    setError(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error('No session token');
+
+      const res = await fetch('/api/integrations/meta/start', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'x-workspace-id': workspaceId,
+        },
+      });
+
+      const json: unknown = await res.json();
+      const url = isRecord(json) ? getString(json.url) : null;
+      if (!res.ok || !url) throw new Error('Failed to start Meta OAuth');
+
+      window.location.href = url;
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Unknown error');
+    }
+  }, [workspaceId]);
+
+  const handleLoadPages = useCallback(async (): Promise<void> => {
+    setError(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error('No session token');
+
+      const res = await fetch('/api/integrations/meta/pages', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'x-workspace-id': workspaceId,
+        },
+      });
+
+      const json: unknown = await res.json();
+      if (!res.ok) {
+        const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to list pages';
+        throw new Error(msg);
+      }
+
+      const p = getPagesFromJson(json);
+      setPages(p);
+      if (p.length > 0) setSelectedPageId(p[0].id);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Unknown error');
+      setPages([]);
+    }
+  }, [workspaceId]);
+
+  const handleSavePage = useCallback(async (): Promise<void> => {
+    setError(null);
+    try {
+      const page = pages.find((p) => p.id === selectedPageId) ?? null;
+      if (!page) throw new Error('Select a page');
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error('No session token');
+
+      const res = await fetch('/api/integrations/meta/connect', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'x-workspace-id': workspaceId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ page_id: page.id, page_name: page.name }),
+      });
+
+      const json: unknown = await res.json();
+      if (!res.ok) {
+        const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to connect page';
+        throw new Error(msg);
+      }
+
+      await fetchStatus();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Unknown error');
+    }
+  }, [workspaceId, pages, selectedPageId, fetchStatus]);
+
+  const view = useMemo(() => {
+    if (!status) return { state: 'unknown' as const };
+    if (!status.exists) return { state: 'disconnected' as const };
+    const step = status.config.step;
+    const isConnected = status.status === 'connected' && !!status.config.page_id;
+    if (isConnected) return { state: 'connected' as const };
+    if (step === 'page_select') return { state: 'needs_page' as const };
+    // fallback
+    return { state: 'pending' as const };
+  }, [status]);
+
+  return (
+    <div className="card-glass rounded-2xl p-5 border border-white/10 bg-white/5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-lg font-semibold text-white">Meta Lead Ads</div>
+          <div className="text-sm text-white/70 mt-1">
+            Conecta una Facebook Page y recibe leads en tiempo real.
+          </div>
+        </div>
+
+        <div className="text-xs px-2 py-1 rounded-full border border-white/10 bg-white/5 text-white/80">
+          {loading ? 'Cargando…' : view.state}
+        </div>
+      </div>
+
+      {error ? (
+        <div className="mt-4 text-sm text-red-200 bg-red-500/10 border border-red-300/20 rounded-xl p-3">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="mt-5 flex flex-wrap items-center gap-3">
+        {view.state === 'disconnected' ? (
+          <button
+            onClick={() => void handleConnect()}
+            className="px-4 py-2 rounded-xl bg-indigo-600/90 hover:bg-indigo-600 text-white text-sm font-medium border border-white/10"
+          >
+            Conectar Meta
+          </button>
+        ) : null}
+
+        {view.state === 'needs_page' || view.state === 'pending' ? (
+          <>
+            <button
+              onClick={() => void handleLoadPages()}
+              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-sm font-medium border border-white/10"
+            >
+              Cargar Pages
+            </button>
+
+            {pages.length > 0 ? (
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedPageId}
+                  onChange={(e) => setSelectedPageId(e.target.value)}
+                  className="px-3 py-2 rounded-xl bg-black/30 text-white text-sm border border-white/10"
+                >
+                  {pages.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={() => void handleSavePage()}
+                  className="px-4 py-2 rounded-xl bg-emerald-600/90 hover:bg-emerald-600 text-white text-sm font-medium border border-white/10"
+                >
+                  Guardar Page
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
+        {view.state === 'connected' && status && status.exists ? (
+          <div className="text-sm text-white/80">
+            ✅ Conectado: <span className="text-white">{status.config.page_name ?? 'Page'}</span>
+          </div>
+        ) : null}
+
+        <button
+          onClick={() => void fetchStatus()}
+          className="ml-auto px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-sm border border-white/10"
+        >
+          Refrescar
+        </button>
+      </div>
+
+      <div className="mt-4 text-xs text-white/50">
+        Nota: si la UI de Meta no muestra “leadgen”, no pasa nada. La suscripción real se activa al “Guardar Page”.
+      </div>
+    </div>
+  );
+}

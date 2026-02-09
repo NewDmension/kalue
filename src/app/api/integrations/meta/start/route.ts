@@ -128,7 +128,8 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     // 5) Redirect a Meta OAuth
     const url = buildMetaOAuthUrl({ appId: metaAppId, redirectUri, state });
-    return NextResponse.redirect(url);
+return NextResponse.json({ url });
+
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
     return NextResponse.json({ error: message }, { status: 400 });

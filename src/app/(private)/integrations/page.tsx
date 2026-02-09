@@ -1,8 +1,11 @@
+import MetaIntegrationCard from '@/components/integrations/MetaIntegrationCard';
+
 export default function IntegrationsPage() {
+  const workspaceId = 'PON_AQUI_EL_WORKSPACE_ID_DEL_CONTEXT'; // lo coges de tu context real
+
   return (
-    <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
-      <h1 className="text-2xl font-semibold">Integrations</h1>
-      <p className="mt-2 text-sm text-white/70">Meta, IG, Email, Webhooks, GHL…</p>
+    <div className="p-6">
+      <MetaIntegrationCard workspaceId={workspaceId} />
     </div>
   );
 }
