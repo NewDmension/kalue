@@ -1,18 +1,16 @@
 'use client';
 
-import React, { useMemo } from 'react';
-import { useSearchParams } from 'next/navigation';
-
+import React, { useEffect, useState } from 'react';
 import MetaIntegrationCard from '@/components/integrations/MetaIntegrationCard';
+import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
 export default function IntegrationsPage() {
-  const searchParams = useSearchParams();
+  const [workspaceId, setWorkspaceId] = useState<string>('');
 
-  // MVP: permite probar pasando ?workspaceId=UUID
-  const workspaceId = useMemo(() => {
-    const v = searchParams.get('workspaceId');
-    return typeof v === 'string' ? v : '';
-  }, [searchParams]);
+  useEffect(() => {
+    const id = getActiveWorkspaceId();
+    setWorkspaceId(id ?? '');
+  }, []);
 
   return (
     <div className="p-6">
@@ -20,11 +18,7 @@ export default function IntegrationsPage() {
         <div className="card-glass rounded-2xl p-5 border border-white/10 bg-white/5 text-white/80">
           <div className="text-lg font-semibold text-white">Integraciones</div>
           <div className="mt-2 text-sm text-white/70">
-            Falta <span className="text-white">workspaceId</span>.
-            <br />
-            Para probar el MVP, abre esta página con:
-            <br />
-            <span className="font-mono text-white/90">/integrations?workspaceId=TU_UUID</span>
+            No hay workspace activo. Ve a <span className="text-white">Settings → Workspaces</span> y selecciona uno.
           </div>
         </div>
       ) : (
