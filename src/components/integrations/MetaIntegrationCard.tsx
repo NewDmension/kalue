@@ -43,8 +43,9 @@ function getPagesFromJson(v: unknown): MetaPage[] {
 }
 
 export default function MetaIntegrationCard(props: { workspaceId: string }) {
-
   const { workspaceId } = props;
+
+  const [accessToken, setAccessToken] = useState<string | null>(null);
 
   const [loading, setLoading] = useState<boolean>(true);
   const [status, setStatus] = useState<MetaStatusResp | null>(null);
@@ -53,17 +54,48 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
   const [pages, setPages] = useState<MetaPage[]>([]);
   const [selectedPageId, setSelectedPageId] = useState<string>('');
 
+  // 1) Cargar sesión + escuchar cambios
+  useEffect(() => {
+    let mounted = true;
+
+    const load = async (): Promise<void> => {
+      const { data } = await supabase.auth.getSession();
+      const t = data.session?.access_token ?? null;
+      if (mounted) setAccessToken(t);
+    };
+
+    void load();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAccessToken(session?.access_token ?? null);
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
   const fetchStatus = useCallback(async (): Promise<void> => {
+    // No intentamos nada si no hay sesión o workspace
+    if (!workspaceId) {
+      setError('Missing workspaceId');
+      setLoading(false);
+      return;
+    }
+    if (!accessToken) {
+      setError(null);
+      setLoading(false);
+      setStatus(null);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) throw new Error('No session token');
-
       const res = await fetch('/api/integrations/meta/status', {
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${accessToken}`,
           'x-workspace-id': workspaceId,
         },
       });
@@ -81,8 +113,9 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [workspaceId]);
+  }, [accessToken, workspaceId]);
 
+  // 2) Refrescar estado cuando haya sesión
   useEffect(() => {
     void fetchStatus();
   }, [fetchStatus]);
@@ -90,14 +123,13 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
   const handleConnect = useCallback(async (): Promise<void> => {
     setError(null);
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) throw new Error('No session token');
+      if (!accessToken) throw new Error('Login required');
+      if (!workspaceId) throw new Error('Missing workspaceId');
 
       const res = await fetch('/api/integrations/meta/start', {
         method: 'GET',
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${accessToken}`,
           'x-workspace-id': workspaceId,
         },
       });
@@ -110,18 +142,17 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unknown error');
     }
-  }, [workspaceId]);
+  }, [accessToken, workspaceId]);
 
   const handleLoadPages = useCallback(async (): Promise<void> => {
     setError(null);
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) throw new Error('No session token');
+      if (!accessToken) throw new Error('Login required');
+      if (!workspaceId) throw new Error('Missing workspaceId');
 
       const res = await fetch('/api/integrations/meta/pages', {
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${accessToken}`,
           'x-workspace-id': workspaceId,
         },
       });
@@ -139,22 +170,21 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
       setError(e instanceof Error ? e.message : 'Unknown error');
       setPages([]);
     }
-  }, [workspaceId]);
+  }, [accessToken, workspaceId]);
 
   const handleSavePage = useCallback(async (): Promise<void> => {
     setError(null);
     try {
+      if (!accessToken) throw new Error('Login required');
+      if (!workspaceId) throw new Error('Missing workspaceId');
+
       const page = pages.find((p) => p.id === selectedPageId) ?? null;
       if (!page) throw new Error('Select a page');
-
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      if (!token) throw new Error('No session token');
 
       const res = await fetch('/api/integrations/meta/connect', {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${accessToken}`,
           'x-workspace-id': workspaceId,
           'Content-Type': 'application/json',
         },
@@ -171,27 +201,25 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unknown error');
     }
-  }, [workspaceId, pages, selectedPageId, fetchStatus]);
+  }, [accessToken, workspaceId, pages, selectedPageId, fetchStatus]);
 
   const view = useMemo(() => {
+    if (!accessToken) return { state: 'login_required' as const };
     if (!status) return { state: 'unknown' as const };
     if (!status.exists) return { state: 'disconnected' as const };
     const step = status.config.step;
     const isConnected = status.status === 'connected' && !!status.config.page_id;
     if (isConnected) return { state: 'connected' as const };
     if (step === 'page_select') return { state: 'needs_page' as const };
-    // fallback
     return { state: 'pending' as const };
-  }, [status]);
+  }, [accessToken, status]);
 
   return (
     <div className="card-glass rounded-2xl p-5 border border-white/10 bg-white/5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-lg font-semibold text-white">Meta Lead Ads</div>
-          <div className="text-sm text-white/70 mt-1">
-            Conecta una Facebook Page y recibe leads en tiempo real.
-          </div>
+          <div className="text-sm text-white/70 mt-1">Conecta una Facebook Page y recibe leads en tiempo real.</div>
         </div>
 
         <div className="text-xs px-2 py-1 rounded-full border border-white/10 bg-white/5 text-white/80">
@@ -202,6 +230,12 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
       {error ? (
         <div className="mt-4 text-sm text-red-200 bg-red-500/10 border border-red-300/20 rounded-xl p-3">
           {error}
+        </div>
+      ) : null}
+
+      {view.state === 'login_required' ? (
+        <div className="mt-5 text-sm text-white/80">
+          Para conectar Meta necesitas iniciar sesión en Kalue.
         </div>
       ) : null}
 
