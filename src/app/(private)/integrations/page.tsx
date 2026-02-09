@@ -77,6 +77,27 @@ async function safeJson(res: Response): Promise<unknown> {
   }
 }
 
+function pickErrorMessage(raw: unknown, fallback: string): string {
+  if (typeof raw === 'string') return raw;
+
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    const base = typeof r.error === 'string' ? r.error : fallback;
+
+    const detail = typeof r.detail === 'string' ? r.detail : '';
+    const hint = typeof r.hint === 'string' ? r.hint : '';
+    const code = typeof r.code === 'string' ? r.code : '';
+
+    const extras = [detail && `detail: ${detail}`, hint && `hint: ${hint}`, code && `code: ${code}`]
+      .filter(Boolean)
+      .join('\n');
+
+    return extras ? `${base}\n${extras}` : base;
+  }
+
+  return fallback;
+}
+
 /* =======================
    Modal: Info
 ======================= */
@@ -203,7 +224,6 @@ function CreateWizardModal(props: CreateWizardModalProps) {
             Cancelar
           </button>
 
-          {/* ✅ mismo estilo que “+ Nueva campaña” */}
           <button
             type="button"
             onClick={props.onCreate}
@@ -225,6 +245,16 @@ function CreateWizardModal(props: CreateWizardModalProps) {
       </div>
     </div>
   );
+}
+
+function statusBadge(status: IntegrationStatus): { text: string; className: string } {
+  if (status === 'connected') {
+    return { text: 'CONNECTED', className: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200' };
+  }
+  if (status === 'error') {
+    return { text: 'ERROR', className: 'border-red-400/30 bg-red-500/10 text-red-200' };
+  }
+  return { text: 'DRAFT', className: 'border-white/15 bg-white/5 text-white/70' };
 }
 
 export default function IntegracionesPage() {
@@ -276,9 +306,7 @@ export default function IntegracionesPage() {
 
       const raw = await safeJson(res);
       if (!res.ok) {
-        const msg =
-          isRecord(raw) && typeof raw['error'] === 'string' ? String(raw['error']) : `Respuesta inválida (${res.status})`;
-        setError(msg);
+        setError(pickErrorMessage(raw, `Respuesta inválida (${res.status})`));
         setItems([]);
         setLoading(false);
         return;
@@ -316,18 +344,28 @@ export default function IntegracionesPage() {
     void load();
   }, [load]);
 
-  const openWizard = useCallback((p: ProviderDef) => {
-    setWizardProvider(p);
+  const openWizard = useCallback(
+    (p: ProviderDef) => {
+      if (busy) return;
+      setWizardProvider(p);
+      setWizardName('');
+      setWizardOpen(true);
+    },
+    [busy]
+  );
+
+  const closeWizard = useCallback(() => {
+    if (busy) return;
+    setWizardOpen(false);
+    setWizardProvider(null);
     setWizardName('');
-    setWizardOpen(true);
-  }, []);
+  }, [busy]);
 
   const createIntegration = useCallback(async () => {
     if (busy) return;
 
     const nm = wizardName.trim();
     if (!nm) return;
-
     if (!wizardProvider) return;
 
     const token = await getAccessToken();
@@ -361,17 +399,14 @@ export default function IntegracionesPage() {
 
       const raw = await safeJson(res);
       if (!res.ok) {
-        const msg = isRecord(raw) && typeof raw['error'] === 'string' ? String(raw['error']) : 'No se pudo crear';
         setInfoTitle('Error creando integración');
-        setInfoDesc(msg);
+        setInfoDesc(pickErrorMessage(raw, `No se pudo crear (${res.status})`));
         setInfoOpen(true);
         setBusy(false);
         return;
       }
 
-      setWizardOpen(false);
-      setWizardProvider(null);
-      setWizardName('');
+      closeWizard();
 
       setInfoTitle('Integración creada');
       setInfoDesc('Ahora puedes entrar a “Configurar” para conectar con OAuth.');
@@ -385,7 +420,7 @@ export default function IntegracionesPage() {
       setInfoDesc(e instanceof Error ? e.message : 'Error desconocido');
       setInfoOpen(true);
     }
-  }, [busy, load, wizardName, wizardProvider, workspaceId]);
+  }, [busy, closeWizard, load, wizardName, wizardProvider, workspaceId]);
 
   return (
     <div className="container-default py-8 text-white">
@@ -397,13 +432,13 @@ export default function IntegracionesPage() {
       </div>
 
       {error ? (
-        <div className="mb-5 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-200">
+        <div className="mb-5 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-200 whitespace-pre-line">
           {error}
         </div>
       ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* ✅ card pequeña (1/3) */}
+        {/* card pequeña (1/3) */}
         <div className="card-glass rounded-2xl border border-white/10 p-5 lg:col-span-1">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
@@ -458,7 +493,13 @@ export default function IntegracionesPage() {
             <button
               type="button"
               onClick={() => void load()}
-              className="inline-flex items-center rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10"
+              disabled={busy}
+              className={cx(
+                'inline-flex items-center rounded-xl border px-4 py-2 text-sm transition',
+                busy
+                  ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                  : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+              )}
             >
               Refrescar
             </button>
@@ -470,34 +511,41 @@ export default function IntegracionesPage() {
             <p className="text-sm text-white/60">Aún no tienes integraciones.</p>
           ) : (
             <div className="space-y-3">
-              {items.map((it) => (
-                <div key={it.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-white truncate">{it.name}</p>
-                      <p className="mt-1 text-xs text-white/60 break-all">
-                        <span className="text-white/70">Provider:</span> {it.provider} ·{' '}
-                        <span className="text-white/70">ID:</span> {it.id}
-                      </p>
+              {items.map((it) => {
+                const b = statusBadge(it.status);
+                return (
+                  <div key={it.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <p className="text-sm font-semibold text-white truncate">{it.name}</p>
+                          <span className={cx('shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
+                            {b.text}
+                          </span>
+                        </div>
 
-                      <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-white/80">
-                          status: {it.status}
-                        </span>
+                        <p className="mt-1 text-xs text-white/60 break-all">
+                          <span className="text-white/70">Provider:</span> {it.provider} ·{' '}
+                          <span className="text-white/70">ID:</span> {it.id}
+                        </p>
+
+                        {it.created_at ? (
+                          <p className="mt-1 text-xs text-white/50">Creada: {it.created_at}</p>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <Link
+                          href={`/integraciones/meta/${it.id}`}
+                          className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
+                        >
+                          Configurar →
+                        </Link>
                       </div>
                     </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      <Link
-                        href={`/integraciones/meta/${it.id}`}
-                        className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
-                      >
-                        Configurar →
-                      </Link>
-                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -509,9 +557,7 @@ export default function IntegracionesPage() {
         busy={busy}
         name={wizardName}
         setName={setWizardName}
-        onClose={() => {
-          if (!busy) setWizardOpen(false);
-        }}
+        onClose={closeWizard}
         onCreate={() => void createIntegration()}
       />
 
