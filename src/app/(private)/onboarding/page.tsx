@@ -25,14 +25,14 @@ function getString(obj: unknown, key: string): string | null {
 }
 
 function setActiveWorkspaceId(workspaceId: string): void {
-  // 🔒 No sabemos tu key final aún; guardamos en varias para facilitar el MVP
+  // 🔒 MVP: guardamos en varias keys para compatibilidad con lo que ya tengas
   try {
     localStorage.setItem('kalue:workspaceId', workspaceId);
     localStorage.setItem('kalue:activeWorkspaceId', workspaceId);
     sessionStorage.setItem('kalue:workspaceId', workspaceId);
     sessionStorage.setItem('kalue:activeWorkspaceId', workspaceId);
   } catch {
-    // ignore (SSR/blocked storage)
+    // ignore
   }
 }
 
@@ -51,6 +51,9 @@ export default function OnboardingPage() {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+
+  const [successOpen, setSuccessOpen] = useState(false);
+  const [createdWorkspaceId, setCreatedWorkspaceId] = useState<string | null>(null);
 
   async function createWorkspace() {
     if (busy) return;
@@ -72,7 +75,6 @@ export default function OnboardingPage() {
       if (userErr) throw userErr;
 
       if (!userData.user) {
-        // Login es HOME (/)
         router.push(`/?next=${encodeURIComponent('/onboarding')}`);
         router.refresh();
         return;
@@ -98,7 +100,6 @@ export default function OnboardingPage() {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        // Mandamos slug por si tu endpoint lo admite; si no, lo ignora.
         body: JSON.stringify({ name: trimmed, slug }),
       });
 
@@ -112,7 +113,7 @@ export default function OnboardingPage() {
         return;
       }
 
-      // 4) Obtener workspace id (workspace.id o data.id)
+      // 4) Obtener workspace id
       const wsId =
         (isRecord(json) && isRecord(json.workspace) && getString(json.workspace, 'id')) ||
         (isRecord(json) && getString(json, 'id')) ||
@@ -125,10 +126,16 @@ export default function OnboardingPage() {
 
       // 5) Guardar workspace activo (MVP)
       setActiveWorkspaceId(wsId);
+      setCreatedWorkspaceId(wsId);
 
-      // 6) Ir al inbox
-      router.push('/inbox');
-      router.refresh();
+      // 6) Modal éxito + navegación
+      setSuccessOpen(true);
+
+      // redirección suave (pro)
+      window.setTimeout(() => {
+        router.push('/inbox');
+        router.refresh();
+      }, 900);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unexpected error';
       setMsg(message);
@@ -202,6 +209,49 @@ export default function OnboardingPage() {
           </div>
         </div>
       </div>
+
+      {/* ✅ Modal éxito */}
+      {successOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="card-glass w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-6">
+            <div className="text-lg font-semibold text-white">Workspace creado ✅</div>
+            <div className="mt-2 text-sm text-white/70">
+              Ya puedes entrar al inbox y conectar integraciones.
+            </div>
+
+            {createdWorkspaceId ? (
+              <div className="mt-4 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-white/70">
+                <div className="text-white/50">workspaceId</div>
+                <div className="mt-1 font-mono text-white/80">{createdWorkspaceId}</div>
+              </div>
+            ) : null}
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setSuccessOpen(false);
+                }}
+                className="rounded-xl border border-white/15 bg-white/5 px-5 py-2.5 text-sm text-white/80 hover:bg-white/10"
+              >
+                Cerrar
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSuccessOpen(false);
+                  router.push('/inbox');
+                  router.refresh();
+                }}
+                className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-5 py-2.5 text-sm text-indigo-200 hover:bg-indigo-500/15"
+              >
+                Continuar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
