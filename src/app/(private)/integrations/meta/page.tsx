@@ -1,6 +1,8 @@
-import { redirect } from 'next/navigation';
-
 export default function MetaIndexPage() {
-  // Si alguna vez caes aquí, es que NO estás en /meta/[integrationId]
-  redirect('/integrations?meta_route=hit_meta_index');
+  return (
+    <div style={{ padding: 24, color: 'white' }}>
+      <h1>HIT: /integrations/meta (index)</h1>
+      <p>Si ves esto al entrar a /integrations/meta/&lt;uuid&gt;, hay un rewrite/duplicado capturando la ruta.</p>
+    </div>
+  );
 }
