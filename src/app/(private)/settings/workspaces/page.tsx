@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { supabaseBrowser } from '@/lib/supabase/client';
 import { getActiveWorkspaceId, setActiveWorkspaceId, clearActiveWorkspaceId } from '@/lib/activeWorkspace';
 
 type WorkspaceItem = {
@@ -34,17 +34,23 @@ export default function WorkspacesSettingsPage() {
   const [renameName, setRenameName] = useState<string>('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  // ✅ antes lo calculabas una vez y luego no se actualizaba
-  const [activeId, setActiveId] = useState<string | null>(() => getActiveWorkspaceId());
+  const activeId = useMemo(() => getActiveWorkspaceId(), []);
 
   const fetchList = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
 
     try {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token ?? null;
-      if (!token) throw new Error('Para ver Workspaces necesitas iniciar sesión.');
+      const supabase = supabaseBrowser();
+
+      const { data: sessionData, error: sessErr } = await supabase.auth.getSession();
+      if (sessErr) throw sessErr;
+
+      const token = sessionData.session?.access_token ?? null;
+      if (!token) {
+        setItems([]);
+        throw new Error('Para ver Workspaces necesitas iniciar sesión.');
+      }
 
       const res = await fetch('/api/workspaces/list', {
         method: 'GET',
@@ -81,14 +87,9 @@ export default function WorkspacesSettingsPage() {
 
       setItems(parsed);
 
-      // ✅ Si no hay active workspace, setear el primero
+      // Si no hay active workspace, setear el primero
       const current = getActiveWorkspaceId();
-      if (!current && parsed[0]?.id) {
-        setActiveWorkspaceId(parsed[0].id);
-        setActiveId(parsed[0].id);
-      } else {
-        setActiveId(current);
-      }
+      if (!current && parsed[0]?.id) setActiveWorkspaceId(parsed[0].id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unexpected error');
     } finally {
@@ -98,6 +99,17 @@ export default function WorkspacesSettingsPage() {
 
   useEffect(() => {
     void fetchList();
+
+    // ✅ Importante: si al cargar la página la sesión tarda en “hidratarse”,
+    // aquí volvemos a lanzar fetch cuando cambie auth state.
+    const supabase = supabaseBrowser();
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      void fetchList();
+    });
+
+    return () => {
+      sub.subscription.unsubscribe();
+    };
   }, [fetchList]);
 
   const createWorkspace = useCallback(async (): Promise<void> => {
@@ -108,9 +120,10 @@ export default function WorkspacesSettingsPage() {
     setError(null);
 
     try {
+      const supabase = supabaseBrowser();
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token ?? null;
-      if (!token) throw new Error('No session');
+      if (!token) throw new Error('Para crear un workspace necesitas iniciar sesión.');
 
       const res = await fetch('/api/workspaces/create', {
         method: 'POST',
@@ -119,7 +132,6 @@ export default function WorkspacesSettingsPage() {
       });
 
       const json: unknown = await res.json().catch(() => null);
-
       if (!res.ok) {
         const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to create workspace';
         const detail = isRecord(json) && typeof json.detail === 'string' ? json.detail : null;
@@ -127,10 +139,7 @@ export default function WorkspacesSettingsPage() {
       }
 
       const wsId = isRecord(json) && isRecord(json.workspace) ? getString(json.workspace, 'id') : null;
-      if (wsId) {
-        setActiveWorkspaceId(wsId);
-        setActiveId(wsId);
-      }
+      if (wsId) setActiveWorkspaceId(wsId);
 
       setNewName('');
       await fetchList();
@@ -150,9 +159,10 @@ export default function WorkspacesSettingsPage() {
     setError(null);
 
     try {
+      const supabase = supabaseBrowser();
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token ?? null;
-      if (!token) throw new Error('No session');
+      if (!token) throw new Error('Para renombrar un workspace necesitas iniciar sesión.');
 
       const res = await fetch('/api/workspaces/rename', {
         method: 'POST',
@@ -161,7 +171,6 @@ export default function WorkspacesSettingsPage() {
       });
 
       const json: unknown = await res.json().catch(() => null);
-
       if (!res.ok) {
         const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to rename workspace';
         const detail = isRecord(json) && typeof json.detail === 'string' ? json.detail : null;
@@ -185,9 +194,10 @@ export default function WorkspacesSettingsPage() {
     setError(null);
 
     try {
+      const supabase = supabaseBrowser();
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token ?? null;
-      if (!token) throw new Error('No session');
+      if (!token) throw new Error('Para borrar un workspace necesitas iniciar sesión.');
 
       const res = await fetch('/api/workspaces/delete', {
         method: 'POST',
@@ -196,7 +206,6 @@ export default function WorkspacesSettingsPage() {
       });
 
       const json: unknown = await res.json().catch(() => null);
-
       if (!res.ok) {
         const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to delete workspace';
         const detail = isRecord(json) && typeof json.detail === 'string' ? json.detail : null;
@@ -204,10 +213,7 @@ export default function WorkspacesSettingsPage() {
       }
 
       const current = getActiveWorkspaceId();
-      if (current === deleteId) {
-        clearActiveWorkspaceId();
-        setActiveId(null);
-      }
+      if (current === deleteId) clearActiveWorkspaceId();
 
       setDeleteId(null);
       await fetchList();
@@ -281,10 +287,7 @@ export default function WorkspacesSettingsPage() {
 
                   <div className="flex gap-2">
                     <button
-                      onClick={() => {
-                        setActiveWorkspaceId(w.id);
-                        setActiveId(w.id);
-                      }}
+                      onClick={() => setActiveWorkspaceId(w.id)}
                       className="px-4 py-2 rounded-2xl bg-white/10 hover:bg-white/15 text-white text-xs border border-white/10"
                       disabled={busy}
                     >
