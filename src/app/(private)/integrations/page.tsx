@@ -536,11 +536,12 @@ export default function IntegracionesPage() {
 
                       <div className="flex flex-wrap gap-2">
                         <Link
-                          href={`/integraciones/meta/${it.id}`}
-                          className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
-                        >
-                          Configurar →
-                        </Link>
+  href={`/integrations/meta/${it.id}`}
+  className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
+>
+  Configurar →
+</Link>
+
                       </div>
                     </div>
                   </div>
