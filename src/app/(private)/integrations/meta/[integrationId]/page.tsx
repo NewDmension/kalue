@@ -1,21 +1,36 @@
 import Link from 'next/link';
 
+type SearchParams = Record<string, string | string[] | undefined>;
+
 type PageProps = {
-  params: {
-    integrationId: string;
-  };
+  params: { integrationId?: string };
+  searchParams?: SearchParams;
 };
 
 function isUuid(v: string): boolean {
-  // UUID v1–v5
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
-export default function MetaIntegrationConfigPage({ params }: PageProps) {
-  const integrationIdRaw = typeof params?.integrationId === 'string' ? params.integrationId : '';
-  const integrationId = integrationIdRaw.trim();
+function first(v: string | string[] | undefined): string {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v) && typeof v[0] === 'string') return v[0];
+  return '';
+}
 
-  if (!integrationId || !isUuid(integrationId)) {
+export default function MetaIntegrationConfigPage({ params, searchParams }: PageProps) {
+  const fromParams = (params?.integrationId ?? '').trim();
+
+  // Fallbacks por si el Link te está enviando por query
+  const fromQuery =
+    first(searchParams?.integrationId).trim() ||
+    first(searchParams?.id).trim() ||
+    first(searchParams?.integration_id).trim();
+
+  const integrationId = fromParams || fromQuery;
+
+  const ok = integrationId.length > 0 && isUuid(integrationId);
+
+  if (!ok) {
     return (
       <div className="p-6">
         <div className="card-glass rounded-2xl border border-white/10 p-6">
@@ -33,21 +48,50 @@ export default function MetaIntegrationConfigPage({ params }: PageProps) {
             </Link>
           </div>
 
-          <div className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
-            <p className="mb-2 font-semibold text-white/80">Checklist rápido</p>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>La carpeta es exactamente <span className="font-mono">[integrationId]</span> (mismo casing).</li>
-              <li>El link usa <span className="font-mono">/integrations/meta/${'{id}'}</span> (inglés).</li>
-              <li>No hay redirects a <span className="font-mono">/integraciones/...</span> en navbar/middleware.</li>
-              <li>No tipar <span className="font-mono">params</span> como Promise.</li>
-            </ul>
+          {/* DEBUG BOX (clave) */}
+          <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <p className="text-sm font-semibold text-white/90">Debug</p>
+            <div className="mt-3 space-y-2 text-xs text-white/70">
+              <div>
+                <span className="text-white/80">params.integrationId:</span>{' '}
+                <span className="font-mono text-white/90">{fromParams || '(vacío)'}</span>
+              </div>
+              <div>
+                <span className="text-white/80">query.integrationId:</span>{' '}
+                <span className="font-mono text-white/90">{first(searchParams?.integrationId) || '(vacío)'}</span>
+              </div>
+              <div>
+                <span className="text-white/80">query.id:</span>{' '}
+                <span className="font-mono text-white/90">{first(searchParams?.id) || '(vacío)'}</span>
+              </div>
+              <div>
+                <span className="text-white/80">query.integration_id:</span>{' '}
+                <span className="font-mono text-white/90">{first(searchParams?.integration_id) || '(vacío)'}</span>
+              </div>
+              <div className="pt-2">
+                <span className="text-white/80">RAW params:</span>
+                <pre className="mt-1 overflow-auto rounded-xl border border-white/10 bg-black/30 p-3 text-[11px] text-white/80">
+                  {JSON.stringify(params ?? null, null, 2)}
+                </pre>
+              </div>
+              <div className="pt-2">
+                <span className="text-white/80">RAW searchParams:</span>
+                <pre className="mt-1 overflow-auto rounded-xl border border-white/10 bg-black/30 p-3 text-[11px] text-white/80">
+                  {JSON.stringify(searchParams ?? null, null, 2)}
+                </pre>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/60">
+            Si aquí ves el UUID en <span className="font-mono">searchParams</span> pero no en{" "}
+            <span className="font-mono">params</span>, tu Link/redirect está enviando el id como query en vez de segmento.
           </div>
         </div>
       </div>
     );
   }
 
-  // Aquí irá tu asistente real: OAuth + Pages/Forms + mapping.
   return (
     <div className="p-6">
       <div className="card-glass rounded-2xl border border-white/10 p-6">
@@ -58,7 +102,6 @@ export default function MetaIntegrationConfigPage({ params }: PageProps) {
               Integration ID: <span className="font-mono text-white/90">{integrationId}</span>
             </p>
           </div>
-
           <Link
             href="/integrations"
             className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
@@ -67,32 +110,11 @@ export default function MetaIntegrationConfigPage({ params }: PageProps) {
           </Link>
         </div>
 
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 md:col-span-2">
-            <h2 className="text-sm font-semibold text-white/90">Asistente de configuración</h2>
-            <p className="mt-2 text-sm text-white/70">
-              Paso 1: Conectar con Meta (OAuth).<br />
-              Paso 2: Seleccionar Page + Lead Form.<br />
-              Paso 3: Mapping de campos a tu modelo.
-            </p>
-
-            <div className="mt-4 flex flex-wrap gap-3">
-              <button
-                type="button"
-                className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
-              >
-                Conectar con Meta (OAuth)
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <h2 className="text-sm font-semibold text-white/90">Estado</h2>
-            <p className="mt-2 text-sm text-white/70">draft</p>
-            <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/60">
-              Este panel luego mostrará: tokens, page_id, form_id, último sync, errores.
-            </div>
-          </div>
+        <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">
+          <p className="text-sm font-semibold text-white/90">Asistente (placeholder)</p>
+          <p className="mt-2 text-sm text-white/70">
+            Paso 1: OAuth Meta · Paso 2: Selección Page/Form · Paso 3: Mapping
+          </p>
         </div>
       </div>
     </div>
