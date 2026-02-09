@@ -14,6 +14,36 @@ function slugify(input: string): string {
     .slice(0, 48);
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+function getString(obj: unknown, key: string): string | null {
+  if (!isRecord(obj)) return null;
+  const v = obj[key];
+  return typeof v === 'string' ? v : null;
+}
+
+function setActiveWorkspaceId(workspaceId: string): void {
+  // 🔒 No sabemos tu key final aún; guardamos en varias para facilitar el MVP
+  try {
+    localStorage.setItem('kalue:workspaceId', workspaceId);
+    localStorage.setItem('kalue:activeWorkspaceId', workspaceId);
+    sessionStorage.setItem('kalue:workspaceId', workspaceId);
+    sessionStorage.setItem('kalue:activeWorkspaceId', workspaceId);
+  } catch {
+    // ignore (SSR/blocked storage)
+  }
+}
+
+type CreateWorkspaceResponse = {
+  workspace?: {
+    id?: string;
+  };
+  error?: string;
+  detail?: string;
+};
+
 export default function OnboardingPage() {
   const t = useTranslations('onboarding');
   const router = useRouter();
@@ -37,6 +67,7 @@ export default function OnboardingPage() {
     const supabase = supabaseBrowser();
 
     try {
+      // 1) Asegurar sesión
       const { data: userData, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
 
@@ -47,25 +78,55 @@ export default function OnboardingPage() {
         return;
       }
 
+      // 2) Sacar access_token para Authorization: Bearer
+      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      if (sessionErr) throw sessionErr;
+
+      const token = sessionData.session?.access_token ?? null;
+      if (!token) {
+        router.push(`/?next=${encodeURIComponent('/onboarding')}`);
+        router.refresh();
+        return;
+      }
+
       const slug = slugify(trimmed) || `ws-${userData.user.id.slice(0, 8)}`;
 
-      // 1) crear workspace
-      const { data: ws, error: wsErr } = await supabase
-        .from('workspaces')
-        .insert([{ name: trimmed, slug, created_by: userData.user.id }])
-        .select('id')
-        .single();
+      // 3) Crear workspace via API (server-side)
+      const res = await fetch('/api/workspaces/create', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        // Mandamos slug por si tu endpoint lo admite; si no, lo ignora.
+        body: JSON.stringify({ name: trimmed, slug }),
+      });
 
-      if (wsErr) throw wsErr;
-      if (!ws?.id) throw new Error(t('form.errorCreateWorkspace'));
+      const json: unknown = await res.json().catch(() => null);
 
-      // 2) crear membership owner
-      const { error: mErr } = await supabase.from('workspace_members').insert([
-        { workspace_id: ws.id, user_id: userData.user.id, role: 'owner' },
-      ]);
+      if (!res.ok) {
+        const api = isRecord(json) ? (json as CreateWorkspaceResponse) : null;
+        const errText = api?.error ?? 'Unexpected error';
+        const detail = api?.detail ?? null;
+        setMsg(detail ? `${errText} — ${detail}` : errText);
+        return;
+      }
 
-      if (mErr) throw mErr;
+      // 4) Obtener workspace id (workspace.id o data.id)
+      const wsId =
+        (isRecord(json) && isRecord(json.workspace) && getString(json.workspace, 'id')) ||
+        (isRecord(json) && getString(json, 'id')) ||
+        null;
 
+      if (!wsId) {
+        setMsg(t('form.errorCreateWorkspace'));
+        return;
+      }
+
+      // 5) Guardar workspace activo (MVP)
+      setActiveWorkspaceId(wsId);
+
+      // 6) Ir al inbox
       router.push('/inbox');
       router.refresh();
     } catch (err: unknown) {
