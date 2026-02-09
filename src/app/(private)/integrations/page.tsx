@@ -15,6 +15,22 @@ type IntegrationItem = {
   created_at: string;
 };
 
+type ProviderDef = {
+  key: ProviderKey;
+  title: string;
+  subtitle: string;
+  badge: string;
+};
+
+const PROVIDERS: ProviderDef[] = [
+  {
+    key: 'meta',
+    title: 'Meta Lead Ads',
+    subtitle: 'Conecta Facebook Page / Forms y recibe leads.',
+    badge: 'OAuth',
+  },
+];
+
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
@@ -103,13 +119,84 @@ function InfoModal(props: InfoModalProps) {
   );
 }
 
+type ProviderPickerModalProps = {
+  open: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onPick: (p: ProviderKey) => void;
+};
+
+function ProviderPickerModal(props: ProviderPickerModalProps) {
+  if (!props.open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[99] flex items-center justify-center bg-black/60 backdrop-blur-[6px] p-4">
+      <div className="w-full max-w-[620px] card-glass rounded-2xl border border-white/10 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-lg font-semibold text-white">Elegir proveedor</p>
+            <p className="mt-1 text-sm text-white/70">
+              Selecciona la plataforma que quieres conectar. Luego crearás la instancia y harás OAuth en su pantalla.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={props.onClose}
+            disabled={props.busy}
+            className={cx(
+              'rounded-xl border px-3 py-2 text-sm transition',
+              props.busy
+                ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10'
+            )}
+          >
+            Cerrar
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {PROVIDERS.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              onClick={() => props.onPick(p.key)}
+              disabled={props.busy}
+              className={cx(
+                'w-full rounded-2xl border p-4 text-left transition',
+                props.busy
+                  ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                  : 'border-white/10 bg-white/5 hover:bg-white/10'
+              )}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-white">{p.title}</div>
+                  <div className="text-xs text-white/60 mt-1">{p.subtitle}</div>
+                </div>
+                <span className="shrink-0 rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-200">
+                  {p.badge}
+                </span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function IntegracionesPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const [items, setItems] = useState<IntegrationItem[]>([]);
-  const [provider, setProvider] = useState<ProviderKey>('meta');
+
+  // ✅ importante: NO preseleccionamos provider
+  const [provider, setProvider] = useState<ProviderKey | null>(null);
+  const [providerOpen, setProviderOpen] = useState<boolean>(false);
+
   const [name, setName] = useState<string>('');
 
   const [infoOpen, setInfoOpen] = useState<boolean>(false);
@@ -190,10 +277,20 @@ export default function IntegracionesPage() {
     void load();
   }, [load]);
 
+  const canCreate = !busy && !loading && provider !== null && name.trim().length > 0;
+
   const createIntegration = useCallback(async () => {
     if (busy) return;
+
     const nm = name.trim();
     if (!nm) return;
+
+    if (!provider) {
+      setInfoTitle('Falta proveedor');
+      setInfoDesc('Selecciona un proveedor antes de crear la integración.');
+      setInfoOpen(true);
+      return;
+    }
 
     const token = await getAccessToken();
     if (!token) {
@@ -235,6 +332,7 @@ export default function IntegracionesPage() {
       }
 
       setName('');
+      setProvider(null);
       setInfoTitle('Integración creada');
       setInfoDesc('Ahora puedes entrar a “Configurar” para conectar con OAuth.');
       setInfoOpen(true);
@@ -259,7 +357,9 @@ export default function IntegracionesPage() {
       </div>
 
       {error ? (
-        <div className="mb-5 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-200">{error}</div>
+        <div className="mb-5 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-200">
+          {error}
+        </div>
       ) : null}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -276,18 +376,69 @@ export default function IntegracionesPage() {
           <div className="mt-4">
             <p className="text-xs text-white/60 mb-2">Proveedor</p>
 
-            {/* Por ahora SOLO Meta (sin GHL) */}
-            <button
-              type="button"
-              className="w-full rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-3 text-left text-sm text-indigo-200 hover:bg-indigo-500/15"
-              onClick={() => setProvider('meta')}
-            >
-              <div className="flex items-center justify-between">
-                <span className="font-semibold">Meta Lead Ads</span>
-                <span className="text-xs text-indigo-200/70">OAuth</span>
+            {provider ? (
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-3 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-white truncate">
+                    {PROVIDERS.find((p) => p.key === provider)?.title ?? provider}
+                  </div>
+                  <div className="text-xs text-white/60">
+                    {PROVIDERS.find((p) => p.key === provider)?.subtitle ?? ''}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-xs text-indigo-200">
+                    {PROVIDERS.find((p) => p.key === provider)?.badge ?? 'Setup'}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => setProviderOpen(true)}
+                    disabled={busy}
+                    className={cx(
+                      'rounded-xl border px-3 py-2 text-xs transition',
+                      busy
+                        ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                        : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+                    )}
+                  >
+                    Cambiar
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setProvider(null)}
+                    disabled={busy}
+                    className={cx(
+                      'rounded-xl border px-3 py-2 text-xs transition',
+                      busy
+                        ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                        : 'border-red-400/20 bg-red-500/10 text-red-200 hover:bg-red-500/15'
+                    )}
+                  >
+                    Quitar
+                  </button>
+                </div>
               </div>
-              <p className="mt-1 text-xs text-white/60">Conecta Facebook Page / Forms y recibe leads.</p>
-            </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setProviderOpen(true)}
+                disabled={busy}
+                className={cx(
+                  'w-full rounded-2xl border p-3 text-left transition',
+                  busy
+                    ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                    : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+                )}
+              >
+                <div className="text-sm font-semibold text-white/90">Elegir proveedor</div>
+                <div className="text-xs text-white/60 mt-1">
+                  Selecciona qué plataforma quieres conectar (Meta hoy; más después).
+                </div>
+              </button>
+            )}
 
             <p className="text-xs text-white/60 mt-4 mb-2">Nombre de la integración</p>
             <input
@@ -302,10 +453,10 @@ export default function IntegracionesPage() {
               <button
                 type="button"
                 onClick={() => void createIntegration()}
-                disabled={busy || loading || !name.trim()}
+                disabled={!canCreate}
                 className={cx(
                   'inline-flex items-center rounded-xl border px-4 py-2 text-sm transition',
-                  busy || loading || !name.trim()
+                  !canCreate
                     ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
                     : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
                 )}
@@ -352,6 +503,7 @@ export default function IntegracionesPage() {
                         <span className="text-white/70">Provider:</span> {it.provider} ·{' '}
                         <span className="text-white/70">ID:</span> {it.id}
                       </p>
+
                       <div className="mt-2 flex flex-wrap gap-2 text-xs">
                         <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-white/80">
                           status: {it.status}
@@ -374,6 +526,16 @@ export default function IntegracionesPage() {
           )}
         </div>
       </div>
+
+      <ProviderPickerModal
+        open={providerOpen}
+        busy={busy}
+        onClose={() => setProviderOpen(false)}
+        onPick={(p) => {
+          setProvider(p);
+          setProviderOpen(false);
+        }}
+      />
 
       <InfoModal open={infoOpen} title={infoTitle} description={infoDesc} onClose={() => setInfoOpen(false)} />
     </div>
