@@ -1,4 +1,4 @@
-// src/components/AppShell.tsx
+// src/components/app/AppShell.tsx
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
@@ -18,6 +18,9 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { useTranslations } from 'next-intl';
+
+// ✅ Ajusta el path si tu componente está en otro sitio
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 type Workspace = { id: string; name: string; slug: string };
 
@@ -183,15 +186,22 @@ export default function AppShell(props: {
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void signOut()}
-            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white/80 hover:bg-white/10"
-            aria-label={tNav('signOut')}
-            title={tNav('signOut')}
-          >
-            <LogOut className="h-4 w-4" />
-          </button>
+          {/* ✅ Idioma + Logout */}
+          <div className="flex items-center gap-2">
+            <div className="rounded-xl border border-white/15 bg-white/5 px-2 py-1">
+              <LanguageSwitcher />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white/80 hover:bg-white/10"
+              aria-label={tNav('signOut')}
+              title={tNav('signOut')}
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -253,16 +263,23 @@ function SidebarContent(props: {
           <p className="text-[11px] text-white/55">{tCommon('tagline')}</p>
         </div>
 
-        <button
-          type="button"
-          className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
-          title={tNav('workspaceSelectorTitle')}
-        >
-          <span className="inline-flex items-center gap-2">
-            <ChevronsUpDown className="h-4 w-4" />
-            {props.activeWorkspace?.slug ?? tNav('workspace')}
-          </span>
-        </button>
+        <div className="flex items-center gap-2">
+          {/* ✅ Selector idioma en sidebar */}
+          <div className="rounded-xl border border-white/15 bg-white/5 px-2 py-1">
+            <LanguageSwitcher />
+          </div>
+
+          <button
+            type="button"
+            className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
+            title={tNav('workspaceSelectorTitle')}
+          >
+            <span className="inline-flex items-center gap-2">
+              <ChevronsUpDown className="h-4 w-4" />
+              {props.activeWorkspace?.slug ?? tNav('workspace')}
+            </span>
+          </button>
+        </div>
       </div>
 
       <nav className="flex flex-col gap-1">
