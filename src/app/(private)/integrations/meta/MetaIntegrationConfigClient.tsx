@@ -371,27 +371,28 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </p>
               </div>
 
+              {/* ✅ Badge LIVE + botón Re-conectar (azulado) */}
               <div className="flex items-center gap-2 shrink-0">
-  <span className={cx('rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
-    {b.text}
-  </span>
+                <span className={cx('rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
+                  {b.text}
+                </span>
 
-  {isConnected ? (
-    <button
-      type="button"
-      onClick={() => void handleConnectMeta()}
-      disabled={oauthBusy}
-      className={cx(
-        'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/15 transition',
-        oauthBusy ? 'opacity-60 cursor-not-allowed' : ''
-      )}
-      title="Reautoriza Meta (útil si cambias permisos o si el token expira)"
-    >
-      {oauthBusy ? 'Conectando…' : 'Re-conectar'}
-    </button>
-  ) : null}
-</div>
-
+                {isConnected ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleConnectMeta()}
+                    disabled={oauthBusy}
+                    className={cx(
+                      // mismo estilo “azulado” que Volver
+                      'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/15 transition',
+                      oauthBusy ? 'opacity-60 cursor-not-allowed' : ''
+                    )}
+                    title="Reautoriza Meta (útil si cambias permisos o si el token expira)"
+                  >
+                    {oauthBusy ? 'Conectando…' : 'Re-conectar Meta'}
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             {/* Paso 1: OAuth */}
@@ -400,7 +401,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               <p className="mt-1 text-xs text-white/60">Paso 1 de 4 · Conectar con Meta mediante OAuth.</p>
 
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                {/* ✅ SIEMPRE visible: Conectar / Re-conectar */}
+                {/* ✅ Siempre visible: Conectar / Re-conectar */}
                 <button
                   type="button"
                   onClick={() => void handleConnectMeta()}
@@ -410,7 +411,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                     oauthBusy
                       ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
                       : isConnected
-                        ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
+                        ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
                         : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
                   )}
                 >
@@ -418,7 +419,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </button>
 
                 <div className="text-xs text-white/45">
-                  {isConnected ? 'Si quieres reautorizar permisos o refrescar token, reconecta.' : 'Se guardará la conexión para este workspace.'}
+                  {isConnected
+                    ? 'Si quieres reautorizar permisos o refrescar token, reconecta.'
+                    : 'Se guardará la conexión para este workspace.'}
                 </div>
               </div>
 
