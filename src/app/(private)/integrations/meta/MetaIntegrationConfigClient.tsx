@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+
 import { supabaseBrowser } from '@/lib/supabase/client';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
@@ -124,8 +126,22 @@ function openOauthPopup(url: string) {
   }
 }
 
+function statusBadge(status: IntegrationStatus): { text: string; className: string } {
+  // ✅ Lo que pides: draft se ve como LIVE (verdosillo) en UI
+  if (status === 'connected') {
+    return { text: 'LIVE', className: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200' };
+  }
+  if (status === 'error') {
+    return { text: 'ERROR', className: 'border-red-400/30 bg-red-500/10 text-red-200' };
+  }
+  // draft
+  return { text: 'DRAFT', className: 'border-white/15 bg-white/5 text-white/70' };
+}
+
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
   const workspaceId = useMemo(() => getActiveWorkspaceId(), []);
+  const searchParams = useSearchParams();
+
   const [loading, setLoading] = useState<boolean>(true);
   const [oauthBusy, setOauthBusy] = useState<boolean>(false);
 
@@ -216,9 +232,26 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, workspaceId]);
 
+  // carga inicial
   useEffect(() => {
     void loadIntegration();
   }, [loadIntegration]);
+
+  // ✅ Auto-refresh al volver del OAuth: /integrations/meta/<id>?connected=1 (o ?oauth=done)
+  useEffect(() => {
+    const connected = searchParams.get('connected');
+    const oauth = searchParams.get('oauth');
+
+    if (connected === '1' || oauth === 'done') {
+      void loadIntegration();
+
+      // limpia query para que no se re-ejecute siempre al refrescar
+      const url = new URL(window.location.href);
+      url.searchParams.delete('connected');
+      url.searchParams.delete('oauth');
+      window.history.replaceState({}, '', url.toString());
+    }
+  }, [searchParams, loadIntegration]);
 
   const handleConnectMeta = useCallback(async () => {
     if (oauthBusy) return;
@@ -265,7 +298,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         return;
       }
 
-      // ✅ Abrimos OAuth en popup (con fallback a redirect si bloquean popup)
+      // ✅ Abrimos OAuth en popup
       setOauthBusy(false);
       openOauthPopup(url);
     } catch (e: unknown) {
@@ -273,6 +306,8 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       setError(e instanceof Error ? e.message : 'Error iniciando OAuth');
     }
   }, [normalizedId, oauthBusy, workspaceId]);
+
+  const badge = integration ? statusBadge(integration.status) : null;
 
   return (
     <div className="p-6 text-white">
@@ -322,18 +357,13 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </p>
               </div>
 
-              <span
-                className={cx(
-                  'shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold',
-                  integration.status === 'connected'
-                    ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
-                    : integration.status === 'error'
-                      ? 'border-red-400/30 bg-red-500/10 text-red-200'
-                      : 'border-white/15 bg-white/5 text-white/70'
-                )}
-              >
-                {integration.status.toUpperCase()}
-              </span>
+              {badge ? (
+                <span
+                  className={cx('shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold', badge.className)}
+                >
+                  {badge.text}
+                </span>
+              ) : null}
             </div>
 
             {/* Paso 1: OAuth */}
