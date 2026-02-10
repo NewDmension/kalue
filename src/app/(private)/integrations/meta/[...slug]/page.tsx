@@ -1,19 +1,30 @@
+'use client';
+
 import Link from 'next/link';
+import { useMemo } from 'react';
+import { useParams, usePathname } from 'next/navigation';
 import MetaIntegrationConfigClient from '../MetaIntegrationConfigClient';
 
 function isUuid(v: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
-type PageProps = {
-  params: { slug?: string[] };
-};
+function firstSegment(v: string | string[] | undefined): string {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v) && typeof v[0] === 'string') return v[0];
+  return '';
+}
 
-export default function Page({ params }: PageProps) {
-  const seg0 = Array.isArray(params.slug) && typeof params.slug[0] === 'string' ? params.slug[0] : '';
-  const integrationId = seg0.trim();
+export default function MetaCatchAllPage() {
+  const pathname = usePathname();
+  const params = useParams();
 
-  if (!integrationId || !isUuid(integrationId)) {
+  const rawSlug = params?.slug as string | string[] | undefined;
+  const integrationId = useMemo(() => firstSegment(rawSlug).trim(), [rawSlug]);
+
+  const ok = integrationId.length > 0 && isUuid(integrationId);
+
+  if (!ok) {
     return (
       <div className="p-6 text-white">
         <div className="card-glass rounded-2xl border border-white/10 p-6">
@@ -33,9 +44,18 @@ export default function Page({ params }: PageProps) {
 
           <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">
             <p className="text-sm font-semibold text-white/90">Debug</p>
-            <pre className="mt-2 overflow-auto rounded-xl border border-white/10 bg-black/30 p-3 text-[11px] text-white/80">
-              {JSON.stringify(params ?? null, null, 2)}
-            </pre>
+            <div className="mt-2 space-y-2 text-xs text-white/70">
+              <div>
+                <span className="text-white/80">pathname:</span>{' '}
+                <span className="font-mono text-white/90">{pathname}</span>
+              </div>
+              <div>
+                <span className="text-white/80">useParams:</span>
+              </div>
+              <pre className="overflow-auto rounded-xl border border-white/10 bg-black/30 p-3 text-[11px] text-white/80">
+                {JSON.stringify(params ?? null, null, 2)}
+              </pre>
+            </div>
           </div>
         </div>
       </div>
