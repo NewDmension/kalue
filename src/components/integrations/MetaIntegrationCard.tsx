@@ -2,7 +2,6 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import { useSearchParams } from 'next/navigation';
 
 type MetaStatusResp =
   | {
@@ -43,46 +42,8 @@ function getPagesFromJson(v: unknown): MetaPage[] {
   return out;
 }
 
-function cx(...parts: Array<string | false | null | undefined>): string {
-  return parts.filter(Boolean).join(' ');
-}
-
-/**
- * Abre OAuth en popup centrado. Si el navegador bloquea popups, fallback a redirect normal.
- */
-function openOauthPopup(url: string) {
-  const width = 540;
-  const height = 720;
-
-  const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
-  const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
-
-  const features = [
-    'popup=yes',
-    `width=${width}`,
-    `height=${height}`,
-    `left=${left}`,
-    `top=${top}`,
-    'resizable=yes',
-    'scrollbars=yes',
-  ].join(',');
-
-  const win = window.open(url, 'kalue_meta_oauth', features);
-  if (!win) {
-    window.location.href = url;
-    return;
-  }
-
-  try {
-    win.focus();
-  } catch {
-    // ignore
-  }
-}
-
 export default function MetaIntegrationCard(props: { workspaceId: string }) {
   const { workspaceId } = props;
-  const searchParams = useSearchParams();
 
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
@@ -116,14 +77,13 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
   }, []);
 
   const fetchStatus = useCallback(async (): Promise<void> => {
+    // No intentamos nada si no hay sesión o workspace
     if (!workspaceId) {
       setError('Missing workspaceId');
       setLoading(false);
       return;
     }
-
     if (!accessToken) {
-      // sin sesión: no llamamos a status
       setError(null);
       setLoading(false);
       setStatus(null);
@@ -140,11 +100,9 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
         },
       });
 
-      const json: unknown = await res.json().catch(() => null);
+      const json: unknown = await res.json();
       if (!res.ok) {
-        const msg = isRecord(json) && typeof (json as Record<string, unknown>).error === 'string'
-          ? String((json as Record<string, unknown>).error)
-          : 'Failed to load status';
+        const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to load status';
         throw new Error(msg);
       }
 
@@ -162,14 +120,6 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
     void fetchStatus();
   }, [fetchStatus]);
 
-  // ✅ Al volver del OAuth, refrescar solo
-  useEffect(() => {
-    const oauth = (searchParams.get('oauth') ?? '').trim().toLowerCase();
-    if (oauth === 'success' || oauth === 'error' || oauth === 'cancelled') {
-      void fetchStatus();
-    }
-  }, [searchParams, fetchStatus]);
-
   const handleConnect = useCallback(async (): Promise<void> => {
     setError(null);
     try {
@@ -184,11 +134,11 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
         },
       });
 
-      const json: unknown = await res.json().catch(() => null);
-      const url = isRecord(json) ? getString((json as Record<string, unknown>).url) : null;
+      const json: unknown = await res.json();
+      const url = isRecord(json) ? getString(json.url) : null;
       if (!res.ok || !url) throw new Error('Failed to start Meta OAuth');
 
-      openOauthPopup(url);
+      window.location.href = url;
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unknown error');
     }
@@ -207,17 +157,15 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
         },
       });
 
-      const json: unknown = await res.json().catch(() => null);
+      const json: unknown = await res.json();
       if (!res.ok) {
-        const msg = isRecord(json) && typeof (json as Record<string, unknown>).error === 'string'
-          ? String((json as Record<string, unknown>).error)
-          : 'Failed to list pages';
+        const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to list pages';
         throw new Error(msg);
       }
 
       const p = getPagesFromJson(json);
       setPages(p);
-      if (p.length > 0) setSelectedPageId(p[0]!.id);
+      if (p.length > 0) setSelectedPageId(p[0].id);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unknown error');
       setPages([]);
@@ -243,11 +191,9 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
         body: JSON.stringify({ page_id: page.id, page_name: page.name }),
       });
 
-      const json: unknown = await res.json().catch(() => null);
+      const json: unknown = await res.json();
       if (!res.ok) {
-        const msg = isRecord(json) && typeof (json as Record<string, unknown>).error === 'string'
-          ? String((json as Record<string, unknown>).error)
-          : 'Failed to connect page';
+        const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to connect page';
         throw new Error(msg);
       }
 
@@ -258,45 +204,15 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
   }, [accessToken, workspaceId, pages, selectedPageId, fetchStatus]);
 
   const view = useMemo(() => {
-    // ✅ si no hay sesión, seguimos mostrando botón pero el click dará error “Login required”
-    if (!status) return { state: accessToken ? ('unknown' as const) : ('no_session' as const) };
+    if (!accessToken) return { state: 'login_required' as const };
+    if (!status) return { state: 'unknown' as const };
     if (!status.exists) return { state: 'disconnected' as const };
-
     const step = status.config.step;
     const isConnected = status.status === 'connected' && !!status.config.page_id;
-
     if (isConnected) return { state: 'connected' as const };
     if (step === 'page_select') return { state: 'needs_page' as const };
     return { state: 'pending' as const };
   }, [accessToken, status]);
-
-  const badge = useMemo(() => {
-    if (loading) return { label: 'Cargando…', cls: 'border-white/10 bg-white/5 text-white/80' };
-
-    if (view.state === 'connected') {
-      return { label: 'LIVE', cls: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200' };
-    }
-
-    if (view.state === 'disconnected') {
-      return { label: 'DISCONNECTED', cls: 'border-white/10 bg-white/5 text-white/70' };
-    }
-
-    if (view.state === 'needs_page') {
-      return { label: 'NEEDS PAGE', cls: 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' };
-    }
-
-    if (view.state === 'pending') {
-      return { label: 'PENDING', cls: 'border-white/10 bg-white/5 text-white/70' };
-    }
-
-    if (view.state === 'no_session') {
-      return { label: 'LOGIN', cls: 'border-white/10 bg-white/5 text-white/70' };
-    }
-
-    return { label: '—', cls: 'border-white/10 bg-white/5 text-white/70' };
-  }, [loading, view.state]);
-
-  const connectBtnLabel = view.state === 'connected' ? 'Re-conectar Meta' : 'Conectar Meta';
 
   return (
     <div className="card-glass rounded-2xl p-5 border border-white/10 bg-white/5">
@@ -306,7 +222,9 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
           <div className="text-sm text-white/70 mt-1">Conecta una Facebook Page y recibe leads en tiempo real.</div>
         </div>
 
-        <div className={cx('text-xs px-2 py-1 rounded-full border', badge.cls)}>{badge.label}</div>
+        <div className="text-xs px-2 py-1 rounded-full border border-white/10 bg-white/5 text-white/80">
+          {loading ? 'Cargando…' : view.state}
+        </div>
       </div>
 
       {error ? (
@@ -315,19 +233,21 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
         </div>
       ) : null}
 
+      {view.state === 'login_required' ? (
+        <div className="mt-5 text-sm text-white/80">
+          Para conectar Meta necesitas iniciar sesión en Kalue.
+        </div>
+      ) : null}
+
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        {/* ✅ SIEMPRE visible */}
-        <button
-          onClick={() => void handleConnect()}
-          className={cx(
-            'px-4 py-2 rounded-xl text-white text-sm font-medium border border-white/10',
-            view.state === 'connected'
-              ? 'bg-emerald-600/20 hover:bg-emerald-600/30'
-              : 'bg-indigo-600/90 hover:bg-indigo-600'
-          )}
-        >
-          {connectBtnLabel}
-        </button>
+        {view.state === 'disconnected' ? (
+          <button
+            onClick={() => void handleConnect()}
+            className="px-4 py-2 rounded-xl bg-indigo-600/90 hover:bg-indigo-600 text-white text-sm font-medium border border-white/10"
+          >
+            Conectar Meta
+          </button>
+        ) : null}
 
         {view.state === 'needs_page' || view.state === 'pending' ? (
           <>
@@ -375,36 +295,6 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
         >
           Refrescar
         </button>
-      </div>
-
-      {/* ✅ Debug mini (quítalo cuando ya esté) */}
-      <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
-        <div className="font-semibold text-white/80">Debug</div>
-        <div className="mt-2 grid gap-1">
-          <div>
-            accessToken: <span className="font-mono">{accessToken ? 'yes' : 'no'}</span>
-          </div>
-          <div>
-            status: <span className="font-mono">{status ? 'loaded' : 'null'}</span>
-          </div>
-          <div>
-            state: <span className="font-mono">{view.state}</span>
-          </div>
-          <div>
-            status.exists:{' '}
-            <span className="font-mono">{status && 'exists' in status ? String(status.exists) : '—'}</span>
-          </div>
-          <div>
-            status.status:{' '}
-            <span className="font-mono">{status && 'exists' in status && status.exists ? status.status : '—'}</span>
-          </div>
-          <div>
-            page_id:{' '}
-            <span className="font-mono">
-              {status && 'exists' in status && status.exists ? status.config.page_id ?? 'null' : '—'}
-            </span>
-          </div>
-        </div>
       </div>
 
       <div className="mt-4 text-xs text-white/50">

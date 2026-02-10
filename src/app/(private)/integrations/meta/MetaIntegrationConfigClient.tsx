@@ -125,7 +125,6 @@ function openOauthPopup(url: string) {
 }
 
 function statusBadge(status: IntegrationStatus): { text: string; className: string } {
-  // 👇 aquí tu “LIVE” verdosillo
   if (status === 'connected') {
     return { text: 'LIVE', className: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200' };
   }
@@ -238,22 +237,28 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   // ✅ Si vuelves del OAuth con ?oauth=success, refresca y muestra feedback
   useEffect(() => {
     const oauth = searchParams.get('oauth');
+
     if (oauth === 'success') {
       setInfo('Conexión completada. Actualizando estado…');
       void loadIntegration().then(() => {
         setInfo('Meta conectada ✅');
-        // opcional: limpiar el mensaje después de X segundos
         window.setTimeout(() => setInfo(null), 2500);
       });
-    } else if (oauth === 'error') {
+      return;
+    }
+
+    if (oauth === 'error') {
       const msg = searchParams.get('message') ?? 'No se pudo completar la conexión con Meta.';
       setError(msg);
-    } else if (oauth === 'cancelled') {
+      return;
+    }
+
+    if (oauth === 'cancelled') {
       setInfo('Conexión cancelada.');
       window.setTimeout(() => setInfo(null), 2500);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]); // loadIntegration ya está memoizado
+  }, [searchParams]);
 
   const handleConnectMeta = useCallback(async () => {
     if (oauthBusy) return;
@@ -377,27 +382,26 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               <p className="mt-1 text-xs text-white/60">Paso 1 de 4 · Conectar con Meta mediante OAuth.</p>
 
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                {!isConnected ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleConnectMeta()}
-                    disabled={oauthBusy}
-                    className={cx(
-                      'rounded-xl border px-4 py-2 text-sm transition',
-                      oauthBusy
-                        ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                {/* ✅ SIEMPRE visible: Conectar / Re-conectar */}
+                <button
+                  type="button"
+                  onClick={() => void handleConnectMeta()}
+                  disabled={oauthBusy}
+                  className={cx(
+                    'rounded-xl border px-4 py-2 text-sm transition',
+                    oauthBusy
+                      ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                      : isConnected
+                        ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/15'
                         : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
-                    )}
-                  >
-                    {oauthBusy ? 'Conectando…' : 'Conectar con Meta'}
-                  </button>
-                ) : (
-                  <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-200">
-                    Meta conectada ✅
-                  </div>
-                )}
+                  )}
+                >
+                  {oauthBusy ? 'Conectando…' : isConnected ? 'Re-conectar Meta' : 'Conectar con Meta'}
+                </button>
 
-                <div className="text-xs text-white/45">Se guardará la conexión para este workspace.</div>
+                <div className="text-xs text-white/45">
+                  {isConnected ? 'Si quieres reautorizar permisos o refrescar token, reconecta.' : 'Se guardará la conexión para este workspace.'}
+                </div>
               </div>
 
               <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
