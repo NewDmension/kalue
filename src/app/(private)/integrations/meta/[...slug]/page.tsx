@@ -1,12 +1,17 @@
 import Link from 'next/link';
-import MetaIntegrationConfigClient from './MetaIntegrationConfigClient';
+import MetaIntegrationConfigClient from '../MetaIntegrationConfigClient';
 
 function isUuid(v: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
-export default function Page({ params }: { params: { id?: string } }) {
-  const integrationId = (params.id ?? '').trim();
+type PageProps = {
+  params: { slug?: string[] };
+};
+
+export default function Page({ params }: PageProps) {
+  const seg0 = Array.isArray(params.slug) && typeof params.slug[0] === 'string' ? params.slug[0] : '';
+  const integrationId = seg0.trim();
 
   if (!integrationId || !isUuid(integrationId)) {
     return (
@@ -24,6 +29,13 @@ export default function Page({ params }: { params: { id?: string } }) {
             >
               Volver a integraciones
             </Link>
+          </div>
+
+          <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <p className="text-sm font-semibold text-white/90">Debug</p>
+            <pre className="mt-2 overflow-auto rounded-xl border border-white/10 bg-black/30 p-3 text-[11px] text-white/80">
+              {JSON.stringify(params ?? null, null, 2)}
+            </pre>
           </div>
         </div>
       </div>

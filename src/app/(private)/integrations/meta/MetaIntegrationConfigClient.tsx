@@ -81,7 +81,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       setError(null);
       setIntegration(null);
 
-      // ✅ Guard: si el id no existe o es inválido, no llamamos a la API
+      // ✅ Guard: no llamamos a API si el id no es válido
       if (!normalizedId) {
         setLoading(false);
         setError('No se recibió un Integration ID válido en la ruta. Vuelve a Integraciones y reintenta.');
@@ -134,7 +134,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
         const id = typeof row.id === 'string' ? row.id : String(row.id);
         const workspace_id = typeof row.workspace_id === 'string' ? row.workspace_id : String(row.workspace_id);
-
         const provider: ProviderKey = row.provider === 'meta' ? 'meta' : 'meta';
 
         const statusRaw = row.status;
