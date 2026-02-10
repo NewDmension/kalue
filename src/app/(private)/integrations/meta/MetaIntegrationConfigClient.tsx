@@ -89,6 +89,41 @@ async function postJson(args: {
   });
 }
 
+/**
+ * Abre OAuth en popup centrado. Si el navegador bloquea popups, hace fallback a redirect normal.
+ */
+function openOauthPopup(url: string) {
+  const width = 540;
+  const height = 720;
+
+  const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
+  const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
+
+  const features = [
+    'popup=yes',
+    `width=${width}`,
+    `height=${height}`,
+    `left=${left}`,
+    `top=${top}`,
+    'resizable=yes',
+    'scrollbars=yes',
+  ].join(',');
+
+  const win = window.open(url, 'kalue_meta_oauth', features);
+
+  // Popup bloqueado → fallback a navegación normal
+  if (!win) {
+    window.location.href = url;
+    return;
+  }
+
+  try {
+    win.focus();
+  } catch {
+    // no-op
+  }
+}
+
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
   const workspaceId = useMemo(() => getActiveWorkspaceId(), []);
   const [loading, setLoading] = useState<boolean>(true);
@@ -182,17 +217,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   }, [normalizedId, workspaceId]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function run() {
-      if (cancelled) return;
-      await loadIntegration();
-    }
-
-    void run();
-    return () => {
-      cancelled = true;
-    };
+    void loadIntegration();
   }, [loadIntegration]);
 
   const handleConnectMeta = useCallback(async () => {
@@ -240,8 +265,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         return;
       }
 
-      // Redirect a Meta OAuth
-      window.location.href = url;
+      // ✅ Abrimos OAuth en popup (con fallback a redirect si bloquean popup)
+      setOauthBusy(false);
+      openOauthPopup(url);
     } catch (e: unknown) {
       setOauthBusy(false);
       setError(e instanceof Error ? e.message : 'Error iniciando OAuth');
@@ -255,8 +281,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
           <div>
             <h1 className="text-lg font-semibold text-white">Configurar Meta</h1>
             <p className="mt-1 text-sm text-white/70">
-              Integration ID:{' '}
-              <span className="font-mono text-white/90">{normalizedId || '(vacío)'}</span>
+              Integration ID: <span className="font-mono text-white/90">{normalizedId || '(vacío)'}</span>
             </p>
           </div>
 
@@ -331,9 +356,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                   {oauthBusy ? 'Conectando…' : 'Conectar con Meta'}
                 </button>
 
-                <div className="text-xs text-white/45">
-                  Se guardará la conexión para este workspace.
-                </div>
+                <div className="text-xs text-white/45">Se guardará la conexión para este workspace.</div>
               </div>
 
               <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
