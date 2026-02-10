@@ -146,7 +146,7 @@ export async function POST(req: Request) {
     // - pages_show_list: listar páginas
     // - pages_read_engagement: leer info básica / engagement
     // - leads_access: leer leads de Lead Forms
-    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'pages_show_list,pages_read_engagement,leads_access');
+    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'pages_show_list,pages_read_engagement');
 
     const ttlSeconds = Number.parseInt(getEnv('META_OAUTH_STATE_TTL_SECONDS', '900'), 10);
     const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 900;
