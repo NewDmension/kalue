@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { encryptToken } from '@/server/crypto/tokenCrypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -237,21 +238,41 @@ export async function GET(req: Request) {
       return safeRedirect(`${configRedirectBase}?oauth=error&reason=integration_not_found`);
     }
 
-    // Store secrets (debug stage). Luego: encriptar.
-    const secrets: Record<string, unknown> = {
-      meta: {
-        access_token: accessToken,
-        token_type: tokenType,
-        expires_in: expiresIn,
-        obtained_at: new Date().toISOString(),
-      },
-    };
+    // ✅ NEW: cifrar token + guardar en integration_oauth_tokens
+    const accessTokenCiphertext = encryptToken(accessToken);
 
+    const expiresAt =
+      typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0
+        ? new Date(Date.now() + expiresIn * 1000).toISOString()
+        : null;
+
+    const { error: tokErr } = await admin
+      .from('integration_oauth_tokens')
+      .upsert(
+        {
+          integration_id: integrationId,
+          workspace_id: workspaceId,
+          provider: 'meta',
+          access_token_ciphertext: accessTokenCiphertext,
+          refresh_token_ciphertext: null,
+          token_type: tokenType,
+          scopes: null,
+          expires_at: expiresAt,
+          obtained_at: new Date().toISOString(),
+        },
+        { onConflict: 'integration_id,provider' }
+      );
+
+    if (tokErr) {
+      return safeRedirect(`${configRedirectBase}?oauth=error&reason=token_store_failed`);
+    }
+
+    // ✅ Marcar integración como conectada (sin guardar token en integrations.secrets)
     const { error: updErr } = await admin
       .from('integrations')
       .update({
         status: 'connected',
-        secrets,
+        secrets: {}, // mantenemos vacío para no duplicar
         config: { connected: true, provider: 'meta' },
       })
       .eq('id', integrationId)
@@ -265,7 +286,9 @@ export async function GET(req: Request) {
     return safeRedirect(`${configRedirectBase}?oauth=success`);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unexpected error';
-    const fallback = baseUrl ? `${baseUrl}/integrations?oauth=error&reason=exception` : '/integrations?oauth=error&reason=exception';
+    const fallback = baseUrl
+      ? `${baseUrl}/integrations?oauth=error&reason=exception`
+      : '/integrations?oauth=error&reason=exception';
     return NextResponse.redirect(fallback + `&msg=${encodeURIComponent(msg.slice(0, 200))}`);
   }
 }
