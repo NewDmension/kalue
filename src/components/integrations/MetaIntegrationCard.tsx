@@ -68,7 +68,6 @@ function openOauthPopup(url: string) {
   ].join(',');
 
   const win = window.open(url, 'kalue_meta_oauth', features);
-
   if (!win) {
     window.location.href = url;
     return;
@@ -83,7 +82,6 @@ function openOauthPopup(url: string) {
 
 export default function MetaIntegrationCard(props: { workspaceId: string }) {
   const { workspaceId } = props;
-
   const searchParams = useSearchParams();
 
   const [accessToken, setAccessToken] = useState<string | null>(null);
@@ -123,7 +121,9 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
       setLoading(false);
       return;
     }
+
     if (!accessToken) {
+      // sin sesión: no llamamos a status
       setError(null);
       setLoading(false);
       setStatus(null);
@@ -142,7 +142,9 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
 
       const json: unknown = await res.json().catch(() => null);
       if (!res.ok) {
-        const msg = isRecord(json) && typeof json.error === 'string' ? json.error : 'Failed to load status';
+        const msg = isRecord(json) && typeof (json as Record<string, unknown>).error === 'string'
+          ? String((json as Record<string, unknown>).error)
+          : 'Failed to load status';
         throw new Error(msg);
       }
 
@@ -160,7 +162,7 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
     void fetchStatus();
   }, [fetchStatus]);
 
-  // ✅ Al volver del OAuth, refrescar solo (si tu callback redirige con oauth=success/error/cancelled)
+  // ✅ Al volver del OAuth, refrescar solo
   useEffect(() => {
     const oauth = (searchParams.get('oauth') ?? '').trim().toLowerCase();
     if (oauth === 'success' || oauth === 'error' || oauth === 'cancelled') {
@@ -186,7 +188,6 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
       const url = isRecord(json) ? getString((json as Record<string, unknown>).url) : null;
       if (!res.ok || !url) throw new Error('Failed to start Meta OAuth');
 
-      // ✅ Popup centrado (fallback a redirect si bloquean popup)
       openOauthPopup(url);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Unknown error');
@@ -257,11 +258,13 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
   }, [accessToken, workspaceId, pages, selectedPageId, fetchStatus]);
 
   const view = useMemo(() => {
-    if (!accessToken) return { state: 'login_required' as const };
-    if (!status) return { state: 'unknown' as const };
+    // ✅ si no hay sesión, seguimos mostrando botón pero el click dará error “Login required”
+    if (!status) return { state: accessToken ? ('unknown' as const) : ('no_session' as const) };
     if (!status.exists) return { state: 'disconnected' as const };
+
     const step = status.config.step;
     const isConnected = status.status === 'connected' && !!status.config.page_id;
+
     if (isConnected) return { state: 'connected' as const };
     if (step === 'page_select') return { state: 'needs_page' as const };
     return { state: 'pending' as const };
@@ -286,7 +289,7 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
       return { label: 'PENDING', cls: 'border-white/10 bg-white/5 text-white/70' };
     }
 
-    if (view.state === 'login_required') {
+    if (view.state === 'no_session') {
       return { label: 'LOGIN', cls: 'border-white/10 bg-white/5 text-white/70' };
     }
 
@@ -303,9 +306,7 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
           <div className="text-sm text-white/70 mt-1">Conecta una Facebook Page y recibe leads en tiempo real.</div>
         </div>
 
-        <div className={cx('text-xs px-2 py-1 rounded-full border', badge.cls)}>
-          {badge.label}
-        </div>
+        <div className={cx('text-xs px-2 py-1 rounded-full border', badge.cls)}>{badge.label}</div>
       </div>
 
       {error ? (
@@ -314,27 +315,19 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
         </div>
       ) : null}
 
-      {view.state === 'login_required' ? (
-        <div className="mt-5 text-sm text-white/80">
-          Para conectar Meta necesitas iniciar sesión en Kalue.
-        </div>
-      ) : null}
-
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        {/* ✅ Botón SIEMPRE visible (si hay sesión). Connected => Re-conectar */}
-        {view.state !== 'login_required' ? (
-          <button
-            onClick={() => void handleConnect()}
-            className={cx(
-              'px-4 py-2 rounded-xl text-white text-sm font-medium border border-white/10',
-              view.state === 'connected'
-                ? 'bg-emerald-600/20 hover:bg-emerald-600/30'
-                : 'bg-indigo-600/90 hover:bg-indigo-600'
-            )}
-          >
-            {connectBtnLabel}
-          </button>
-        ) : null}
+        {/* ✅ SIEMPRE visible */}
+        <button
+          onClick={() => void handleConnect()}
+          className={cx(
+            'px-4 py-2 rounded-xl text-white text-sm font-medium border border-white/10',
+            view.state === 'connected'
+              ? 'bg-emerald-600/20 hover:bg-emerald-600/30'
+              : 'bg-indigo-600/90 hover:bg-indigo-600'
+          )}
+        >
+          {connectBtnLabel}
+        </button>
 
         {view.state === 'needs_page' || view.state === 'pending' ? (
           <>
@@ -382,6 +375,36 @@ export default function MetaIntegrationCard(props: { workspaceId: string }) {
         >
           Refrescar
         </button>
+      </div>
+
+      {/* ✅ Debug mini (quítalo cuando ya esté) */}
+      <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
+        <div className="font-semibold text-white/80">Debug</div>
+        <div className="mt-2 grid gap-1">
+          <div>
+            accessToken: <span className="font-mono">{accessToken ? 'yes' : 'no'}</span>
+          </div>
+          <div>
+            status: <span className="font-mono">{status ? 'loaded' : 'null'}</span>
+          </div>
+          <div>
+            state: <span className="font-mono">{view.state}</span>
+          </div>
+          <div>
+            status.exists:{' '}
+            <span className="font-mono">{status && 'exists' in status ? String(status.exists) : '—'}</span>
+          </div>
+          <div>
+            status.status:{' '}
+            <span className="font-mono">{status && 'exists' in status && status.exists ? status.status : '—'}</span>
+          </div>
+          <div>
+            page_id:{' '}
+            <span className="font-mono">
+              {status && 'exists' in status && status.exists ? status.config.page_id ?? 'null' : '—'}
+            </span>
+          </div>
+        </div>
       </div>
 
       <div className="mt-4 text-xs text-white/50">
