@@ -1,3 +1,4 @@
+// src/app/api/integrations/meta/oauth/start/route.ts
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
@@ -109,6 +110,27 @@ function getBaseUrl(req: Request): string {
   return `${proto}://${host}`;
 }
 
+function normalizeScopes(raw: string): string {
+  // Normaliza, deduplica, y elimina scopes inválidos conocidos
+  const invalid = new Set<string>(['leads_retrieval']); // ❌ NO existe en Meta
+  const items = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .filter((s) => !invalid.has(s));
+
+  // Dedupe manteniendo orden
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const s of items) {
+    if (!seen.has(s)) {
+      seen.add(s);
+      deduped.push(s);
+    }
+  }
+  return deduped.join(',');
+}
+
 export async function POST(req: Request) {
   try {
     const supabaseUrl = requireEnv('NEXT_PUBLIC_SUPABASE_URL');
@@ -119,7 +141,13 @@ export async function POST(req: Request) {
     const stateSecret = requireEnv('META_OAUTH_STATE_SECRET');
 
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
-    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'pages_show_list,leads_retrieval');
+
+    // ✅ Scopes válidos por defecto para Lead Ads (mínimo típico)
+    // - pages_show_list: listar páginas
+    // - pages_read_engagement: leer info básica / engagement
+    // - leads_access: leer leads de Lead Forms
+    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'pages_show_list,pages_read_engagement,leads_access');
+
     const ttlSeconds = Number.parseInt(getEnv('META_OAUTH_STATE_TTL_SECONDS', '900'), 10);
     const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 900;
 
@@ -167,11 +195,10 @@ export async function POST(req: Request) {
     const sig = hmacSha256Base64url(stateSecret, encodedPayload);
     const state = `${encodedPayload}.${sig}`;
 
-    const scope = scopesRaw
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
-      .join(',');
+    const scope = normalizeScopes(scopesRaw);
+    if (!scope) {
+      return json(500, { error: 'server_error', detail: 'META_OAUTH_SCOPES resolved to empty scope list.' });
+    }
 
     const authUrl = new URL(`https://www.facebook.com/${graphVersion}/dialog/oauth`);
     authUrl.searchParams.set('client_id', metaAppId);
@@ -180,7 +207,7 @@ export async function POST(req: Request) {
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('scope', scope);
 
-    return json(200, { ok: true, url: authUrl.toString() });
+    return json(200, { ok: true, url: authUrl.toString(), debug: { redirectUri, scope } });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unexpected error';
     return json(500, { error: 'server_error', detail: msg });
