@@ -68,11 +68,13 @@ async function fetchJson(url: string): Promise<unknown> {
   const res = await fetch(url, { method: 'GET' });
   const text = await res.text();
   let raw: unknown = null;
+
   try {
     raw = text ? (JSON.parse(text) as unknown) : null;
   } catch {
     raw = { _nonJson: true, text };
   }
+
   if (!res.ok) {
     const detail =
       isRecord(raw) && typeof raw.error === 'object' && raw.error
@@ -82,10 +84,29 @@ async function fetchJson(url: string): Promise<unknown> {
           : '';
     throw new Error(`Meta token error (${res.status}) ${detail}`.trim());
   }
+
   return raw;
 }
 
 export async function GET(req: Request) {
+  const baseUrl = (() => {
+    try {
+      return getBaseUrl(req);
+    } catch {
+      return '';
+    }
+  })();
+
+  const url = new URL(req.url);
+
+  // ✅ si el usuario cancela, Meta suele devolver esto
+  const metaErr = (url.searchParams.get('error') ?? '').trim();
+  const metaErrReason = (url.searchParams.get('error_reason') ?? '').trim();
+  const metaErrDesc = (url.searchParams.get('error_description') ?? '').trim();
+
+  // Para volver a una pantalla “segura” si aún no tenemos integrationId
+  const genericErrorRedirect = baseUrl ? `${baseUrl}/integrations?oauth=error` : '/integrations?oauth=error';
+
   try {
     const supabaseUrl = requireEnv('NEXT_PUBLIC_SUPABASE_URL');
     const serviceKey = requireEnv('SUPABASE_SERVICE_ROLE_KEY');
@@ -97,30 +118,30 @@ export async function GET(req: Request) {
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
     const exchangeLongLived = getEnv('META_EXCHANGE_LONG_LIVED', 'true').toLowerCase() !== 'false';
 
-    const url = new URL(req.url);
     const code = (url.searchParams.get('code') ?? '').trim();
     const state = (url.searchParams.get('state') ?? '').trim();
 
-    const baseUrl = getBaseUrl(req);
-    const fallbackRedirect = `${baseUrl}/integrations?oauth=error`;
-
-    if (!code) return safeRedirect(`${fallbackRedirect}&reason=missing_code`);
-    if (!state) return safeRedirect(`${fallbackRedirect}&reason=missing_state`);
+    if (!state) {
+      // Si cancelas, a veces viene error sin state (depende flujo)
+      const reason = metaErr ? `meta_${metaErr}` : 'missing_state';
+      return safeRedirect(`${genericErrorRedirect}&reason=${encodeURIComponent(reason)}`);
+    }
 
     const parts = state.split('.');
-    if (parts.length !== 2) return safeRedirect(`${fallbackRedirect}&reason=bad_state_format`);
+    if (parts.length !== 2) return safeRedirect(`${genericErrorRedirect}&reason=bad_state_format`);
+
     const encodedPayload = parts[0] ?? '';
     const sig = parts[1] ?? '';
 
     const expectedSig = hmacSha256Base64url(stateSecret, encodedPayload);
     if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
-      return safeRedirect(`${fallbackRedirect}&reason=bad_state_sig`);
+      return safeRedirect(`${genericErrorRedirect}&reason=bad_state_sig`);
     }
 
     const payloadText = base64urlToString(encodedPayload);
     const payloadUnknown: unknown = JSON.parse(payloadText) as unknown;
 
-    if (!isRecord(payloadUnknown)) return safeRedirect(`${fallbackRedirect}&reason=bad_state_payload`);
+    if (!isRecord(payloadUnknown)) return safeRedirect(`${genericErrorRedirect}&reason=bad_state_payload`);
 
     const integrationId = pickString(payloadUnknown, 'integrationId').trim();
     const workspaceId = pickString(payloadUnknown, 'workspaceId').trim();
@@ -128,12 +149,29 @@ export async function GET(req: Request) {
     const ttl = pickNumber(payloadUnknown, 'ttl') ?? 900;
 
     if (!integrationId || !workspaceId || !isUuid(integrationId) || !isUuid(workspaceId) || !iat) {
-      return safeRedirect(`${fallbackRedirect}&reason=bad_state_fields`);
+      return safeRedirect(`${genericErrorRedirect}&reason=bad_state_fields`);
+    }
+
+    const configRedirectBase = baseUrl
+      ? `${baseUrl}/integrations/meta/${integrationId}`
+      : `/integrations/meta/${integrationId}`;
+
+    // ✅ Si el usuario canceló/denegó permisos
+    if (metaErr) {
+      const reason = metaErrReason || metaErr;
+      const msg = metaErrDesc || 'OAuth cancelado o denegado.';
+      return safeRedirect(
+        `${configRedirectBase}?oauth=cancelled&reason=${encodeURIComponent(reason)}&message=${encodeURIComponent(msg)}`
+      );
+    }
+
+    if (!code) {
+      return safeRedirect(`${configRedirectBase}?oauth=error&reason=missing_code`);
     }
 
     const now = Math.floor(Date.now() / 1000);
     if (now > iat + ttl) {
-      return safeRedirect(`${fallbackRedirect}&reason=state_expired`);
+      return safeRedirect(`${configRedirectBase}?oauth=error&reason=state_expired`);
     }
 
     const redirectUri = `${baseUrl}/api/integrations/meta/oauth/callback`;
@@ -159,7 +197,7 @@ export async function GET(req: Request) {
     let expiresIn = tokenParsed.expires_in ?? null;
 
     if (!accessToken) {
-      return safeRedirect(`${fallbackRedirect}&reason=missing_access_token`);
+      return safeRedirect(`${configRedirectBase}?oauth=error&reason=missing_access_token`);
     }
 
     // Optional: exchange to long-lived token
@@ -196,10 +234,10 @@ export async function GET(req: Request) {
       .maybeSingle();
 
     if (fetchErr || !row || row.provider !== 'meta') {
-      return safeRedirect(`${fallbackRedirect}&reason=integration_not_found`);
+      return safeRedirect(`${configRedirectBase}?oauth=error&reason=integration_not_found`);
     }
 
-    // Store secrets (debug stage). Luego ideal: encriptar.
+    // Store secrets (debug stage). Luego: encriptar.
     const secrets: Record<string, unknown> = {
       meta: {
         access_token: accessToken,
@@ -214,31 +252,20 @@ export async function GET(req: Request) {
       .update({
         status: 'connected',
         secrets,
-        // opcional: marca config inicial
         config: { connected: true, provider: 'meta' },
       })
       .eq('id', integrationId)
       .eq('workspace_id', workspaceId);
 
     if (updErr) {
-      return safeRedirect(`${fallbackRedirect}&reason=db_update_failed`);
+      return safeRedirect(`${configRedirectBase}?oauth=error&reason=db_update_failed`);
     }
 
-    const okRedirect = `${baseUrl}/integrations/meta/${integrationId}?connected=1`;
-    return safeRedirect(okRedirect);
+    // ✅ IMPORTANTE: tu UI escucha oauth=success
+    return safeRedirect(`${configRedirectBase}?oauth=success`);
   } catch (e: unknown) {
-    const base = (() => {
-      try {
-        return getBaseUrl(req);
-      } catch {
-        return '';
-      }
-    })();
-
     const msg = e instanceof Error ? e.message : 'Unexpected error';
-    const fallback = base ? `${base}/integrations?oauth=error&reason=exception` : '/integrations?oauth=error&reason=exception';
-
-    // No exponemos detalles sensibles. Si quieres debug, lo añadimos en DB logs.
+    const fallback = baseUrl ? `${baseUrl}/integrations?oauth=error&reason=exception` : '/integrations?oauth=error&reason=exception';
     return NextResponse.redirect(fallback + `&msg=${encodeURIComponent(msg.slice(0, 200))}`);
   }
 }

@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-
 import { supabaseBrowser } from '@/lib/supabase/client';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
@@ -92,7 +91,7 @@ async function postJson(args: {
 }
 
 /**
- * Abre OAuth en popup centrado. Si el navegador bloquea popups, hace fallback a redirect normal.
+ * Abre OAuth en popup centrado. Si bloquean popups, fallback a redirect normal.
  */
 function openOauthPopup(url: string) {
   const width = 540;
@@ -113,7 +112,6 @@ function openOauthPopup(url: string) {
 
   const win = window.open(url, 'kalue_meta_oauth', features);
 
-  // Popup bloqueado → fallback a navegación normal
   if (!win) {
     window.location.href = url;
     return;
@@ -127,33 +125,33 @@ function openOauthPopup(url: string) {
 }
 
 function statusBadge(status: IntegrationStatus): { text: string; className: string } {
-  // ✅ Lo que pides: draft se ve como LIVE (verdosillo) en UI
+  // 👇 aquí tu “LIVE” verdosillo
   if (status === 'connected') {
     return { text: 'LIVE', className: 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200' };
   }
   if (status === 'error') {
     return { text: 'ERROR', className: 'border-red-400/30 bg-red-500/10 text-red-200' };
   }
-  // draft
   return { text: 'DRAFT', className: 'border-white/15 bg-white/5 text-white/70' };
 }
 
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
-  const workspaceId = useMemo(() => getActiveWorkspaceId(), []);
   const searchParams = useSearchParams();
-
+  const workspaceId = useMemo(() => getActiveWorkspaceId(), []);
   const [loading, setLoading] = useState<boolean>(true);
   const [oauthBusy, setOauthBusy] = useState<boolean>(false);
 
   const [error, setError] = useState<string | null>(null);
   const [integration, setIntegration] = useState<IntegrationRow | null>(null);
 
+  // feedback simple post-oauth
+  const [info, setInfo] = useState<string | null>(null);
+
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
 
   const loadIntegration = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setIntegration(null);
 
     if (!normalizedId) {
       setLoading(false);
@@ -207,7 +205,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
       const id = typeof row.id === 'string' ? row.id : String(row.id);
       const workspace_id = typeof row.workspace_id === 'string' ? row.workspace_id : String(row.workspace_id);
-      const provider: ProviderKey = row.provider === 'meta' ? 'meta' : 'meta';
+      const provider: ProviderKey = 'meta';
 
       const statusRaw = row.status;
       const status: IntegrationStatus =
@@ -232,31 +230,36 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, workspaceId]);
 
-  // carga inicial
+  // Carga normal
   useEffect(() => {
     void loadIntegration();
   }, [loadIntegration]);
 
-  // ✅ Auto-refresh al volver del OAuth: /integrations/meta/<id>?connected=1 (o ?oauth=done)
+  // ✅ Si vuelves del OAuth con ?oauth=success, refresca y muestra feedback
   useEffect(() => {
-    const connected = searchParams.get('connected');
     const oauth = searchParams.get('oauth');
-
-    if (connected === '1' || oauth === 'done') {
-      void loadIntegration();
-
-      // limpia query para que no se re-ejecute siempre al refrescar
-      const url = new URL(window.location.href);
-      url.searchParams.delete('connected');
-      url.searchParams.delete('oauth');
-      window.history.replaceState({}, '', url.toString());
+    if (oauth === 'success') {
+      setInfo('Conexión completada. Actualizando estado…');
+      void loadIntegration().then(() => {
+        setInfo('Meta conectada ✅');
+        // opcional: limpiar el mensaje después de X segundos
+        window.setTimeout(() => setInfo(null), 2500);
+      });
+    } else if (oauth === 'error') {
+      const msg = searchParams.get('message') ?? 'No se pudo completar la conexión con Meta.';
+      setError(msg);
+    } else if (oauth === 'cancelled') {
+      setInfo('Conexión cancelada.');
+      window.setTimeout(() => setInfo(null), 2500);
     }
-  }, [searchParams, loadIntegration]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]); // loadIntegration ya está memoizado
 
   const handleConnectMeta = useCallback(async () => {
     if (oauthBusy) return;
 
     setError(null);
+    setInfo(null);
 
     if (!normalizedId || !isUuid(normalizedId)) {
       setError('No hay Integration ID válido para iniciar OAuth.');
@@ -298,7 +301,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         return;
       }
 
-      // ✅ Abrimos OAuth en popup
       setOauthBusy(false);
       openOauthPopup(url);
     } catch (e: unknown) {
@@ -307,7 +309,8 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, oauthBusy, workspaceId]);
 
-  const badge = integration ? statusBadge(integration.status) : null;
+  const b = statusBadge(integration?.status ?? 'draft');
+  const isConnected = integration?.status === 'connected';
 
   return (
     <div className="p-6 text-white">
@@ -340,6 +343,12 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
         {loading ? <p className="mt-4 text-sm text-white/60">Cargando…</p> : null}
 
+        {info ? (
+          <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-sm text-emerald-200">
+            {info}
+          </div>
+        ) : null}
+
         {error ? (
           <div className="mt-4 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-sm text-red-200 whitespace-pre-line">
             {error}
@@ -357,13 +366,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </p>
               </div>
 
-              {badge ? (
-                <span
-                  className={cx('shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold', badge.className)}
-                >
-                  {badge.text}
-                </span>
-              ) : null}
+              <span className={cx('shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
+                {b.text}
+              </span>
             </div>
 
             {/* Paso 1: OAuth */}
@@ -372,19 +377,25 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               <p className="mt-1 text-xs text-white/60">Paso 1 de 4 · Conectar con Meta mediante OAuth.</p>
 
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleConnectMeta()}
-                  disabled={oauthBusy}
-                  className={cx(
-                    'rounded-xl border px-4 py-2 text-sm transition',
-                    oauthBusy
-                      ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
-                      : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
-                  )}
-                >
-                  {oauthBusy ? 'Conectando…' : 'Conectar con Meta'}
-                </button>
+                {!isConnected ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleConnectMeta()}
+                    disabled={oauthBusy}
+                    className={cx(
+                      'rounded-xl border px-4 py-2 text-sm transition',
+                      oauthBusy
+                        ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                        : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
+                    )}
+                  >
+                    {oauthBusy ? 'Conectando…' : 'Conectar con Meta'}
+                  </button>
+                ) : (
+                  <div className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-2 text-sm text-emerald-200">
+                    Meta conectada ✅
+                  </div>
+                )}
 
                 <div className="text-xs text-white/45">Se guardará la conexión para este workspace.</div>
               </div>
