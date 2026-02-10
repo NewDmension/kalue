@@ -5,8 +5,8 @@ function isUuid(v: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 }
 
-export default function Page({ params }: { params: { integrationId?: string } }) {
-  const integrationId = (params.integrationId ?? '').trim();
+export default function Page({ params }: { params: { id?: string } }) {
+  const integrationId = (params.id ?? '').trim();
 
   if (!integrationId || !isUuid(integrationId)) {
     return (
