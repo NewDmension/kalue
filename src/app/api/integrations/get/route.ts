@@ -23,6 +23,10 @@ function getBearer(req: Request): string | null {
   return m ? m[1] : null;
 }
 
+function isUuid(v: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
 async function getAuthedUserId(supabase: SupabaseClient): Promise<string | null> {
   const { data, error } = await supabase.auth.getUser();
   if (error) return null;
@@ -58,8 +62,12 @@ export async function GET(req: Request) {
     const workspaceId = req.headers.get('x-workspace-id');
     if (!workspaceId) return json(400, { error: 'missing_workspace_id' });
 
-    const integrationId = getQueryParam(req, 'integrationId').trim();
-    if (!integrationId) return json(400, { error: 'missing_integration_id' });
+    const rawId = getQueryParam(req, 'integrationId').trim();
+    const low = rawId.toLowerCase();
+
+    if (!rawId || low === 'undefined' || low === 'null' || !isUuid(rawId)) {
+      return json(400, { error: 'invalid_integration_id', detail: `received: ${rawId || '(empty)'}` });
+    }
 
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
@@ -73,19 +81,18 @@ export async function GET(req: Request) {
     const ok = await isWorkspaceMember({ admin, workspaceId, userId });
     if (!ok) return json(403, { error: 'not_member' });
 
+    // ⚠️ En debug devolvemos config/secrets. Luego lo normal es NO devolver secrets al cliente.
     const { data, error } = await admin
       .from('integrations')
       .select('id, workspace_id, provider, name, status, created_at, config, secrets')
       .eq('workspace_id', workspaceId)
-      .eq('id', integrationId)
+      .eq('id', rawId)
       .limit(1)
       .maybeSingle();
 
     if (error) return json(500, { error: 'db_error', detail: error.message });
     if (!data) return json(404, { error: 'not_found' });
 
-    // IMPORTANTE: normalmente NO devolverías "secrets" al frontend.
-    // Lo dejo aquí porque tú estás en fase debug. Luego lo quitamos.
     return json(200, { ok: true, integration: data });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unexpected error';

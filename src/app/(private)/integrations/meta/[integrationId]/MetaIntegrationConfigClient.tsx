@@ -23,6 +23,18 @@ function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
 
+function isUuid(v: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
+function normalizeId(raw: string): string {
+  const s = raw.trim();
+  if (!s) return '';
+  const low = s.toLowerCase();
+  if (low === 'undefined' || low === 'null') return '';
+  return s;
+}
+
 async function getAccessToken(): Promise<string> {
   const supabase = supabaseBrowser();
   const { data } = await supabase.auth.getSession();
@@ -55,9 +67,11 @@ function pickErrorMessage(raw: unknown, fallback: string): string {
 
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
   const workspaceId = useMemo(() => getActiveWorkspaceId(), []);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [integration, setIntegration] = useState<IntegrationRow | null>(null);
+
+  const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,51 +81,86 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       setError(null);
       setIntegration(null);
 
+      // ✅ Guard: si el id no existe o es inválido, no llamamos a la API
+      if (!normalizedId) {
+        setLoading(false);
+        setError('No se recibió un Integration ID válido en la ruta. Vuelve a Integraciones y reintenta.');
+        return;
+      }
+
+      if (!isUuid(normalizedId)) {
+        setLoading(false);
+        setError(`Integration ID inválido. Valor recibido: ${normalizedId}`);
+        return;
+      }
+
       const token = await getAccessToken();
       if (!token) {
         setLoading(false);
         setError('Para configurar integraciones necesitas iniciar sesión.');
         return;
       }
+
       if (!workspaceId) {
         setLoading(false);
         setError('No hay workspace activo. Selecciona uno primero.');
         return;
       }
 
-      const res = await fetch(`/api/integrations/get?integrationId=${encodeURIComponent(integrationId)}`, {
-        method: 'GET',
-        headers: { authorization: `Bearer ${token}`, 'x-workspace-id': workspaceId },
-      });
+      try {
+        const url = `/api/integrations/get?integrationId=${encodeURIComponent(normalizedId)}`;
 
-      const raw = await safeJson(res);
-      if (!res.ok) {
-        setLoading(false);
-        setError(pickErrorMessage(raw, `No se pudo cargar (${res.status})`));
-        return;
-      }
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'x-workspace-id': workspaceId,
+          },
+        });
 
-      const row = isRecord(raw) ? raw.integration : null;
-      if (!isRecord(row)) {
-        setLoading(false);
-        setError('Respuesta inválida del servidor.');
-        return;
-      }
+        const raw = await safeJson(res);
+        if (!res.ok) {
+          setLoading(false);
+          setError(pickErrorMessage(raw, `No se pudo cargar (${res.status})`));
+          return;
+        }
 
-      const parsed: IntegrationRow = {
-        id: String(row.id),
-        workspace_id: String(row.workspace_id),
-        provider: row.provider === 'meta' ? 'meta' : 'meta',
-        name: typeof row.name === 'string' ? row.name : '',
-        status: row.status === 'connected' || row.status === 'error' || row.status === 'draft' ? row.status : 'draft',
-        created_at: typeof row.created_at === 'string' ? row.created_at : '',
-        config: row.config,
-        secrets: row.secrets,
-      };
+        const row = isRecord(raw) ? raw.integration : null;
+        if (!isRecord(row)) {
+          setLoading(false);
+          setError('Respuesta inválida del servidor.');
+          return;
+        }
 
-      if (!cancelled) {
-        setIntegration(parsed);
-        setLoading(false);
+        const id = typeof row.id === 'string' ? row.id : String(row.id);
+        const workspace_id = typeof row.workspace_id === 'string' ? row.workspace_id : String(row.workspace_id);
+
+        const provider: ProviderKey = row.provider === 'meta' ? 'meta' : 'meta';
+
+        const statusRaw = row.status;
+        const status: IntegrationStatus =
+          statusRaw === 'connected' || statusRaw === 'error' || statusRaw === 'draft' ? statusRaw : 'draft';
+
+        const parsed: IntegrationRow = {
+          id,
+          workspace_id,
+          provider,
+          name: typeof row.name === 'string' ? row.name : '',
+          status,
+          created_at: typeof row.created_at === 'string' ? row.created_at : '',
+          config: row.config,
+          secrets: row.secrets,
+        };
+
+        if (!cancelled) {
+          setIntegration(parsed);
+          setLoading(false);
+        }
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setLoading(false);
+          setError(e instanceof Error ? e.message : 'Error cargando integración');
+        }
       }
     }
 
@@ -119,7 +168,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     return () => {
       cancelled = true;
     };
-  }, [integrationId, workspaceId]);
+  }, [normalizedId, workspaceId]);
 
   return (
     <div className="p-6 text-white">
@@ -128,7 +177,8 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
           <div>
             <h1 className="text-lg font-semibold text-white">Configurar Meta</h1>
             <p className="mt-1 text-sm text-white/70">
-              Integration ID: <span className="font-mono text-white/90">{integrationId}</span>
+              Integration ID:{' '}
+              <span className="font-mono text-white/90">{normalizedId || '(vacío)'}</span>
             </p>
           </div>
 
@@ -150,11 +200,28 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
         {integration ? (
           <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-            <p className="text-sm font-semibold text-white">{integration.name}</p>
-            <p className="mt-1 text-xs text-white/60">
-              Status: <span className="font-mono">{integration.status}</span> · Provider:{' '}
-              <span className="font-mono">{integration.provider}</span>
-            </p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white truncate">{integration.name || 'Integración Meta'}</p>
+                <p className="mt-1 text-xs text-white/60 break-all">
+                  Status: <span className="font-mono">{integration.status}</span> · Provider:{' '}
+                  <span className="font-mono">{integration.provider}</span>
+                </p>
+              </div>
+
+              <span
+                className={cx(
+                  'shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold',
+                  integration.status === 'connected'
+                    ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
+                    : integration.status === 'error'
+                      ? 'border-red-400/30 bg-red-500/10 text-red-200'
+                      : 'border-white/15 bg-white/5 text-white/70'
+                )}
+              >
+                {integration.status.toUpperCase()}
+              </span>
+            </div>
 
             <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
               <p className="font-semibold text-white/80">Siguiente:</p>
