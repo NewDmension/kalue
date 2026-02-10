@@ -19,7 +19,6 @@ import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { useTranslations } from 'next-intl';
 
-// ✅ Ajusta el path si tu componente está en otro sitio
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 type Workspace = { id: string; name: string; slug: string };
@@ -54,10 +53,6 @@ function safeSetActiveWorkspaceId(id: string): void {
   }
 }
 
-/**
- * ✅ Rutas nuevas (sin /app)
- * ✅ Dashboard/Onboarding antes de Inbox
- */
 const NAV = [
   { href: '/onboarding', key: 'dashboard', icon: Home },
   { href: '/inbox', key: 'inbox', icon: Inbox },
@@ -92,12 +87,10 @@ export default function AppShell(props: {
 
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // ✅ Cerrar drawer al navegar (evita “sidebar duplicado”)
   useEffect(() => {
     setMobileOpen(false);
   }, [pathname]);
 
-  // ✅ Cerrar drawer al pasar a desktop (>= md)
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -113,12 +106,10 @@ export default function AppShell(props: {
       return () => mql.removeEventListener('change', onChange);
     }
 
-    // Fallback older Safari
     mql.addListener(onChange);
     return () => mql.removeListener(onChange);
   }, []);
 
-  // Workspace context (persistido)
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -156,7 +147,6 @@ export default function AppShell(props: {
 
   return (
     <div className="min-h-screen w-full">
-      {/* Fondo global elegante */}
       <div className="pointer-events-none fixed inset-0 -z-10">
         <div className="absolute inset-0 bg-[radial-gradient(900px_550px_at_15%_15%,rgba(99,102,241,0.16),transparent_60%)]" />
         <div className="absolute inset-0 bg-[radial-gradient(900px_550px_at_85%_70%,rgba(16,185,129,0.12),transparent_60%)]" />
@@ -186,11 +176,9 @@ export default function AppShell(props: {
             </p>
           </div>
 
-          {/* ✅ Idioma + Logout */}
-          <div className="flex items-center gap-2">
-            <div className="rounded-xl border border-white/15 bg-white/5 px-2 py-1">
-              <LanguageSwitcher />
-            </div>
+          {/* ✅ Idioma + Logout (sin “minicard”) */}
+          <div className="flex items-center gap-3">
+            <LanguageSwitcher />
 
             <button
               type="button"
@@ -220,7 +208,7 @@ export default function AppShell(props: {
         </div>
       ) : null}
 
-      {/* Desktop layout: sidebar con ALTURA NATURAL + full width horizontal */}
+      {/* Desktop */}
       <div className="hidden md:block w-full px-6 py-6">
         <div className="flex w-full items-start gap-6">
           <aside className="shrink-0">
@@ -238,7 +226,7 @@ export default function AppShell(props: {
         </div>
       </div>
 
-      {/* Mobile main (sin sidebar fijo) */}
+      {/* Mobile main */}
       <div className="md:hidden w-full px-4 py-4">
         <main className="min-w-0">{props.children}</main>
       </div>
@@ -264,10 +252,8 @@ function SidebarContent(props: {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* ✅ Selector idioma en sidebar */}
-          <div className="rounded-xl border border-white/15 bg-white/5 px-2 py-1">
-            <LanguageSwitcher />
-          </div>
+          {/* ✅ Selector idioma sin caja */}
+          <LanguageSwitcher />
 
           <button
             type="button"

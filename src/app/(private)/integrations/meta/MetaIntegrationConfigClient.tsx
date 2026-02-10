@@ -371,9 +371,27 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </p>
               </div>
 
-              <span className={cx('shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
-                {b.text}
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+  <span className={cx('rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
+    {b.text}
+  </span>
+
+  {isConnected ? (
+    <button
+      type="button"
+      onClick={() => void handleConnectMeta()}
+      disabled={oauthBusy}
+      className={cx(
+        'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/15 transition',
+        oauthBusy ? 'opacity-60 cursor-not-allowed' : ''
+      )}
+      title="Reautoriza Meta (útil si cambias permisos o si el token expira)"
+    >
+      {oauthBusy ? 'Conectando…' : 'Re-conectar'}
+    </button>
+  ) : null}
+</div>
+
             </div>
 
             {/* Paso 1: OAuth */}
