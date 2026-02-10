@@ -38,14 +38,16 @@ function parseProvider(v: unknown): ProviderKey | null {
   return null;
 }
 
+type DbErrLike = { message?: unknown; hint?: unknown; details?: unknown; code?: unknown };
+
 function pickErrMeta(err: unknown): { detail?: string; hint?: string; code?: string } {
-  const e = err as { message?: unknown; hint?: unknown; details?: unknown; code?: unknown };
+  const e = err as DbErrLike;
   const detail =
     typeof e?.details === 'string'
       ? e.details
       : typeof e?.message === 'string'
-      ? e.message
-      : undefined;
+        ? e.message
+        : undefined;
 
   const hint = typeof e?.hint === 'string' ? e.hint : undefined;
   const code = typeof e?.code === 'string' ? e.code : undefined;
@@ -124,7 +126,7 @@ export async function POST(req: Request) {
           provider,
           name,
           status: 'draft',
-          created_by: userId, // ✅ ahora que ya existe la columna, OK
+          created_by: userId,
         },
       ])
       .select('id, provider, name, status, created_at')
@@ -132,12 +134,27 @@ export async function POST(req: Request) {
 
     if (error) {
       const meta = pickErrMeta(error);
+
+      // ✅ Friendly: ya existe una integración Meta en este workspace
+      if (meta.code === '23505') {
+        return json(409, {
+          error: 'integration_already_exists',
+          message:
+            'Ya existe una integración Meta para este workspace. Entra en “Configurar” para gestionarla o crea otro workspace si quieres otra conexión.',
+          ...meta,
+        });
+      }
+
       return json(500, { error: 'db_error', ...meta });
     }
 
     return json(201, { ok: true, integration: data });
   } catch (e: unknown) {
     const meta = pickErrMeta(e);
-    return json(500, { error: 'server_error', ...meta, detail: meta.detail ?? (e instanceof Error ? e.message : 'Unexpected error') });
+    return json(500, {
+      error: 'server_error',
+      ...meta,
+      detail: meta.detail ?? (e instanceof Error ? e.message : 'Unexpected error'),
+    });
   }
 }

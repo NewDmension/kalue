@@ -100,12 +100,10 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
 
-  // ✅ si el usuario cancela, Meta suele devolver esto
   const metaErr = (url.searchParams.get('error') ?? '').trim();
   const metaErrReason = (url.searchParams.get('error_reason') ?? '').trim();
   const metaErrDesc = (url.searchParams.get('error_description') ?? '').trim();
 
-  // Para volver a una pantalla “segura” si aún no tenemos integrationId
   const genericErrorRedirect = baseUrl ? `${baseUrl}/integrations?oauth=error` : '/integrations?oauth=error';
 
   try {
@@ -123,7 +121,6 @@ export async function GET(req: Request) {
     const state = (url.searchParams.get('state') ?? '').trim();
 
     if (!state) {
-      // Si cancelas, a veces viene error sin state (depende flujo)
       const reason = metaErr ? `meta_${metaErr}` : 'missing_state';
       return safeRedirect(`${genericErrorRedirect}&reason=${encodeURIComponent(reason)}`);
     }
@@ -157,7 +154,6 @@ export async function GET(req: Request) {
       ? `${baseUrl}/integrations/meta/${integrationId}`
       : `/integrations/meta/${integrationId}`;
 
-    // ✅ Si el usuario canceló/denegó permisos
     if (metaErr) {
       const reason = metaErrReason || metaErr;
       const msg = metaErrDesc || 'OAuth cancelado o denegado.';
@@ -166,18 +162,13 @@ export async function GET(req: Request) {
       );
     }
 
-    if (!code) {
-      return safeRedirect(`${configRedirectBase}?oauth=error&reason=missing_code`);
-    }
+    if (!code) return safeRedirect(`${configRedirectBase}?oauth=error&reason=missing_code`);
 
     const now = Math.floor(Date.now() / 1000);
-    if (now > iat + ttl) {
-      return safeRedirect(`${configRedirectBase}?oauth=error&reason=state_expired`);
-    }
+    if (now > iat + ttl) return safeRedirect(`${configRedirectBase}?oauth=error&reason=state_expired`);
 
     const redirectUri = `${baseUrl}/api/integrations/meta/oauth/callback`;
 
-    // Exchange code -> short-lived token
     const tokenUrl = new URL(`https://graph.facebook.com/${graphVersion}/oauth/access_token`);
     tokenUrl.searchParams.set('client_id', metaAppId);
     tokenUrl.searchParams.set('client_secret', metaAppSecret);
@@ -197,11 +188,8 @@ export async function GET(req: Request) {
     let tokenType = tokenParsed.token_type ?? 'bearer';
     let expiresIn = tokenParsed.expires_in ?? null;
 
-    if (!accessToken) {
-      return safeRedirect(`${configRedirectBase}?oauth=error&reason=missing_access_token`);
-    }
+    if (!accessToken) return safeRedirect(`${configRedirectBase}?oauth=error&reason=missing_access_token`);
 
-    // Optional: exchange to long-lived token
     if (exchangeLongLived) {
       const llUrl = new URL(`https://graph.facebook.com/${graphVersion}/oauth/access_token`);
       llUrl.searchParams.set('grant_type', 'fb_exchange_token');
@@ -225,7 +213,6 @@ export async function GET(req: Request) {
 
     const admin = createClient(supabaseUrl, serviceKey);
 
-    // Ensure integration exists and belongs to workspace and provider=meta
     const { data: row, error: fetchErr } = await admin
       .from('integrations')
       .select('id, workspace_id, provider')
@@ -238,7 +225,6 @@ export async function GET(req: Request) {
       return safeRedirect(`${configRedirectBase}?oauth=error&reason=integration_not_found`);
     }
 
-    // ✅ NEW: cifrar token + guardar en integration_oauth_tokens
     const accessTokenCiphertext = encryptToken(accessToken);
 
     const expiresAt =
@@ -260,19 +246,19 @@ export async function GET(req: Request) {
           expires_at: expiresAt,
           obtained_at: new Date().toISOString(),
         },
-        { onConflict: 'integration_id,provider' }
+        // ✅ tu unique es solo integration_id
+        { onConflict: 'integration_id' }
       );
 
     if (tokErr) {
       return safeRedirect(`${configRedirectBase}?oauth=error&reason=token_store_failed`);
     }
 
-    // ✅ Marcar integración como conectada (sin guardar token en integrations.secrets)
     const { error: updErr } = await admin
       .from('integrations')
       .update({
         status: 'connected',
-        secrets: {}, // mantenemos vacío para no duplicar
+        secrets: {},
         config: { connected: true, provider: 'meta' },
       })
       .eq('id', integrationId)
@@ -282,7 +268,6 @@ export async function GET(req: Request) {
       return safeRedirect(`${configRedirectBase}?oauth=error&reason=db_update_failed`);
     }
 
-    // ✅ IMPORTANTE: tu UI escucha oauth=success
     return safeRedirect(`${configRedirectBase}?oauth=success`);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unexpected error';
