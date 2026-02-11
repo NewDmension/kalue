@@ -17,7 +17,7 @@ function getEnv(name: string): string {
 }
 
 function getWorkspaceId(req: Request): string {
-  const v = req.headers.get('x-workspace-id');
+  const v = (req.headers.get('x-workspace-id') ?? '').trim();
   if (!v) throw new Error('Missing x-workspace-id header');
   return v;
 }
@@ -35,34 +35,19 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 type GraphAccountsResp = {
-  data?: Array<{ id?: unknown; name?: unknown }>;
+  data?: Array<{ id?: unknown; name?: unknown; access_token?: unknown }>;
   paging?: unknown;
   error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
 };
 
-function parseJsonText(text: string): unknown {
+async function readAsJson(res: Response): Promise<unknown> {
+  const text = await res.text();
   if (!text) return null;
   try {
     return JSON.parse(text) as unknown;
   } catch {
     return { _nonJson: true, text };
   }
-}
-
-function pickPages(raw: unknown): MetaPage[] {
-  if (!isRecord(raw)) return [];
-  const data = raw.data;
-  if (!Array.isArray(data)) return [];
-
-  const out: MetaPage[] = [];
-  for (const item of data) {
-    if (!isRecord(item)) continue;
-    const id = typeof item.id === 'string' ? item.id : '';
-    const name = typeof item.name === 'string' ? item.name : '';
-    if (!id || !name) continue;
-    out.push({ id, name });
-  }
-  return out;
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -74,7 +59,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const workspaceId = getWorkspaceId(req);
     const integrationId = getIntegrationId(req);
 
-    // 1) auth user desde cookies
+    // 1) auth user desde cookies (NO Authorization header)
     const cookieStore = await cookies();
     const supabaseServer = createServerClient(supabaseUrl, anonKey, {
       cookies: {
@@ -91,9 +76,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const userId = userData.user.id;
 
     // 2) admin client (service role)
-    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
-      auth: { persistSession: false },
-    });
+    const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
     // 3) verify membership
     const { data: member, error: memberErr } = await supabaseAdmin
@@ -134,7 +117,8 @@ export async function GET(req: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'decrypt_failed', detail: msg }, { status: 500 });
     }
 
-    // 5) Graph: /me/accounts (pedimos MINIMO: id,name)
+    // 5) Graph: /me/accounts
+    // ⚠️ NO pedimos "tasks" (te daba error)
     const graph = new URL('https://graph.facebook.com/v20.0/me/accounts');
     graph.searchParams.set('access_token', userAccessToken);
     graph.searchParams.set('fields', 'id,name');
@@ -149,8 +133,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       cache: 'no-store',
     });
 
-    const text = await res.text();
-    const raw = parseJsonText(text);
+    const raw = await readAsJson(res);
     const parsed: GraphAccountsResp = isRecord(raw) ? (raw as GraphAccountsResp) : {};
 
     if (!res.ok) {
@@ -165,11 +148,19 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
 
-    const pages = pickPages(raw);
+    const pages: MetaPage[] = (parsed.data ?? [])
+      .map((p) => {
+        const id = typeof p.id === 'string' ? p.id : null;
+        const name = typeof p.name === 'string' ? p.name : null;
+        if (!id || !name) return null;
+        return { id, name };
+      })
+      .filter((v): v is MetaPage => v !== null);
+
     return NextResponse.json({
-      rawCount: pages.length,
+      rawCount: Array.isArray(parsed.data) ? parsed.data.length : 0,
       pages,
-      raw, // útil para ver paging / warnings
+      raw,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
