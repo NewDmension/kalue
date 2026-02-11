@@ -76,10 +76,8 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     const accessToken = decryptToken(tok.access_token_ciphertext);
 
-    // Pedimos info útil para ver si hay cuentas/páginas “enlazadas”
-    const url = new URL('https://graph.facebook.com/v20.0/me');
+    const url = new URL('https://graph.facebook.com/v20.0/me/permissions');
     url.searchParams.set('access_token', accessToken);
-    url.searchParams.set('fields', 'id,name');
 
     const res = await fetch(url.toString(), { cache: 'no-store' });
     const json = (await res.json()) as unknown;
@@ -91,7 +89,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
 
-    return NextResponse.json({ me: json });
+    return NextResponse.json({ permissions: json });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
     return NextResponse.json({ error: msg }, { status: 400 });
