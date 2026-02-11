@@ -41,6 +41,7 @@ function pickStringArray(v: unknown): string[] {
 
 type GraphAccountsResp = {
   data?: Array<{ id?: unknown; name?: unknown; tasks?: unknown }>;
+  paging?: unknown;
   error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
 };
 
@@ -112,7 +113,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     }
 
     // 5) Graph: /me/accounts
-    // IMPORTANT: aquí metemos access_token en query (más fiable que solo Authorization header)
+    // access_token en query + Authorization header
     const graph = new URL('https://graph.facebook.com/v20.0/me/accounts');
     graph.searchParams.set('access_token', userAccessToken);
     graph.searchParams.set('fields', 'id,name,tasks');
@@ -122,18 +123,30 @@ export async function GET(req: Request): Promise<NextResponse> {
       method: 'GET',
       headers: {
         accept: 'application/json',
-        // lo dejamos también por si acaso (no molesta)
         authorization: `Bearer ${userAccessToken}`,
       },
       cache: 'no-store',
     });
 
-    const rawJson = (await res.json()) as unknown;
-    const parsed: GraphAccountsResp = isRecord(rawJson) ? (rawJson as GraphAccountsResp) : {};
+    // 👇 parse robusto: text -> json si se puede
+    const text = await res.text();
+    let raw: unknown = null;
+    try {
+      raw = text ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      raw = { _nonJson: true, text };
+    }
+
+    const parsed: GraphAccountsResp = isRecord(raw) ? (raw as GraphAccountsResp) : {};
 
     if (!res.ok) {
       return NextResponse.json(
-        { error: 'graph_error', meta: parsed.error ?? parsed },
+        {
+          error: 'graph_error',
+          status: res.status,
+          meta: parsed.error ?? parsed,
+          raw, // 👈 clave para debug
+        },
         { status: res.status },
       );
     }
@@ -148,8 +161,9 @@ export async function GET(req: Request): Promise<NextResponse> {
       .filter((v): v is MetaPage => v !== null);
 
     return NextResponse.json({
-      rawCount: (parsed.data ?? []).length,
+      rawCount: Array.isArray(parsed.data) ? parsed.data.length : 0,
       pages,
+      raw, // 👈 para ver si Meta devuelve warnings/paging/etc
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
