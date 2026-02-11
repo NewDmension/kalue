@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { supabaseBrowser } from '@/lib/supabase/client';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
+import { supabaseBrowser } from '@/lib/supabase/browser';
 
 type ProviderKey = 'meta';
 type IntegrationStatus = 'draft' | 'connected' | 'error';
