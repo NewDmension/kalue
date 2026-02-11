@@ -111,10 +111,10 @@ function getBaseUrl(req: Request): string {
 }
 
 function normalizeScopes(raw: string): string {
-  // Lista conservadora de scopes que NO queremos pasar por accidente
-  // (si metes uno erróneo, Meta ignora parte o falla y no queda claro)
+  // Evita scopes que sabemos que te rompen el login
   const invalid = new Set<string>([
-    'leads_access', // ❌ no es un scope válido actual para Lead Ads
+    'pages_manage_ads', // ❌ Meta lo rechaza como scope de Facebook Login en tu caso
+    'leads_access', // ❌ no es el scope correcto
   ]);
 
   const items = raw
@@ -123,7 +123,6 @@ function normalizeScopes(raw: string): string {
     .filter((s) => s.length > 0)
     .filter((s) => !invalid.has(s));
 
-  // Dedupe manteniendo orden
   const seen = new Set<string>();
   const deduped: string[] = [];
   for (const s of items) {
@@ -132,7 +131,6 @@ function normalizeScopes(raw: string): string {
       deduped.push(s);
     }
   }
-
   return deduped.join(',');
 }
 
@@ -160,10 +158,10 @@ export async function POST(req: Request) {
 
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
 
-    // Tu env actual:
-    // META_OAUTH_SCOPES=public_profile,pages_show_list,pages_read_engagement
-    // ✅ Aseguramos pages_manage_ads porque lo necesitas para listar forms/activos de lead ads
-    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'public_profile,pages_show_list,pages_read_engagement,pages_manage_ads');
+    // ✅ Lead Ads: scopes típicos (mínimo)
+    // - pages_show_list: listar pages
+    // - leads_retrieval: listar lead forms / leer leads
+    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'public_profile,pages_show_list,leads_retrieval');
 
     const ttlSeconds = Number.parseInt(getEnv('META_OAUTH_STATE_TTL_SECONDS', '900'), 10);
     const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 900;
@@ -213,8 +211,8 @@ export async function POST(req: Request) {
 
     let scope = normalizeScopes(scopesRaw);
 
-    // ✅ fuerza scopes mínimos para que no vuelva a fallar por falta de pages_manage_ads
-    scope = ensureRequiredScopes(scope, ['pages_show_list', 'pages_read_engagement', 'pages_manage_ads']);
+    // ✅ fuerza mínimos reales
+    scope = ensureRequiredScopes(scope, ['pages_show_list', 'leads_retrieval']);
 
     if (!scope) {
       return json(500, { error: 'server_error', detail: 'META_OAUTH_SCOPES resolved to empty scope list.' });
@@ -226,6 +224,9 @@ export async function POST(req: Request) {
     authUrl.searchParams.set('state', state);
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('scope', scope);
+
+    // ✅ fuerza que Meta vuelva a pedir permisos (muy importante al cambiar scopes)
+    authUrl.searchParams.set('auth_type', 'rerequest');
 
     return json(200, { ok: true, url: authUrl.toString(), debug: { redirectUri, scope } });
   } catch (e: unknown) {
