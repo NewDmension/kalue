@@ -20,6 +20,8 @@ type IntegrationRow = {
   secrets?: unknown;
 };
 
+type MetaPage = { id: string; name: string };
+
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
@@ -131,6 +133,29 @@ function statusBadge(status: IntegrationStatus): { text: string; className: stri
   return { text: 'DRAFT', className: 'border-white/15 bg-white/5 text-white/70' };
 }
 
+async function fetchPages(args: { integrationId: string; workspaceId: string }): Promise<MetaPage[]> {
+  const res = await fetch(`/api/integrations/meta/pages?integrationId=${encodeURIComponent(args.integrationId)}`, {
+    method: 'GET',
+    headers: { 'x-workspace-id': args.workspaceId },
+  });
+
+  const raw = await safeJson(res);
+  if (!res.ok) {
+    throw new Error(pickErrorMessage(raw, `No se pudieron cargar Pages (${res.status})`));
+  }
+
+  const pagesRaw = isRecord(raw) ? raw.pages : null;
+  if (!Array.isArray(pagesRaw)) return [];
+
+  const pages: MetaPage[] = [];
+  for (const p of pagesRaw) {
+    if (isRecord(p) && typeof p.id === 'string' && typeof p.name === 'string') {
+      pages.push({ id: p.id, name: p.name });
+    }
+  }
+  return pages;
+}
+
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
   const searchParams = useSearchParams();
   const workspaceId = useMemo(() => getActiveWorkspaceId(), []);
@@ -139,8 +164,12 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
   const [error, setError] = useState<string | null>(null);
   const [integration, setIntegration] = useState<IntegrationRow | null>(null);
-
   const [info, setInfo] = useState<string | null>(null);
+
+  // Pages UI
+  const [pagesLoading, setPagesLoading] = useState<boolean>(false);
+  const [pagesError, setPagesError] = useState<string | null>(null);
+  const [pages, setPages] = useState<MetaPage[]>([]);
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
 
@@ -225,9 +254,36 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, workspaceId]);
 
+  const loadPages = useCallback(async () => {
+    setPagesError(null);
+    setPages([]);
+    if (!workspaceId || !normalizedId || !isUuid(normalizedId)) return;
+
+    setPagesLoading(true);
+    try {
+      const data = await fetchPages({ integrationId: normalizedId, workspaceId });
+      setPages(data);
+      setPagesLoading(false);
+    } catch (e: unknown) {
+      setPagesLoading(false);
+      setPagesError(e instanceof Error ? e.message : 'Error cargando Pages');
+    }
+  }, [normalizedId, workspaceId]);
+
   useEffect(() => {
     void loadIntegration();
   }, [loadIntegration]);
+
+  // Cuando la integración está conectada, intentamos listar Pages (estado real)
+  useEffect(() => {
+    if (integration?.status === 'connected') {
+      void loadPages();
+    } else {
+      setPages([]);
+      setPagesError(null);
+      setPagesLoading(false);
+    }
+  }, [integration?.status, loadPages]);
 
   useEffect(() => {
     const oauth = searchParams.get('oauth');
@@ -421,24 +477,89 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               )}
             </div>
 
-            {/* Próximos pasos */}
+            {/* Pages (estado real) */}
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
-              <p className="text-sm font-semibold text-white/90">Siguiente</p>
-              <p className="mt-1 text-xs text-white/60">
-                Esto lo activaremos cuando añadamos el flujo de selección de Page + Form.
-              </p>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-white/90">Pages detectadas</p>
+                  <p className="mt-1 text-xs text-white/60">
+                    Si no aparecen Pages, este workspace no podrá listar Lead Forms ni recibir leads.
+                  </p>
+                </div>
 
-              <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
-                <ul className="list-disc pl-5 space-y-1">
-                  <li>Seleccionar Page</li>
-                  <li>Seleccionar Lead Form</li>
-                  <li>Mapping de campos</li>
-                </ul>
+                <button
+                  type="button"
+                  onClick={() => void loadPages()}
+                  disabled={!isConnected || pagesLoading}
+                  className={cx(
+                    'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10',
+                    !isConnected || pagesLoading ? 'opacity-60 cursor-not-allowed' : ''
+                  )}
+                  title={isConnected ? 'Volver a consultar Pages en Meta' : 'Conecta Meta primero'}
+                >
+                  {pagesLoading ? 'Buscando…' : 'Revisar Pages'}
+                </button>
               </div>
 
-              <p className="mt-4 text-xs text-white/45">
-                Nota: aunque Meta no muestre “leadgen” en UI, la suscripción real se activa cuando guardemos Page/Form.
-              </p>
+              {!isConnected ? (
+                <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
+                  Conecta Meta para poder detectar Pages.
+                </div>
+              ) : null}
+
+              {pagesError ? (
+                <div className="mt-4 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-xs text-red-200 whitespace-pre-line">
+                  {pagesError}
+                </div>
+              ) : null}
+
+              {isConnected && !pagesLoading && !pagesError && pages.length === 0 ? (
+                <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-200">
+                  <p className="font-semibold">⚠️ No se encontraron Pages para esta cuenta.</p>
+                  <p className="mt-2 text-xs text-amber-100/80 leading-relaxed">
+                    Aunque Meta esté “LIVE”, no podremos continuar con Lead Forms ni Webhooks hasta que Meta devuelva al menos
+                    una Page en <span className="font-mono">/me/accounts</span>.
+                    <br />
+                    <br />
+                    Asegúrate de que el usuario con el que autorizas:
+                    <br />• es <span className="font-semibold">admin/editor</span> de la Page
+                    <br />• tiene acceso a la Page en <span className="font-semibold">Business Manager</span> (si aplica)
+                    <br />
+                    <br />
+                    Luego pulsa <span className="font-semibold">Re-conectar</span> y vuelve a “Revisar Pages”.
+                  </p>
+                </div>
+              ) : null}
+
+              {pages.length > 0 ? (
+                <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/75">
+                  <p className="text-white/90 font-semibold">Pages disponibles ({pages.length})</p>
+                  <ul className="mt-2 space-y-2">
+                    {pages.map((p) => (
+                      <li key={p.id} className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-white/90">{p.name}</div>
+                          <div className="font-mono text-[11px] text-white/45">{p.id}</div>
+                        </div>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-white/70">
+                          detectada
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {/* Próximos pasos */}
+              <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
+                <p className="text-white/90 font-semibold">Siguiente (cuando haya Pages)</p>
+                <ul className="mt-2 list-disc pl-5 space-y-1">
+                  <li>Elegir Page</li>
+                  <li>Listar y elegir Lead Form</li>
+                  <li>Guardar mapping (Page + Form)</li>
+                  <li>Suscribir Webhook (leadgen)</li>
+                </ul>
+              </div>
             </div>
           </div>
         ) : null}
