@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+// AJUSTA este import a tu ruta real
+import { decryptToken } from '@/server/crypto/tokenCrypto';
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
@@ -26,8 +29,17 @@ function getWorkspaceId(req: Request): string {
   return v;
 }
 
+function getIntegrationId(req: Request): string {
+  const url = new URL(req.url);
+  const v = url.searchParams.get('integrationId');
+  const s = v?.trim();
+  if (!s) throw new Error('Missing integrationId query param');
+  return s;
+}
+
 type GraphAccountsResp = {
   data?: Array<{ id?: string; name?: string; access_token?: string }>;
+  error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
 };
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -38,51 +50,81 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     const token = getBearerToken(req);
     const workspaceId = getWorkspaceId(req);
+    const integrationId = getIntegrationId(req);
 
-    // user
+    // 1) auth user
     const supabaseAuth = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
       auth: { persistSession: false },
     });
-    const { data: userData, error: userErr } = await supabaseAuth.auth.getUser();
-    if (userErr || !userData.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
+    const { data: userData, error: userErr } = await supabaseAuth.auth.getUser();
+    if (userErr || !userData.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     const userId = userData.user.id;
 
-    // verify membership
+    // 2) verify membership
     const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
-    const { data: member } = await supabaseAdmin
+
+    const { data: member, error: memberErr } = await supabaseAdmin
       .from('workspace_members')
       .select('workspace_id,user_id')
       .eq('workspace_id', workspaceId)
       .eq('user_id', userId)
       .maybeSingle();
 
-    if (!member) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    if (memberErr) {
+      return NextResponse.json({ error: 'db_error', detail: memberErr.message }, { status: 500 });
+    }
+    if (!member) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
 
-    // load integration meta for this workspace
-    const { data: integration } = await supabaseAdmin
-      .from('integrations')
-      .select('id, secrets')
+    // 3) load oauth token ciphertext from integration_oauth_tokens
+    const { data: tok, error: tokErr } = await supabaseAdmin
+      .from('integration_oauth_tokens')
+      .select('access_token_ciphertext')
       .eq('workspace_id', workspaceId)
+      .eq('integration_id', integrationId)
       .eq('provider', 'meta')
       .maybeSingle();
 
-    if (!integration) return NextResponse.json({ error: 'Meta not connected' }, { status: 400 });
+    if (tokErr) {
+      return NextResponse.json({ error: 'db_error', detail: tokErr.message }, { status: 500 });
+    }
+    if (!tok?.access_token_ciphertext) {
+      return NextResponse.json({ error: 'token_not_found' }, { status: 404 });
+    }
 
-    const secrets = (typeof integration.secrets === 'object' && integration.secrets !== null) ? (integration.secrets as Record<string, unknown>) : {};
-    const userAccessToken = typeof secrets['access_token'] === 'string' ? secrets['access_token'] : null;
-    if (!userAccessToken) return NextResponse.json({ error: 'Missing access token' }, { status: 400 });
+    const userAccessToken = decryptToken(tok.access_token_ciphertext);
 
-    // /me/accounts => pages + page access_token
-    const url = new URL('https://graph.facebook.com/v19.0/me/accounts');
-    url.searchParams.set('access_token', userAccessToken);
+    // 4) Graph: /me/accounts => pages
+    const url = new URL('https://graph.facebook.com/v20.0/me/accounts');
+    url.searchParams.set('fields', 'id,name');
 
-    const res = await fetch(url.toString(), { method: 'GET' });
-    const json = (await res.json()) as GraphAccountsResp;
-    if (!res.ok) return NextResponse.json({ error: 'Failed to list pages', meta: json }, { status: 400 });
+    const res = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${userAccessToken}`,
+      },
+      cache: 'no-store',
+    });
 
-    const pages: MetaPage[] = (json.data ?? [])
+    const body = (await res.json()) as unknown;
+
+    const parsed: GraphAccountsResp =
+      typeof body === 'object' && body !== null ? (body as GraphAccountsResp) : {};
+
+    if (!res.ok) {
+      return NextResponse.json(
+        { error: 'Failed to list pages', meta: parsed.error ?? parsed },
+        { status: res.status },
+      );
+    }
+
+    const pages: MetaPage[] = (parsed.data ?? [])
       .map((p) => (typeof p.id === 'string' && typeof p.name === 'string' ? { id: p.id, name: p.name } : null))
       .filter((v): v is MetaPage => v !== null);
 
