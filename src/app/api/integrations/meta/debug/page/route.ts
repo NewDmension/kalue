@@ -39,15 +39,7 @@ type GraphError = {
   fbtrace_id?: unknown;
 };
 
-type GraphAnyResp = {
-  id?: unknown;
-  name?: unknown;
-  access_token?: unknown;
-  tasks?: unknown;
-  error?: GraphError;
-};
-
-async function fetchGraphJson(url: string, token?: string): Promise<{ ok: boolean; status: number; raw: unknown }> {
+async function fetchGraph(url: string, token?: string): Promise<{ ok: boolean; status: number; raw: unknown }> {
   const res = await fetch(url, {
     method: 'GET',
     headers: {
@@ -149,40 +141,24 @@ export async function GET(req: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'decrypt_failed', detail: msg }, { status: 500 });
     }
 
-    // 5) Dos pruebas:
-    // A) "public check" sin token (solo id,name)
-    // B) "token check" con token (id,name,access_token,tasks)
+    // A) public check sin token (id,name)
     const publicUrl = new URL(`https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}`);
     publicUrl.searchParams.set('fields', 'id,name');
 
+    // B) token check con token (QUITAMOS tasks)
     const tokenUrl = new URL(`https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}`);
-    tokenUrl.searchParams.set('fields', 'id,name,access_token,tasks');
+    tokenUrl.searchParams.set('fields', 'id,name,access_token');
     tokenUrl.searchParams.set('access_token', userAccessToken);
 
-    const pub = await fetchGraphJson(publicUrl.toString());
-    const tokRes = await fetchGraphJson(tokenUrl.toString(), userAccessToken);
+    const pub = await fetchGraph(publicUrl.toString());
+    const tokRes = await fetchGraph(tokenUrl.toString(), userAccessToken);
 
-    // Parse “bonito” del token response si va bien
-    let page: { id: string; name: string; has_page_access_token: boolean } | null = null;
-    if (tokRes.ok && isRecord(tokRes.raw)) {
-      const r = tokRes.raw as GraphAnyResp;
-      const id = typeof r.id === 'string' ? r.id : '';
-      const name = typeof r.name === 'string' ? r.name : '';
-      const pageAccessToken = typeof r.access_token === 'string' ? r.access_token : '';
-      if (id && name) {
-        page = { id, name, has_page_access_token: Boolean(pageAccessToken) };
-      }
-    }
-
-    // Si el token check falla, devolvemos SIEMPRE el mensaje de error
     if (!tokRes.ok) {
-      const err = pickGraphError(tokRes.raw);
       return NextResponse.json(
         {
           error: 'graph_error',
           status: tokRes.status,
-          graph: err,
-          // clave: ver si el ID existe “público”
+          graph: pickGraphError(tokRes.raw),
           publicCheck: { ok: pub.ok, status: pub.status, raw: pub.raw },
           raw: tokRes.raw,
         },
@@ -192,7 +168,6 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     return NextResponse.json({
       ok: true,
-      page,
       publicCheck: { ok: pub.ok, status: pub.status, raw: pub.raw },
       raw: tokRes.raw,
     });
