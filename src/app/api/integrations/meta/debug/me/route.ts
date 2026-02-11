@@ -1,6 +1,4 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 import { decryptToken } from '@/server/crypto/tokenCrypto';
 
@@ -13,100 +11,156 @@ function getEnv(name: string): string {
   return v;
 }
 
-function getWorkspaceId(req: Request): string {
+function bearer(req: Request): string {
+  const h = req.headers.get('authorization');
+  if (!h) throw new Error('Missing Authorization header');
+  const [kind, token] = h.split(' ');
+  if (kind !== 'Bearer' || !token) throw new Error('Invalid Authorization header');
+  return token;
+}
+
+function workspaceId(req: Request): string {
   const v = req.headers.get('x-workspace-id');
   if (!v) throw new Error('Missing x-workspace-id header');
   return v;
 }
 
-function getIntegrationId(req: Request): string {
-  const url = new URL(req.url);
-  const v = url.searchParams.get('integrationId');
-  const s = v?.trim();
-  if (!s) throw new Error('Missing integrationId query param');
-  return s;
+function pickString(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() ? v : null;
 }
+
+type TokenRow = {
+  access_token_ciphertext: string | null;
+};
 
 type GraphMeResp = {
   id?: string;
   name?: string;
-  accounts?: { data?: Array<{ id?: string; name?: string }> };
-  error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
 };
+
+type DebugTokenResp = {
+  data?: {
+    is_valid?: boolean;
+    scopes?: string[];
+    user_id?: string;
+    app_id?: string;
+    expires_at?: number;
+  };
+};
+
+type AccountsResp = {
+  data?: Array<{ id?: string; name?: string }>;
+};
+
+async function graphGet<T>(path: string, accessToken: string): Promise<{ ok: boolean; status: number; json: T }> {
+  const url = new URL(`https://graph.facebook.com/v19.0/${path}`);
+  url.searchParams.set('access_token', accessToken);
+
+  const res = await fetch(url.toString(), { method: 'GET' });
+  const json = (await res.json()) as T;
+  return { ok: res.ok, status: res.status, json };
+}
 
 export async function GET(req: Request): Promise<NextResponse> {
   try {
     const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL');
     const anonKey = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY');
     const serviceKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
+    const appId = getEnv('META_APP_ID');
+    const appSecret = getEnv('META_APP_SECRET');
 
-    const workspaceId = getWorkspaceId(req);
-    const integrationId = getIntegrationId(req);
+    const token = bearer(req);
+    const wsId = workspaceId(req);
 
-    const cookieStore = await cookies();
-    const supabaseServer = createServerClient(supabaseUrl, anonKey, {
-      cookies: {
-        get: (name) => cookieStore.get(name)?.value,
-        set: () => {},
-        remove: () => {},
-      },
+    // Auth user (for membership check)
+    const supabaseAuth = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false },
     });
-
-    const { data: userData } = await supabaseServer.auth.getUser();
-    if (!userData.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { data: userData, error: userErr } = await supabaseAuth.auth.getUser();
+    if (userErr || !userData.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const userId = userData.user.id;
 
-    const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+    // Admin client
+    const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-    const { data: member } = await supabaseAdmin
+    // Membership check
+    const { data: member } = await admin
       .from('workspace_members')
       .select('workspace_id,user_id')
-      .eq('workspace_id', workspaceId)
+      .eq('workspace_id', wsId)
       .eq('user_id', userId)
       .maybeSingle();
-
     if (!member) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-    const { data: tok } = await supabaseAdmin
-      .from('integration_oauth_tokens')
-      .select('access_token_ciphertext')
-      .eq('workspace_id', workspaceId)
-      .eq('integration_id', integrationId)
+    // Integration check
+    const { data: integration } = await admin
+      .from('integrations')
+      .select('id,provider,status')
+      .eq('workspace_id', wsId)
       .eq('provider', 'meta')
       .maybeSingle();
 
-    if (!tok?.access_token_ciphertext) {
-      return NextResponse.json({ error: 'token_not_found' }, { status: 404 });
-    }
+    if (!integration) return NextResponse.json({ error: 'Meta not connected' }, { status: 400 });
 
-    const userAccessToken = decryptToken(tok.access_token_ciphertext);
+    // Load encrypted token from integration_oauth_tokens
+    const { data: trow } = await admin
+      .from('integration_oauth_tokens')
+      .select('access_token_ciphertext')
+      .eq('workspace_id', wsId)
+      .eq('integration_id', integration.id)
+      .eq('provider', 'meta')
+      .order('obtained_at', { ascending: false })
+      .limit(1)
+      .maybeSingle<TokenRow>();
 
-    const url = new URL('https://graph.facebook.com/v20.0/me');
-    url.searchParams.set('fields', 'id,name,accounts{id,name}');
+    const ciphertext = trow?.access_token_ciphertext ?? null;
+    if (!ciphertext) return NextResponse.json({ error: 'Missing oauth token for this integration' }, { status: 400 });
 
-    const res = await fetch(url.toString(), {
-      headers: { accept: 'application/json', authorization: `Bearer ${userAccessToken}` },
-      cache: 'no-store',
-    });
+    const accessToken = decryptToken(ciphertext);
+    if (!accessToken) return NextResponse.json({ error: 'Failed to decrypt token' }, { status: 400 });
 
-    const body = (await res.json()) as unknown;
-    const parsed: GraphMeResp = typeof body === 'object' && body !== null ? (body as GraphMeResp) : {};
+    // /me
+    const me = await graphGet<GraphMeResp>('me', accessToken);
+    if (!me.ok) return NextResponse.json({ error: 'Failed /me', meta: me.json }, { status: 400 });
 
-    if (!res.ok) {
-      return NextResponse.json({ error: 'meta_error', meta: parsed.error ?? parsed }, { status: res.status });
-    }
+    // /debug_token (scopes + user_id)
+    const appAccessToken = `${appId}|${appSecret}`;
+    const dbgUrl = new URL('https://graph.facebook.com/v19.0/debug_token');
+    dbgUrl.searchParams.set('input_token', accessToken);
+    dbgUrl.searchParams.set('access_token', appAccessToken);
 
-    const count = Array.isArray(parsed.accounts?.data) ? parsed.accounts?.data.length : 0;
+    const dbgRes = await fetch(dbgUrl.toString(), { method: 'GET' });
+    const dbgJson = (await dbgRes.json()) as DebugTokenResp;
+
+    // /me/accounts
+    const accounts = await graphGet<AccountsResp>('me/accounts', accessToken);
 
     return NextResponse.json({
-      me: { id: parsed.id ?? null, name: parsed.name ?? null },
-      accountsCount: count,
-      accounts: (parsed.accounts?.data ?? []).map((a) => ({
-        id: typeof a.id === 'string' ? a.id : null,
-        name: typeof a.name === 'string' ? a.name : null,
-      })),
+      integration: { id: integration.id, status: integration.status },
+      me: { id: pickString(me.json.id), name: pickString(me.json.name) },
+      token: {
+        is_valid: dbgJson.data?.is_valid ?? null,
+        user_id: dbgJson.data?.user_id ?? null,
+        app_id: dbgJson.data?.app_id ?? null,
+        expires_at: dbgJson.data?.expires_at ?? null,
+        scopes: Array.isArray(dbgJson.data?.scopes) ? dbgJson.data!.scopes : [],
+      },
+      accountsCount: Array.isArray(accounts.json.data) ? accounts.json.data.length : 0,
+      accountsPreview: Array.isArray(accounts.json.data)
+        ? accounts.json.data
+            .map((p) => {
+              const id = pickString(p.id);
+              const name = pickString(p.name);
+              return id && name ? { id, name } : null;
+            })
+            .filter((v): v is { id: string; name: string } => v !== null)
+            .slice(0, 5)
+        : [],
+      accountsError: accounts.ok ? null : accounts.json,
     });
   } catch (e: unknown) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : 'Unknown error' }, { status: 400 });
+    const msg = e instanceof Error ? e.message : 'Unknown error';
+    return NextResponse.json({ error: msg }, { status: 400 });
   }
 }
