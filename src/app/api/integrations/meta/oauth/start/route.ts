@@ -111,8 +111,12 @@ function getBaseUrl(req: Request): string {
 }
 
 function normalizeScopes(raw: string): string {
-  // Normaliza, deduplica, y elimina scopes inválidos conocidos
-  const invalid = new Set<string>(['leads_retrieval']); // ❌ NO existe en Meta
+  // Lista conservadora de scopes que NO queremos pasar por accidente
+  // (si metes uno erróneo, Meta ignora parte o falla y no queda claro)
+  const invalid = new Set<string>([
+    'leads_access', // ❌ no es un scope válido actual para Lead Ads
+  ]);
+
   const items = raw
     .split(',')
     .map((s) => s.trim())
@@ -128,7 +132,21 @@ function normalizeScopes(raw: string): string {
       deduped.push(s);
     }
   }
+
   return deduped.join(',');
+}
+
+function ensureRequiredScopes(scopeCsv: string, required: string[]): string {
+  const items = scopeCsv
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const set = new Set(items);
+  for (const r of required) {
+    if (!set.has(r)) items.push(r);
+  }
+  return items.join(',');
 }
 
 export async function POST(req: Request) {
@@ -142,11 +160,10 @@ export async function POST(req: Request) {
 
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
 
-    // ✅ Scopes válidos por defecto para Lead Ads (mínimo típico)
-    // - pages_show_list: listar páginas
-    // - pages_read_engagement: leer info básica / engagement
-    // - leads_access: leer leads de Lead Forms
-    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'pages_show_list,pages_read_engagement');
+    // Tu env actual:
+    // META_OAUTH_SCOPES=public_profile,pages_show_list,pages_read_engagement
+    // ✅ Aseguramos pages_manage_ads porque lo necesitas para listar forms/activos de lead ads
+    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'public_profile,pages_show_list,pages_read_engagement,pages_manage_ads');
 
     const ttlSeconds = Number.parseInt(getEnv('META_OAUTH_STATE_TTL_SECONDS', '900'), 10);
     const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 900;
@@ -181,7 +198,6 @@ export async function POST(req: Request) {
     const baseUrl = getBaseUrl(req);
     const redirectUri = `${baseUrl}/api/integrations/meta/oauth/callback`;
 
-    // state firmado (evita que cualquiera llame al callback con otro integrationId)
     const statePayloadObj = {
       integrationId: integrationIdRaw,
       workspaceId,
@@ -195,7 +211,11 @@ export async function POST(req: Request) {
     const sig = hmacSha256Base64url(stateSecret, encodedPayload);
     const state = `${encodedPayload}.${sig}`;
 
-    const scope = normalizeScopes(scopesRaw);
+    let scope = normalizeScopes(scopesRaw);
+
+    // ✅ fuerza scopes mínimos para que no vuelva a fallar por falta de pages_manage_ads
+    scope = ensureRequiredScopes(scope, ['pages_show_list', 'pages_read_engagement', 'pages_manage_ads']);
+
     if (!scope) {
       return json(500, { error: 'server_error', detail: 'META_OAUTH_SCOPES resolved to empty scope list.' });
     }
