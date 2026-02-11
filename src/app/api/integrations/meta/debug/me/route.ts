@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
+import { cookies } from 'next/headers';
 import { decryptToken } from '@/server/crypto/tokenCrypto';
 
 export const runtime = 'nodejs';
@@ -11,15 +13,7 @@ function getEnv(name: string): string {
   return v;
 }
 
-function bearer(req: Request): string {
-  const h = req.headers.get('authorization');
-  if (!h) throw new Error('Missing Authorization header');
-  const [kind, token] = h.split(' ');
-  if (kind !== 'Bearer' || !token) throw new Error('Invalid Authorization header');
-  return token;
-}
-
-function workspaceId(req: Request): string {
+function getWorkspaceId(req: Request): string {
   const v = req.headers.get('x-workspace-id');
   if (!v) throw new Error('Missing x-workspace-id header');
   return v;
@@ -29,14 +23,10 @@ function pickString(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v : null;
 }
 
-type TokenRow = {
-  access_token_ciphertext: string | null;
-};
+type TokenRow = { access_token_ciphertext: string | null };
 
-type GraphMeResp = {
-  id?: string;
-  name?: string;
-};
+type GraphMeResp = { id?: string; name?: string };
+type AccountsResp = { data?: Array<{ id?: string; name?: string }> };
 
 type DebugTokenResp = {
   data?: {
@@ -48,14 +38,9 @@ type DebugTokenResp = {
   };
 };
 
-type AccountsResp = {
-  data?: Array<{ id?: string; name?: string }>;
-};
-
 async function graphGet<T>(path: string, accessToken: string): Promise<{ ok: boolean; status: number; json: T }> {
   const url = new URL(`https://graph.facebook.com/v19.0/${path}`);
   url.searchParams.set('access_token', accessToken);
-
   const res = await fetch(url.toString(), { method: 'GET' });
   const json = (await res.json()) as T;
   return { ok: res.ok, status: res.status, json };
@@ -66,18 +51,29 @@ export async function GET(req: Request): Promise<NextResponse> {
     const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL');
     const anonKey = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY');
     const serviceKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
+
     const appId = getEnv('META_APP_ID');
     const appSecret = getEnv('META_APP_SECRET');
 
-    const token = bearer(req);
-    const wsId = workspaceId(req);
+    const wsId = getWorkspaceId(req);
 
-    // Auth user (for membership check)
-    const supabaseAuth = createClient(supabaseUrl, anonKey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-      auth: { persistSession: false },
+    // ✅ Auth via cookies (no Authorization header required)
+    const cookieStore = await cookies();
+    const supabaseServer = createServerClient(supabaseUrl, anonKey, {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+        set() {
+          // route handler GET: no-op
+        },
+        remove() {
+          // route handler GET: no-op
+        },
+      },
     });
-    const { data: userData, error: userErr } = await supabaseAuth.auth.getUser();
+
+    const { data: userData, error: userErr } = await supabaseServer.auth.getUser();
     if (userErr || !userData.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const userId = userData.user.id;
 
@@ -91,19 +87,20 @@ export async function GET(req: Request): Promise<NextResponse> {
       .eq('workspace_id', wsId)
       .eq('user_id', userId)
       .maybeSingle();
+
     if (!member) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-    // Integration check
+    // Integration
     const { data: integration } = await admin
       .from('integrations')
-      .select('id,provider,status')
+      .select('id,status')
       .eq('workspace_id', wsId)
       .eq('provider', 'meta')
       .maybeSingle();
 
     if (!integration) return NextResponse.json({ error: 'Meta not connected' }, { status: 400 });
 
-    // Load encrypted token from integration_oauth_tokens
+    // Latest token
     const { data: trow } = await admin
       .from('integration_oauth_tokens')
       .select('access_token_ciphertext')
@@ -115,7 +112,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       .maybeSingle<TokenRow>();
 
     const ciphertext = trow?.access_token_ciphertext ?? null;
-    if (!ciphertext) return NextResponse.json({ error: 'Missing oauth token for this integration' }, { status: 400 });
+    if (!ciphertext) return NextResponse.json({ error: 'Missing oauth token' }, { status: 400 });
 
     const accessToken = decryptToken(ciphertext);
     if (!accessToken) return NextResponse.json({ error: 'Failed to decrypt token' }, { status: 400 });
@@ -124,11 +121,10 @@ export async function GET(req: Request): Promise<NextResponse> {
     const me = await graphGet<GraphMeResp>('me', accessToken);
     if (!me.ok) return NextResponse.json({ error: 'Failed /me', meta: me.json }, { status: 400 });
 
-    // /debug_token (scopes + user_id)
-    const appAccessToken = `${appId}|${appSecret}`;
+    // /debug_token
     const dbgUrl = new URL('https://graph.facebook.com/v19.0/debug_token');
     dbgUrl.searchParams.set('input_token', accessToken);
-    dbgUrl.searchParams.set('access_token', appAccessToken);
+    dbgUrl.searchParams.set('access_token', `${appId}|${appSecret}`);
 
     const dbgRes = await fetch(dbgUrl.toString(), { method: 'GET' });
     const dbgJson = (await dbgRes.json()) as DebugTokenResp;
@@ -137,7 +133,6 @@ export async function GET(req: Request): Promise<NextResponse> {
     const accounts = await graphGet<AccountsResp>('me/accounts', accessToken);
 
     return NextResponse.json({
-      integration: { id: integration.id, status: integration.status },
       me: { id: pickString(me.json.id), name: pickString(me.json.name) },
       token: {
         is_valid: dbgJson.data?.is_valid ?? null,
