@@ -8,7 +8,7 @@ import { decryptToken } from '@/server/crypto/tokenCrypto';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type MetaPage = { id: string; name: string };
+type MetaPage = { id: string; name: string; tasks: string[] };
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -30,8 +30,17 @@ function getIntegrationId(req: Request): string {
   return s;
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+function pickStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === 'string');
+}
+
 type GraphAccountsResp = {
-  data?: Array<{ id?: string; name?: string; access_token?: string }>;
+  data?: Array<{ id?: unknown; name?: unknown; tasks?: unknown }>;
   error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
 };
 
@@ -78,7 +87,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    // 4) load oauth token ciphertext (nuevo flujo)
+    // 4) load oauth token ciphertext
     const { data: tok, error: tokErr } = await supabaseAdmin
       .from('integration_oauth_tokens')
       .select('access_token_ciphertext')
@@ -94,37 +103,54 @@ export async function GET(req: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'token_not_found' }, { status: 404 });
     }
 
-    const userAccessToken = decryptToken(tok.access_token_ciphertext);
+    let userAccessToken = '';
+    try {
+      userAccessToken = decryptToken(tok.access_token_ciphertext);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'decrypt_failed';
+      return NextResponse.json({ error: 'decrypt_failed', detail: msg }, { status: 500 });
+    }
 
     // 5) Graph: /me/accounts
-    const url = new URL('https://graph.facebook.com/v20.0/me/accounts');
-    url.searchParams.set('fields', 'id,name');
+    // IMPORTANT: aquí metemos access_token en query (más fiable que solo Authorization header)
+    const graph = new URL('https://graph.facebook.com/v20.0/me/accounts');
+    graph.searchParams.set('access_token', userAccessToken);
+    graph.searchParams.set('fields', 'id,name,tasks');
+    graph.searchParams.set('limit', '200');
 
-    const res = await fetch(url.toString(), {
+    const res = await fetch(graph.toString(), {
       method: 'GET',
       headers: {
         accept: 'application/json',
+        // lo dejamos también por si acaso (no molesta)
         authorization: `Bearer ${userAccessToken}`,
       },
       cache: 'no-store',
     });
 
-    const body = (await res.json()) as unknown;
-    const parsed: GraphAccountsResp =
-      typeof body === 'object' && body !== null ? (body as GraphAccountsResp) : {};
+    const rawJson = (await res.json()) as unknown;
+    const parsed: GraphAccountsResp = isRecord(rawJson) ? (rawJson as GraphAccountsResp) : {};
 
     if (!res.ok) {
       return NextResponse.json(
-        { error: 'Failed to list pages', meta: parsed.error ?? parsed },
+        { error: 'graph_error', meta: parsed.error ?? parsed },
         { status: res.status },
       );
     }
 
     const pages: MetaPage[] = (parsed.data ?? [])
-      .map((p) => (typeof p.id === 'string' && typeof p.name === 'string' ? { id: p.id, name: p.name } : null))
+      .map((p) => {
+        const id = typeof p.id === 'string' ? p.id : null;
+        const name = typeof p.name === 'string' ? p.name : null;
+        if (!id || !name) return null;
+        return { id, name, tasks: pickStringArray(p.tasks) };
+      })
       .filter((v): v is MetaPage => v !== null);
 
-    return NextResponse.json({ pages });
+    return NextResponse.json({
+      rawCount: (parsed.data ?? []).length,
+      pages,
+    });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
     return NextResponse.json({ error: msg }, { status: 400 });
