@@ -31,13 +31,55 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-type GraphPageResp = {
+type GraphError = {
+  message?: unknown;
+  type?: unknown;
+  code?: unknown;
+  error_subcode?: unknown;
+  fbtrace_id?: unknown;
+};
+
+type GraphAnyResp = {
   id?: unknown;
   name?: unknown;
   access_token?: unknown;
   tasks?: unknown;
-  error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
+  error?: GraphError;
 };
+
+async function fetchGraphJson(url: string, token?: string): Promise<{ ok: boolean; status: number; raw: unknown }> {
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    cache: 'no-store',
+  });
+
+  const text = await res.text();
+  let raw: unknown = null;
+  try {
+    raw = text ? (JSON.parse(text) as unknown) : null;
+  } catch {
+    raw = { _nonJson: true, text };
+  }
+
+  return { ok: res.ok, status: res.status, raw };
+}
+
+function pickGraphError(raw: unknown): { message: string; type?: string; code?: number; subcode?: number } {
+  if (!isRecord(raw)) return { message: 'Unknown graph error' };
+  const err = raw.error;
+  if (!isRecord(err)) return { message: 'Unknown graph error' };
+
+  const message = typeof err.message === 'string' ? err.message : JSON.stringify(err);
+  const type = typeof err.type === 'string' ? err.type : undefined;
+  const code = typeof err.code === 'number' ? err.code : undefined;
+  const subcode = typeof err.error_subcode === 'number' ? err.error_subcode : undefined;
+
+  return { message, type, code, subcode };
+}
 
 export async function GET(req: Request): Promise<NextResponse> {
   try {
@@ -107,45 +149,52 @@ export async function GET(req: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'decrypt_failed', detail: msg }, { status: 500 });
     }
 
-    // 5) Graph: /{pageId}
-    const graph = new URL(`https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}`);
-    graph.searchParams.set('fields', 'id,name,access_token,tasks');
-    graph.searchParams.set('access_token', userAccessToken);
+    // 5) Dos pruebas:
+    // A) "public check" sin token (solo id,name)
+    // B) "token check" con token (id,name,access_token,tasks)
+    const publicUrl = new URL(`https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}`);
+    publicUrl.searchParams.set('fields', 'id,name');
 
-    const res = await fetch(graph.toString(), {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${userAccessToken}`,
-      },
-      cache: 'no-store',
-    });
+    const tokenUrl = new URL(`https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}`);
+    tokenUrl.searchParams.set('fields', 'id,name,access_token,tasks');
+    tokenUrl.searchParams.set('access_token', userAccessToken);
 
-    const text = await res.text();
-    let raw: unknown = null;
-    try {
-      raw = text ? (JSON.parse(text) as unknown) : null;
-    } catch {
-      raw = { _nonJson: true, text };
+    const pub = await fetchGraphJson(publicUrl.toString());
+    const tokRes = await fetchGraphJson(tokenUrl.toString(), userAccessToken);
+
+    // Parse “bonito” del token response si va bien
+    let page: { id: string; name: string; has_page_access_token: boolean } | null = null;
+    if (tokRes.ok && isRecord(tokRes.raw)) {
+      const r = tokRes.raw as GraphAnyResp;
+      const id = typeof r.id === 'string' ? r.id : '';
+      const name = typeof r.name === 'string' ? r.name : '';
+      const pageAccessToken = typeof r.access_token === 'string' ? r.access_token : '';
+      if (id && name) {
+        page = { id, name, has_page_access_token: Boolean(pageAccessToken) };
+      }
     }
 
-    const parsed: GraphPageResp = isRecord(raw) ? (raw as GraphPageResp) : {};
-
-    if (!res.ok) {
+    // Si el token check falla, devolvemos SIEMPRE el mensaje de error
+    if (!tokRes.ok) {
+      const err = pickGraphError(tokRes.raw);
       return NextResponse.json(
-        { error: 'graph_error', status: res.status, meta: parsed.error ?? parsed, raw },
-        { status: res.status },
+        {
+          error: 'graph_error',
+          status: tokRes.status,
+          graph: err,
+          // clave: ver si el ID existe “público”
+          publicCheck: { ok: pub.ok, status: pub.status, raw: pub.raw },
+          raw: tokRes.raw,
+        },
+        { status: 400 },
       );
     }
 
-    const id = typeof parsed.id === 'string' ? parsed.id : '';
-    const name = typeof parsed.name === 'string' ? parsed.name : '';
-    const pageAccessToken = typeof parsed.access_token === 'string' ? parsed.access_token : '';
-
     return NextResponse.json({
       ok: true,
-      page: { id, name, has_page_access_token: Boolean(pageAccessToken) },
-      raw,
+      page,
+      publicCheck: { ok: pub.ok, status: pub.status, raw: pub.raw },
+      raw: tokRes.raw,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
