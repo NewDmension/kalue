@@ -90,9 +90,6 @@ async function postJson(args: {
   });
 }
 
-/**
- * Abre OAuth en popup centrado. Si bloquean popups, fallback a redirect normal.
- */
 function openOauthPopup(url: string) {
   const width = 540;
   const height = 720;
@@ -143,7 +140,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const [error, setError] = useState<string | null>(null);
   const [integration, setIntegration] = useState<IntegrationRow | null>(null);
 
-  // feedback simple post-oauth
   const [info, setInfo] = useState<string | null>(null);
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
@@ -229,12 +225,10 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, workspaceId]);
 
-  // Carga normal
   useEffect(() => {
     void loadIntegration();
   }, [loadIntegration]);
 
-  // ✅ Si vuelves del OAuth con ?oauth=success, refresca y muestra feedback
   useEffect(() => {
     const oauth = searchParams.get('oauth');
 
@@ -320,15 +314,36 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   return (
     <div className="p-6 text-white">
       <div className="card-glass rounded-2xl border border-white/10 p-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-lg font-semibold text-white">Configurar Meta</h1>
+        {/* Header */}
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold text-white">Meta Lead Ads</h1>
             <p className="mt-1 text-sm text-white/70">
-              Integration ID: <span className="font-mono text-white/90">{normalizedId || '(vacío)'}</span>
+              Conecta tu cuenta de Meta para que este workspace pueda recibir leads de formularios (Lead Ads).
+            </p>
+            <p className="mt-2 text-xs text-white/45">
+              Integration ID: <span className="font-mono text-white/70">{normalizedId || '(vacío)'}</span>
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className={cx('rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
+              {b.text}
+            </span>
+
+            <button
+              type="button"
+              onClick={() => void handleConnectMeta()}
+              disabled={oauthBusy}
+              className={cx(
+                'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15 transition',
+                oauthBusy ? 'opacity-60 cursor-not-allowed' : ''
+              )}
+              title="Reautoriza Meta (útil si cambias permisos o si el token expira)"
+            >
+              {oauthBusy ? 'Conectando…' : isConnected ? 'Re-conectar' : 'Conectar'}
+            </button>
+
             <button
               type="button"
               onClick={() => void loadIntegration()}
@@ -360,79 +375,70 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
           </div>
         ) : null}
 
+        {/* Content */}
         {integration ? (
-          <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm font-semibold text-white truncate">{integration.name || 'Integración Meta'}</p>
-                <p className="mt-1 text-xs text-white/60 break-all">
-                  Status: <span className="font-mono">{integration.status}</span> · Provider:{' '}
-                  <span className="font-mono">{integration.provider}</span>
-                </p>
-              </div>
+          <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            {/* Estado */}
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <p className="text-sm font-semibold text-white/90">Estado de la conexión</p>
 
-              {/* ✅ Badge LIVE + botón Re-conectar (azulado) */}
-              <div className="flex items-center gap-2 shrink-0">
-                <span className={cx('rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
-                  {b.text}
-                </span>
-
-                {isConnected ? (
-                  <button
-                    type="button"
-                    onClick={() => void handleConnectMeta()}
-                    disabled={oauthBusy}
-                    className={cx(
-                      // mismo estilo “azulado” que Volver
-                      'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-500/15 transition',
-                      oauthBusy ? 'opacity-60 cursor-not-allowed' : ''
-                    )}
-                    title="Reautoriza Meta (útil si cambias permisos o si el token expira)"
-                  >
-                    {oauthBusy ? 'Conectando…' : 'Re-conectar Meta'}
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            {/* Paso 1: OAuth */}
-            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-              <p className="text-sm font-semibold text-white/90">Conexión</p>
-              <p className="mt-1 text-xs text-white/60">Paso 1 de 4 · Conectar con Meta mediante OAuth.</p>
-
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                {/* ✅ Siempre visible: Conectar / Re-conectar */}
-                <button
-                  type="button"
-                  onClick={() => void handleConnectMeta()}
-                  disabled={oauthBusy}
-                  className={cx(
-                    'rounded-xl border px-4 py-2 text-sm transition',
-                    oauthBusy
-                      ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
-                      : isConnected
-                        ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
-                        : 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200 hover:bg-indigo-500/15'
-                  )}
-                >
-                  {oauthBusy ? 'Conectando…' : isConnected ? 'Re-conectar Meta' : 'Conectar con Meta'}
-                </button>
-
-                <div className="text-xs text-white/45">
-                  {isConnected
-                    ? 'Si quieres reautorizar permisos o refrescar token, reconecta.'
-                    : 'Se guardará la conexión para este workspace.'}
+              <div className="mt-3 grid gap-2 text-xs text-white/65">
+                <div>
+                  <span className="text-white/50">Nombre:</span>{' '}
+                  <span className="text-white/80">{integration.name || 'Integración Meta'}</span>
+                </div>
+                <div>
+                  <span className="text-white/50">Provider:</span>{' '}
+                  <span className="font-mono text-white/75">{integration.provider}</span>
+                </div>
+                <div>
+                  <span className="text-white/50">Status:</span>{' '}
+                  <span className="font-mono text-white/75">{integration.status}</span>
+                </div>
+                <div>
+                  <span className="text-white/50">Workspace:</span>{' '}
+                  <span className="font-mono text-white/75">{integration.workspace_id}</span>
                 </div>
               </div>
 
-              <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
-                <p className="font-semibold text-white/80">Siguiente:</p>
+              <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/65">
+                <p className="text-white/80 font-semibold">¿Qué hace esta conexión?</p>
                 <ul className="mt-2 list-disc pl-5 space-y-1">
+                  <li>Autoriza a Kalue a acceder a tus assets de Lead Ads (según permisos).</li>
+                  <li>Guarda el token cifrado por workspace (no en texto plano).</li>
+                  <li>Permite que este workspace reciba leads y los procese en tu inbox/pipeline.</li>
+                </ul>
+              </div>
+
+              {isConnected ? (
+                <div className="mt-4 text-sm text-emerald-200">
+                  ✅ Conectado. Si cambias permisos en Meta o tienes problemas, usa <span className="font-semibold">Re-conectar</span>.
+                </div>
+              ) : (
+                <div className="mt-4 text-sm text-white/70">
+                  Aún no está conectado. Pulsa <span className="font-semibold text-white/85">Conectar</span> para completar OAuth.
+                </div>
+              )}
+            </div>
+
+            {/* Próximos pasos */}
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+              <p className="text-sm font-semibold text-white/90">Siguiente</p>
+              <p className="mt-1 text-xs text-white/60">
+                Esto lo activaremos cuando añadamos el flujo de selección de Page + Form.
+              </p>
+
+              <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
+                <ul className="list-disc pl-5 space-y-1">
                   <li>Seleccionar Page</li>
                   <li>Seleccionar Lead Form</li>
                   <li>Mapping de campos</li>
                 </ul>
               </div>
+
+              <p className="mt-4 text-xs text-white/45">
+                Nota: aunque Meta no muestre “leadgen” en UI, la suscripción real se activa cuando guardemos Page/Form.
+              </p>
             </div>
           </div>
         ) : null}
