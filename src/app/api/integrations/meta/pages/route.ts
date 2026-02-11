@@ -18,8 +18,9 @@ function getEnv(name: string): string {
 
 function getWorkspaceId(req: Request): string {
   const v = req.headers.get('x-workspace-id');
-  if (!v) throw new Error('Missing x-workspace-id header');
-  return v;
+  const s = v?.trim();
+  if (!s) throw new Error('Missing x-workspace-id header');
+  return s;
 }
 
 function getIntegrationId(req: Request): string {
@@ -32,6 +33,10 @@ function getIntegrationId(req: Request): string {
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
+}
+
+function notNull<T>(v: T | null): v is T {
+  return v !== null;
 }
 
 function pickStringArray(v: unknown): string[] {
@@ -113,7 +118,6 @@ export async function GET(req: Request): Promise<NextResponse> {
     }
 
     // 5) Graph: /me/accounts
-    // access_token en query + Authorization header
     const graph = new URL('https://graph.facebook.com/v20.0/me/accounts');
     graph.searchParams.set('access_token', userAccessToken);
     graph.searchParams.set('fields', 'id,name,tasks');
@@ -128,7 +132,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       cache: 'no-store',
     });
 
-    // 👇 parse robusto: text -> json si se puede
+    // parse robusto: text -> json si se puede
     const text = await res.text();
     let raw: unknown = null;
     try {
@@ -145,9 +149,9 @@ export async function GET(req: Request): Promise<NextResponse> {
           error: 'graph_error',
           status: res.status,
           meta: parsed.error ?? parsed,
-          raw, // 👈 clave para debug
+          raw,
         },
-        { status: res.status },
+        { status: res.status }
       );
     }
 
@@ -158,12 +162,12 @@ export async function GET(req: Request): Promise<NextResponse> {
         if (!id || !name) return null;
         return { id, name, tasks: pickStringArray(p.tasks) };
       })
-      .filter((v): v is MetaPage => v !== null);
+      .filter(notNull); // ✅ aquí está el fix (sin type predicate inline)
 
     return NextResponse.json({
       rawCount: Array.isArray(parsed.data) ? parsed.data.length : 0,
       pages,
-      raw, // 👈 para ver si Meta devuelve warnings/paging/etc
+      raw,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';

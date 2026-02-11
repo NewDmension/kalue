@@ -60,18 +60,25 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function pickErrorMessage(raw: unknown, fallback: string): string {
   if (typeof raw === 'string') return raw;
+
   if (isRecord(raw)) {
     const base = typeof raw.error === 'string' ? raw.error : fallback;
     const detail = typeof raw.detail === 'string' ? raw.detail : '';
     const hint = typeof raw.hint === 'string' ? raw.hint : '';
     const code = typeof raw.code === 'string' ? raw.code : '';
 
-    const extras = [detail && `detail: ${detail}`, hint && `hint: ${hint}`, code && `code: ${code}`]
+    const nonJson =
+      raw._nonJson === true && typeof raw.text === 'string'
+        ? `nonJson: ${raw.text.slice(0, 220)}${raw.text.length > 220 ? '…' : ''}`
+        : '';
+
+    const extras = [detail && `detail: ${detail}`, hint && `hint: ${hint}`, code && `code: ${code}`, nonJson && nonJson]
       .filter(Boolean)
       .join('\n');
 
     return extras ? `${base}\n${extras}` : base;
   }
+
   return fallback;
 }
 
@@ -133,7 +140,9 @@ function statusBadge(status: IntegrationStatus): { text: string; className: stri
   return { text: 'DRAFT', className: 'border-white/15 bg-white/5 text-white/70' };
 }
 
-async function fetchPages(args: { integrationId: string; workspaceId: string }): Promise<MetaPage[]> {
+type PagesApiResp = { rawCount: number; pages: MetaPage[]; raw?: unknown };
+
+async function fetchPages(args: { integrationId: string; workspaceId: string }): Promise<PagesApiResp> {
   const res = await fetch(`/api/integrations/meta/pages?integrationId=${encodeURIComponent(args.integrationId)}`, {
     method: 'GET',
     headers: { 'x-workspace-id': args.workspaceId },
@@ -144,8 +153,12 @@ async function fetchPages(args: { integrationId: string; workspaceId: string }):
     throw new Error(pickErrorMessage(raw, `No se pudieron cargar Pages (${res.status})`));
   }
 
-  const pagesRaw = isRecord(raw) ? raw.pages : null;
-  if (!Array.isArray(pagesRaw)) return [];
+  if (!isRecord(raw)) return { rawCount: 0, pages: [] };
+
+  const rawCount = typeof raw.rawCount === 'number' && Number.isFinite(raw.rawCount) ? raw.rawCount : 0;
+  const pagesRaw = raw.pages;
+
+  if (!Array.isArray(pagesRaw)) return { rawCount, pages: [] };
 
   const pages: MetaPage[] = [];
   for (const p of pagesRaw) {
@@ -153,12 +166,14 @@ async function fetchPages(args: { integrationId: string; workspaceId: string }):
       pages.push({ id: p.id, name: p.name });
     }
   }
-  return pages;
+
+  return { rawCount, pages, raw: raw.raw };
 }
 
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
   const searchParams = useSearchParams();
   const workspaceId = useMemo(() => getActiveWorkspaceId(), []);
+
   const [loading, setLoading] = useState<boolean>(true);
   const [oauthBusy, setOauthBusy] = useState<boolean>(false);
 
@@ -170,6 +185,8 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const [pagesLoading, setPagesLoading] = useState<boolean>(false);
   const [pagesError, setPagesError] = useState<string | null>(null);
   const [pages, setPages] = useState<MetaPage[]>([]);
+  const [pagesRawCount, setPagesRawCount] = useState<number>(0);
+  const [pagesCheckedAt, setPagesCheckedAt] = useState<string | null>(null);
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
 
@@ -229,7 +246,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
       const id = typeof row.id === 'string' ? row.id : String(row.id);
       const workspace_id = typeof row.workspace_id === 'string' ? row.workspace_id : String(row.workspace_id);
-      const provider: ProviderKey = 'meta';
 
       const statusRaw = row.status;
       const status: IntegrationStatus =
@@ -238,7 +254,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       const parsed: IntegrationRow = {
         id,
         workspace_id,
-        provider,
+        provider: 'meta',
         name: typeof row.name === 'string' ? row.name : '',
         status,
         created_at: typeof row.created_at === 'string' ? row.created_at : '',
@@ -257,12 +273,16 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const loadPages = useCallback(async () => {
     setPagesError(null);
     setPages([]);
+    setPagesRawCount(0);
+
     if (!workspaceId || !normalizedId || !isUuid(normalizedId)) return;
 
     setPagesLoading(true);
     try {
       const data = await fetchPages({ integrationId: normalizedId, workspaceId });
-      setPages(data);
+      setPages(data.pages);
+      setPagesRawCount(data.rawCount);
+      setPagesCheckedAt(new Date().toISOString());
       setPagesLoading(false);
     } catch (e: unknown) {
       setPagesLoading(false);
@@ -282,6 +302,8 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       setPages([]);
       setPagesError(null);
       setPagesLoading(false);
+      setPagesRawCount(0);
+      setPagesCheckedAt(null);
     }
   }, [integration?.status, loadPages]);
 
@@ -383,9 +405,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <span className={cx('rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>
-              {b.text}
-            </span>
+            <span className={cx('rounded-full border px-2.5 py-1 text-[11px] font-semibold', b.className)}>{b.text}</span>
 
             <button
               type="button"
@@ -468,16 +488,18 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
               {isConnected ? (
                 <div className="mt-4 text-sm text-emerald-200">
-                  ✅ Conectado. Si cambias permisos en Meta o tienes problemas, usa <span className="font-semibold">Re-conectar</span>.
+                  ✅ Conectado. Si cambias permisos en Meta o tienes problemas, usa{' '}
+                  <span className="font-semibold">Re-conectar</span>.
                 </div>
               ) : (
                 <div className="mt-4 text-sm text-white/70">
-                  Aún no está conectado. Pulsa <span className="font-semibold text-white/85">Conectar</span> para completar OAuth.
+                  Aún no está conectado. Pulsa <span className="font-semibold text-white/85">Conectar</span> para completar
+                  OAuth.
                 </div>
               )}
             </div>
 
-            {/* Pages (estado real) */}
+            {/* Pages */}
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -500,6 +522,15 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                   {pagesLoading ? 'Buscando…' : 'Revisar Pages'}
                 </button>
               </div>
+
+              {isConnected ? (
+                <div className="mt-3 text-xs text-white/50">
+                  rawCount: <span className="font-mono text-white/70">{pagesRawCount}</span>
+                  {pagesCheckedAt ? (
+                    <span className="ml-2 text-white/40">· {new Date(pagesCheckedAt).toLocaleString()}</span>
+                  ) : null}
+                </div>
+              ) : null}
 
               {!isConnected ? (
                 <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
@@ -550,7 +581,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </div>
               ) : null}
 
-              {/* Próximos pasos */}
               <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
                 <p className="text-white/90 font-semibold">Siguiente (cuando haya Pages)</p>
                 <ul className="mt-2 list-disc pl-5 space-y-1">
