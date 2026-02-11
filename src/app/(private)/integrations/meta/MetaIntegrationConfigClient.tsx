@@ -72,7 +72,7 @@ function pickErrorMessage(raw: unknown, fallback: string): string {
         ? `nonJson: ${raw.text.slice(0, 220)}${raw.text.length > 220 ? '…' : ''}`
         : '';
 
-    const extras = [detail && `detail: ${detail}`, hint && `hint: ${hint}`, code && `code: ${code}`, nonJson && nonJson]
+    const extras = [detail && `detail: ${detail}`, hint && `hint: ${hint}`, code && `code: ${code}`, nonJson]
       .filter(Boolean)
       .join('\n');
 
@@ -140,34 +140,25 @@ function statusBadge(status: IntegrationStatus): { text: string; className: stri
   return { text: 'DRAFT', className: 'border-white/15 bg-white/5 text-white/70' };
 }
 
-type PagesApiResp = { rawCount: number; pages: MetaPage[]; raw?: unknown };
+function parsePagesPayload(raw: unknown): { pages: MetaPage[]; rawCount: number } {
+  if (!isRecord(raw)) return { pages: [], rawCount: 0 };
 
-async function fetchPages(args: { integrationId: string; workspaceId: string }): Promise<PagesApiResp> {
-  const res = await fetch(`/api/integrations/meta/pages?integrationId=${encodeURIComponent(args.integrationId)}`, {
-    method: 'GET',
-    headers: { 'x-workspace-id': args.workspaceId },
-  });
-
-  const raw = await safeJson(res);
-  if (!res.ok) {
-    throw new Error(pickErrorMessage(raw, `No se pudieron cargar Pages (${res.status})`));
-  }
-
-  if (!isRecord(raw)) return { rawCount: 0, pages: [] };
-
-  const rawCount = typeof raw.rawCount === 'number' && Number.isFinite(raw.rawCount) ? raw.rawCount : 0;
   const pagesRaw = raw.pages;
+  const rawCount = typeof raw.rawCount === 'number' && Number.isFinite(raw.rawCount) ? raw.rawCount : 0;
 
-  if (!Array.isArray(pagesRaw)) return { rawCount, pages: [] };
+  if (!Array.isArray(pagesRaw)) return { pages: [], rawCount };
 
-  const pages: MetaPage[] = [];
-  for (const p of pagesRaw) {
-    if (isRecord(p) && typeof p.id === 'string' && typeof p.name === 'string') {
-      pages.push({ id: p.id, name: p.name });
-    }
-  }
+  const pages: MetaPage[] = pagesRaw
+    .map((p: unknown) => {
+      if (!isRecord(p)) return null;
+      const id = typeof p.id === 'string' ? p.id : '';
+      const name = typeof p.name === 'string' ? p.name : '';
+      if (!id || !name) return null;
+      return { id, name };
+    })
+    .filter((v): v is MetaPage => v !== null);
 
-  return { rawCount, pages, raw: raw.raw };
+  return { pages, rawCount };
 }
 
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
@@ -179,13 +170,14 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
   const [error, setError] = useState<string | null>(null);
   const [integration, setIntegration] = useState<IntegrationRow | null>(null);
+
   const [info, setInfo] = useState<string | null>(null);
 
-  // Pages UI
-  const [pagesLoading, setPagesLoading] = useState<boolean>(false);
+  // Pages detectadas
+  const [pagesBusy, setPagesBusy] = useState<boolean>(false);
   const [pagesError, setPagesError] = useState<string | null>(null);
   const [pages, setPages] = useState<MetaPage[]>([]);
-  const [pagesRawCount, setPagesRawCount] = useState<number>(0);
+  const [rawCount, setRawCount] = useState<number>(0);
   const [pagesCheckedAt, setPagesCheckedAt] = useState<string | null>(null);
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
@@ -246,6 +238,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
       const id = typeof row.id === 'string' ? row.id : String(row.id);
       const workspace_id = typeof row.workspace_id === 'string' ? row.workspace_id : String(row.workspace_id);
+      const provider: ProviderKey = 'meta';
 
       const statusRaw = row.status;
       const status: IntegrationStatus =
@@ -254,7 +247,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       const parsed: IntegrationRow = {
         id,
         workspace_id,
-        provider: 'meta',
+        provider,
         name: typeof row.name === 'string' ? row.name : '',
         status,
         created_at: typeof row.created_at === 'string' ? row.created_at : '',
@@ -271,41 +264,54 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   }, [normalizedId, workspaceId]);
 
   const loadPages = useCallback(async () => {
+    setPagesBusy(true);
     setPagesError(null);
-    setPages([]);
-    setPagesRawCount(0);
 
-    if (!workspaceId || !normalizedId || !isUuid(normalizedId)) return;
+    if (!normalizedId || !isUuid(normalizedId)) {
+      setPagesBusy(false);
+      setPagesError('No hay Integration ID válido para listar Pages.');
+      return;
+    }
 
-    setPagesLoading(true);
+    if (!workspaceId) {
+      setPagesBusy(false);
+      setPagesError('No hay workspace activo. Selecciona uno primero.');
+      return;
+    }
+
     try {
-      const data = await fetchPages({ integrationId: normalizedId, workspaceId });
-      setPages(data.pages);
-      setPagesRawCount(data.rawCount);
+      const token = await getAccessToken();
+
+      const url = `/api/integrations/meta/pages?integrationId=${encodeURIComponent(normalizedId)}`;
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+          'x-workspace-id': workspaceId,
+        },
+      });
+
+      const raw = await safeJson(res);
+      if (!res.ok) {
+        setPagesBusy(false);
+        setPagesError(pickErrorMessage(raw, `No se pudo listar Pages (${res.status})`));
+        return;
+      }
+
+      const parsed = parsePagesPayload(raw);
+      setPages(parsed.pages);
+      setRawCount(parsed.rawCount);
       setPagesCheckedAt(new Date().toISOString());
-      setPagesLoading(false);
+      setPagesBusy(false);
     } catch (e: unknown) {
-      setPagesLoading(false);
-      setPagesError(e instanceof Error ? e.message : 'Error cargando Pages');
+      setPagesBusy(false);
+      setPagesError(e instanceof Error ? e.message : 'Error listando Pages');
     }
   }, [normalizedId, workspaceId]);
 
   useEffect(() => {
     void loadIntegration();
   }, [loadIntegration]);
-
-  // Cuando la integración está conectada, intentamos listar Pages (estado real)
-  useEffect(() => {
-    if (integration?.status === 'connected') {
-      void loadPages();
-    } else {
-      setPages([]);
-      setPagesError(null);
-      setPagesLoading(false);
-      setPagesRawCount(0);
-      setPagesCheckedAt(null);
-    }
-  }, [integration?.status, loadPages]);
 
   useEffect(() => {
     const oauth = searchParams.get('oauth');
@@ -331,6 +337,14 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  // Auto-load pages una vez cuando está conectado
+  useEffect(() => {
+    if (!integration) return;
+    if (integration.status !== 'connected') return;
+    if (pagesCheckedAt) return;
+    void loadPages();
+  }, [integration, loadPages, pagesCheckedAt]);
 
   const handleConnectMeta = useCallback(async () => {
     if (oauthBusy) return;
@@ -378,6 +392,11 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         return;
       }
 
+      // reset pages para forzar re-check tras reconectar
+      setPages([]);
+      setRawCount(0);
+      setPagesCheckedAt(null);
+
       setOauthBusy(false);
       openOauthPopup(url);
     } catch (e: unknown) {
@@ -388,11 +407,11 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
   const b = statusBadge(integration?.status ?? 'draft');
   const isConnected = integration?.status === 'connected';
+  const hasNoPages = isConnected && !pagesBusy && pages.length === 0;
 
   return (
     <div className="p-6 text-white">
       <div className="card-glass rounded-2xl border border-white/10 p-6">
-        {/* Header */}
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-lg font-semibold text-white">Meta Lead Ads</h1>
@@ -413,7 +432,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               disabled={oauthBusy}
               className={cx(
                 'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15 transition',
-                oauthBusy ? 'opacity-60 cursor-not-allowed' : ''
+                oauthBusy ? 'opacity-60 cursor-not-allowed' : '',
               )}
               title="Reautoriza Meta (útil si cambias permisos o si el token expira)"
             >
@@ -451,10 +470,8 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
           </div>
         ) : null}
 
-        {/* Content */}
         {integration ? (
           <div className="mt-6 grid gap-4 lg:grid-cols-2">
-            {/* Estado */}
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <p className="text-sm font-semibold text-white/90">Estado de la conexión</p>
 
@@ -488,55 +505,48 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
               {isConnected ? (
                 <div className="mt-4 text-sm text-emerald-200">
-                  ✅ Conectado. Si cambias permisos en Meta o tienes problemas, usa{' '}
-                  <span className="font-semibold">Re-conectar</span>.
+                  ✅ Conectado. Si cambias permisos en Meta o tienes problemas, usa <span className="font-semibold">Re-conectar</span>.
                 </div>
               ) : (
                 <div className="mt-4 text-sm text-white/70">
-                  Aún no está conectado. Pulsa <span className="font-semibold text-white/85">Conectar</span> para completar
-                  OAuth.
+                  Aún no está conectado. Pulsa <span className="font-semibold text-white/85">Conectar</span> para completar OAuth.
                 </div>
               )}
             </div>
 
-            {/* Pages */}
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-white/90">Pages detectadas</p>
                   <p className="mt-1 text-xs text-white/60">
                     Si no aparecen Pages, este workspace no podrá listar Lead Forms ni recibir leads.
+                  </p>
+                  <p className="mt-2 text-[11px] text-white/45">
+                    rawCount: <span className="font-mono text-white/70">{rawCount}</span>
+                    {pagesCheckedAt ? (
+                      <span className="ml-2">
+                        · revisado <span className="font-mono">{new Date(pagesCheckedAt).toLocaleString()}</span>
+                      </span>
+                    ) : null}
                   </p>
                 </div>
 
                 <button
                   type="button"
                   onClick={() => void loadPages()}
-                  disabled={!isConnected || pagesLoading}
+                  disabled={!isConnected || pagesBusy}
                   className={cx(
-                    'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10',
-                    !isConnected || pagesLoading ? 'opacity-60 cursor-not-allowed' : ''
+                    'rounded-xl border px-3 py-2 text-xs transition',
+                    !isConnected
+                      ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                      : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10',
+                    pagesBusy ? 'opacity-60 cursor-not-allowed' : '',
                   )}
-                  title={isConnected ? 'Volver a consultar Pages en Meta' : 'Conecta Meta primero'}
+                  title={!isConnected ? 'Primero conecta Meta' : 'Vuelve a consultar /me/accounts'}
                 >
-                  {pagesLoading ? 'Buscando…' : 'Revisar Pages'}
+                  {pagesBusy ? 'Revisando…' : 'Revisar Pages'}
                 </button>
               </div>
-
-              {isConnected ? (
-                <div className="mt-3 text-xs text-white/50">
-                  rawCount: <span className="font-mono text-white/70">{pagesRawCount}</span>
-                  {pagesCheckedAt ? (
-                    <span className="ml-2 text-white/40">· {new Date(pagesCheckedAt).toLocaleString()}</span>
-                  ) : null}
-                </div>
-              ) : null}
-
-              {!isConnected ? (
-                <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
-                  Conecta Meta para poder detectar Pages.
-                </div>
-              ) : null}
 
               {pagesError ? (
                 <div className="mt-4 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-xs text-red-200 whitespace-pre-line">
@@ -544,51 +554,47 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </div>
               ) : null}
 
-              {isConnected && !pagesLoading && !pagesError && pages.length === 0 ? (
-                <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-200">
-                  <p className="font-semibold">⚠️ No se encontraron Pages para esta cuenta.</p>
-                  <p className="mt-2 text-xs text-amber-100/80 leading-relaxed">
-                    Aunque Meta esté “LIVE”, no podremos continuar con Lead Forms ni Webhooks hasta que Meta devuelva al menos
-                    una Page en <span className="font-mono">/me/accounts</span>.
-                    <br />
-                    <br />
-                    Asegúrate de que el usuario con el que autorizas:
-                    <br />• es <span className="font-semibold">admin/editor</span> de la Page
-                    <br />• tiene acceso a la Page en <span className="font-semibold">Business Manager</span> (si aplica)
-                    <br />
-                    <br />
-                    Luego pulsa <span className="font-semibold">Re-conectar</span> y vuelve a “Revisar Pages”.
+              {isConnected && hasNoPages ? (
+                <div className="mt-4 rounded-2xl border border-amber-300/20 bg-amber-500/10 p-4 text-sm text-amber-100">
+                  <p className="font-semibold">⚠️ Meta no devolvió ninguna Page en /me/accounts.</p>
+                  <p className="mt-2 text-xs text-amber-100/90">
+                    Esto pasa cuando el usuario que autorizó <span className="font-semibold">no tiene rol</span> en ninguna Page
+                    (o no tiene control suficiente). Solución rápida:
                   </p>
+                  <ul className="mt-3 list-disc pl-5 space-y-1 text-xs text-amber-100/90">
+                    <li>Crea una Page de prueba en Facebook (o usa una existente).</li>
+                    <li>Asegúrate de que ese usuario es Admin/Editor de la Page (no “viewer”).</li>
+                    <li>Vuelve aquí, pulsa <span className="font-semibold">Re-conectar</span> y luego <span className="font-semibold">Revisar Pages</span>.</li>
+                  </ul>
                 </div>
               ) : null}
 
-              {pages.length > 0 ? (
-                <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/75">
-                  <p className="text-white/90 font-semibold">Pages disponibles ({pages.length})</p>
-                  <ul className="mt-2 space-y-2">
+              {isConnected && pages.length > 0 ? (
+                <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+                  <p className="text-xs font-semibold text-white/80">Pages ({pages.length})</p>
+                  <ul className="mt-2 space-y-1 text-xs text-white/70">
                     {pages.map((p) => (
                       <li key={p.id} className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-white/90">{p.name}</div>
-                          <div className="font-mono text-[11px] text-white/45">{p.id}</div>
-                        </div>
-                        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-white/70">
-                          detectada
-                        </span>
+                        <span className="truncate">{p.name}</span>
+                        <span className="font-mono text-white/50">{p.id}</span>
                       </li>
                     ))}
                   </ul>
                 </div>
               ) : null}
 
-              <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
-                <p className="text-white/90 font-semibold">Siguiente (cuando haya Pages)</p>
-                <ul className="mt-2 list-disc pl-5 space-y-1">
-                  <li>Elegir Page</li>
-                  <li>Listar y elegir Lead Form</li>
-                  <li>Guardar mapping (Page + Form)</li>
-                  <li>Suscribir Webhook (leadgen)</li>
-                </ul>
+              <div className="mt-6">
+                <p className="text-sm font-semibold text-white/90">Siguiente</p>
+                <p className="mt-1 text-xs text-white/60">Esto lo activaremos cuando añadamos el flujo de selección de Page + Form.</p>
+
+                <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>Seleccionar Page</li>
+                    <li>Seleccionar Lead Form</li>
+                    <li>Mapping de campos</li>
+                    <li>Suscribir Webhook (leadgen)</li>
+                  </ul>
+                </div>
               </div>
             </div>
           </div>

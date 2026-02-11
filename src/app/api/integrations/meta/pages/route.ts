@@ -8,7 +8,7 @@ import { decryptToken } from '@/server/crypto/tokenCrypto';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type MetaPage = { id: string; name: string; tasks: string[] };
+type MetaPage = { id: string; name: string };
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -18,9 +18,8 @@ function getEnv(name: string): string {
 
 function getWorkspaceId(req: Request): string {
   const v = req.headers.get('x-workspace-id');
-  const s = v?.trim();
-  if (!s) throw new Error('Missing x-workspace-id header');
-  return s;
+  if (!v) throw new Error('Missing x-workspace-id header');
+  return v;
 }
 
 function getIntegrationId(req: Request): string {
@@ -35,20 +34,36 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function notNull<T>(v: T | null): v is T {
-  return v !== null;
-}
-
-function pickStringArray(v: unknown): string[] {
-  if (!Array.isArray(v)) return [];
-  return v.filter((x): x is string => typeof x === 'string');
-}
-
 type GraphAccountsResp = {
-  data?: Array<{ id?: unknown; name?: unknown; tasks?: unknown }>;
+  data?: Array<{ id?: unknown; name?: unknown }>;
   paging?: unknown;
   error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
 };
+
+function parseJsonText(text: string): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { _nonJson: true, text };
+  }
+}
+
+function pickPages(raw: unknown): MetaPage[] {
+  if (!isRecord(raw)) return [];
+  const data = raw.data;
+  if (!Array.isArray(data)) return [];
+
+  const out: MetaPage[] = [];
+  for (const item of data) {
+    if (!isRecord(item)) continue;
+    const id = typeof item.id === 'string' ? item.id : '';
+    const name = typeof item.name === 'string' ? item.name : '';
+    if (!id || !name) continue;
+    out.push({ id, name });
+  }
+  return out;
+}
 
 export async function GET(req: Request): Promise<NextResponse> {
   try {
@@ -59,7 +74,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const workspaceId = getWorkspaceId(req);
     const integrationId = getIntegrationId(req);
 
-    // 1) auth user desde cookies (NO Authorization header)
+    // 1) auth user desde cookies
     const cookieStore = await cookies();
     const supabaseServer = createServerClient(supabaseUrl, anonKey, {
       cookies: {
@@ -76,7 +91,9 @@ export async function GET(req: Request): Promise<NextResponse> {
     const userId = userData.user.id;
 
     // 2) admin client (service role)
-    const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false },
+    });
 
     // 3) verify membership
     const { data: member, error: memberErr } = await supabaseAdmin
@@ -117,10 +134,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       return NextResponse.json({ error: 'decrypt_failed', detail: msg }, { status: 500 });
     }
 
-    // 5) Graph: /me/accounts
+    // 5) Graph: /me/accounts (pedimos MINIMO: id,name)
     const graph = new URL('https://graph.facebook.com/v20.0/me/accounts');
     graph.searchParams.set('access_token', userAccessToken);
-    graph.searchParams.set('fields', 'id,name,tasks');
+    graph.searchParams.set('fields', 'id,name');
     graph.searchParams.set('limit', '200');
 
     const res = await fetch(graph.toString(), {
@@ -132,15 +149,8 @@ export async function GET(req: Request): Promise<NextResponse> {
       cache: 'no-store',
     });
 
-    // parse robusto: text -> json si se puede
     const text = await res.text();
-    let raw: unknown = null;
-    try {
-      raw = text ? (JSON.parse(text) as unknown) : null;
-    } catch {
-      raw = { _nonJson: true, text };
-    }
-
+    const raw = parseJsonText(text);
     const parsed: GraphAccountsResp = isRecord(raw) ? (raw as GraphAccountsResp) : {};
 
     if (!res.ok) {
@@ -151,23 +161,15 @@ export async function GET(req: Request): Promise<NextResponse> {
           meta: parsed.error ?? parsed,
           raw,
         },
-        { status: res.status }
+        { status: res.status },
       );
     }
 
-    const pages: MetaPage[] = (parsed.data ?? [])
-      .map((p) => {
-        const id = typeof p.id === 'string' ? p.id : null;
-        const name = typeof p.name === 'string' ? p.name : null;
-        if (!id || !name) return null;
-        return { id, name, tasks: pickStringArray(p.tasks) };
-      })
-      .filter(notNull); // ✅ aquí está el fix (sin type predicate inline)
-
+    const pages = pickPages(raw);
     return NextResponse.json({
-      rawCount: Array.isArray(parsed.data) ? parsed.data.length : 0,
+      rawCount: pages.length,
       pages,
-      raw,
+      raw, // útil para ver paging / warnings
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
