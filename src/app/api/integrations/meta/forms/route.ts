@@ -113,7 +113,8 @@ async function getPageAccessToken(args: {
   url.searchParams.set('limit', '200');
 
   const r = await graphGet(url.toString(), args.userAccessToken);
-  if (!r.ok) throw new Error(`graph_error_me_accounts`);
+ if (!r.ok) throw new Error(`graph_error_me_accounts: ${JSON.stringify(r.raw)}`);
+
 
   const parsed = (isRecord(r.raw) ? (r.raw as AccountsResp) : {}) as AccountsResp;
   const arr = Array.isArray(parsed.data) ? parsed.data : [];
