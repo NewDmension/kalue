@@ -235,7 +235,8 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     // A) intento clásico: /me/accounts
     const accountsUrl = new URL(`https://graph.facebook.com/${graphVersion}/me/accounts`);
-    accountsUrl.searchParams.set('fields', 'id,name,perms');
+    accountsUrl.searchParams.set('fields', 'id,name');
+
     accountsUrl.searchParams.set('limit', '200');
     accountsUrl.searchParams.set('access_token', userAccessToken);
 
@@ -314,7 +315,8 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     for (const bizId of bizIds) {
       const ownedPagesUrl = new URL(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(bizId)}/owned_pages`);
-      ownedPagesUrl.searchParams.set('fields', 'id,name,perms');
+      ownedPagesUrl.searchParams.set('fields', 'id,name');
+
       ownedPagesUrl.searchParams.set('limit', '200');
       ownedPagesUrl.searchParams.set('access_token', userAccessToken);
 
