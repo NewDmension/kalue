@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { supabaseBrowser } from '@/lib/supabase/client';
@@ -21,6 +21,21 @@ type IntegrationRow = {
 };
 
 type MetaPage = { id: string; name: string };
+
+type OAuthResultMessage =
+  | {
+      type: 'KALUE_META_OAUTH_RESULT';
+      ok: true;
+      integrationId: string;
+      workspaceId: string;
+    }
+  | {
+      type: 'KALUE_META_OAUTH_RESULT';
+      ok: false;
+      error: string;
+      errorDescription?: string;
+      detail?: unknown;
+    };
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
@@ -73,6 +88,14 @@ function pickErrorMessage(raw: unknown, fallback: string): string {
     return extras ? `${base}\n${extras}` : base;
   }
   return fallback;
+}
+
+function safeStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
 }
 
 async function postJson(args: {
@@ -181,6 +204,7 @@ function useWorkspaceIdReady(): { workspaceId: string; ready: boolean } {
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
   const searchParams = useSearchParams();
   const { workspaceId, ready } = useWorkspaceIdReady();
+  const originRef = useRef<string>('');
 
   const [loading, setLoading] = useState<boolean>(true);
   const [oauthBusy, setOauthBusy] = useState<boolean>(false);
@@ -194,6 +218,12 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const [pages, setPages] = useState<MetaPage[]>([]);
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      originRef.current = window.location.origin;
+    }
+  }, []);
 
   const loadIntegration = useCallback(async () => {
     setLoading(true);
@@ -306,6 +336,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [integration?.status, loadPages]);
 
+  // ✅ compat: si aún usas query params (puede quedarse)
   useEffect(() => {
     const oauth = searchParams.get('oauth');
 
@@ -330,6 +361,59 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  // ✅ NUEVO: escuchar resultado del popup (postMessage)
+  useEffect(() => {
+    function onMessage(ev: MessageEvent): void {
+      if (!originRef.current) return;
+      if (ev.origin !== originRef.current) return;
+
+      const data = ev.data as unknown;
+      if (!isRecord(data)) return;
+
+      const type = typeof data.type === 'string' ? data.type : '';
+      if (type !== 'KALUE_META_OAUTH_RESULT') return;
+
+      const ok = data.ok;
+
+      if (ok === true) {
+        // refresca y muestra OK
+        setError(null);
+        setInfo('Conexión completada. Actualizando estado…');
+
+        void (async () => {
+          try {
+            await loadIntegration();
+            // si queda connected, loadPages se disparará por el efecto; aún así podemos forzarlo:
+            await loadPages();
+            setInfo('Meta conectada ✅');
+            window.setTimeout(() => setInfo(null), 2500);
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : 'Error refrescando tras OAuth';
+            setInfo(null);
+            setError(msg);
+          }
+        })();
+
+        return;
+      }
+
+      if (ok === false) {
+        const err = typeof data.error === 'string' ? data.error : 'oauth_failed';
+        const desc = typeof data.errorDescription === 'string' ? data.errorDescription : '';
+        const detail = isRecord(data) ? data.detail : undefined;
+
+        const msg =
+          desc ? `${err}\n\n${desc}` : detail ? `${err}\n\n${safeStringify(detail)}` : err;
+
+        setInfo(null);
+        setError(msg);
+      }
+    }
+
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [loadIntegration, loadPages]);
 
   const handleConnectMeta = useCallback(async () => {
     if (oauthBusy) return;
@@ -379,6 +463,10 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
       setOauthBusy(false);
       openOauthPopup(url);
+
+      // Opcional: feedback inmediato
+      setInfo('Abriendo ventana de conexión…');
+      window.setTimeout(() => setInfo(null), 2000);
     } catch (e: unknown) {
       setOauthBusy(false);
       setError(e instanceof Error ? e.message : 'Error iniciando OAuth');
@@ -487,7 +575,8 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
               {isConnected ? (
                 <div className="mt-4 text-sm text-emerald-200">
-                  ✅ Conectado. Si cambias permisos en Meta o tienes problemas, usa <span className="font-semibold">Re-conectar</span>.
+                  ✅ Conectado. Si cambias permisos en Meta o tienes problemas, usa{' '}
+                  <span className="font-semibold">Re-conectar</span>.
                 </div>
               ) : (
                 <div className="mt-4 text-sm text-white/70">
