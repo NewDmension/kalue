@@ -191,7 +191,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     formsUrl.searchParams.set('limit', '200');
 
     const r = await graphGet(formsUrl.toString(), pageToken);
-    if (!r.ok) return json(r.status, { error: 'graph_error', where: 'page/leadgen_forms', raw: r.raw });
+    if (!r.ok) return json(r.status, { error: 'graph_error', where: 'page/leadgen_forms', detail: r.raw });
 
     const forms = toForms(r.raw);
     return json(200, { ok: true, pageId, forms });
