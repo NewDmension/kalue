@@ -6,8 +6,6 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type Json = Record<string, unknown>;
-
 function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing env: ${name}`);
@@ -17,13 +15,6 @@ function requireEnv(name: string): string {
 function getEnv(name: string, fallback: string): string {
   const v = process.env[name];
   return v && v.length > 0 ? v : fallback;
-}
-
-function json(status: number, payload: Record<string, unknown>) {
-  return new NextResponse(JSON.stringify(payload), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
 }
 
 function base64urlToString(input: string): string {
@@ -45,6 +36,20 @@ function pickString(v: unknown, key: string): string {
   if (!isRecord(v)) return '';
   const x = v[key];
   return typeof x === 'string' ? x : '';
+}
+
+function pickNumber(v: unknown, key: string): number {
+  if (!isRecord(v)) return 0;
+  const x = v[key];
+
+  if (typeof x === 'number' && Number.isFinite(x)) return Math.trunc(x);
+
+  if (typeof x === 'string') {
+    const n = Number.parseInt(x.trim(), 10);
+    return Number.isFinite(n) ? Math.trunc(n) : 0;
+  }
+
+  return 0;
 }
 
 function getBaseUrl(req: Request): string {
@@ -127,7 +132,6 @@ function buildPopupCloseHtml(args: {
         try { window.close(); } catch (e) {}
       }
 
-      // Intento inmediato + reintento corto
       tryClose();
       setTimeout(tryClose, 150);
 
@@ -147,7 +151,7 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     const stateSecret = requireEnv('META_OAUTH_STATE_SECRET');
     const metaAppId = requireEnv('META_APP_ID');
-    const metaAppSecret = requireEnv('META_APP_SECRET'); // asegúrate de tenerla en Vercel
+    const metaAppSecret = requireEnv('META_APP_SECRET');
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
 
     const url = new URL(req.url);
@@ -180,12 +184,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     }
 
     if (!code || !state) {
-      const payload = {
-        type: 'KALUE_META_OAUTH_RESULT',
-        ok: false,
-        error: 'missing_code_or_state',
-      };
-
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'missing_code_or_state' };
       return htmlResponse(
         buildPopupCloseHtml({
           ok: false,
@@ -214,6 +213,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     }
 
     const payloadStr = base64urlToString(encodedPayload);
+
     let stateObj: unknown = null;
     try {
       stateObj = JSON.parse(payloadStr) as unknown;
@@ -223,11 +223,16 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     const integrationId = pickString(stateObj, 'integrationId');
     const workspaceId = pickString(stateObj, 'workspaceId');
-    const iat = Number(pickString(stateObj, 'iat') || '0');
-    const ttl = Number(pickString(stateObj, 'ttl') || '0');
+    const iat = pickNumber(stateObj, 'iat');
+    const ttl = pickNumber(stateObj, 'ttl');
 
     if (!integrationId || !workspaceId || !iat || !ttl) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_payload' };
+      const payload = {
+        type: 'KALUE_META_OAUTH_RESULT',
+        ok: false,
+        error: 'invalid_state_payload',
+        detail: { integrationId: Boolean(integrationId), workspaceId: Boolean(workspaceId), iat, ttl },
+      };
       return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
     }
 
@@ -250,12 +255,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const tokenJson: unknown = await tokenRes.json();
 
     if (!tokenRes.ok) {
-      const payload = {
-        type: 'KALUE_META_OAUTH_RESULT',
-        ok: false,
-        error: 'token_exchange_failed',
-        detail: tokenJson,
-      };
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'token_exchange_failed', detail: tokenJson };
       return htmlResponse(
         buildPopupCloseHtml({
           ok: false,
@@ -267,19 +267,12 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
 
-    const accessToken = isRecord(tokenJson) && typeof tokenJson['access_token'] === 'string' ? tokenJson['access_token'] : '';
+    const accessToken =
+      isRecord(tokenJson) && typeof tokenJson['access_token'] === 'string' ? tokenJson['access_token'] : '';
     if (!accessToken) {
       const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'missing_access_token' };
       return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
     }
-
-    // 2) Guardar token cifrado en Supabase (aquí asumo que tú ya tienes encryptToken/decryptToken en server)
-    // ⚠️ Si tu cifrado está en otro helper, reemplaza este bloque.
-    // Para no romperte ahora, guardo en texto plano SOLO si no tienes helper (pero NO recomendado).
-    // -----
-    // ✅ RECOMENDADO: import { encryptToken } from '@/server/crypto/encryptToken';
-    // const access_token_ciphertext = encryptToken(accessToken);
-    // -----
 
     // ⚠️ Placeholder: cambia por TU cifrado real
     const access_token_ciphertext = accessToken;
@@ -301,19 +294,13 @@ export async function GET(req: Request): Promise<NextResponse> {
       return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error guardando token' }));
     }
 
-    // 3) Marcar integración como connected
     await admin
       .from('integrations')
       .update({ status: 'connected', last_error: null, updated_at: new Date().toISOString() })
       .eq('id', integrationId)
       .eq('workspace_id', workspaceId);
 
-    const payload = {
-      type: 'KALUE_META_OAUTH_RESULT',
-      ok: true,
-      integrationId,
-      workspaceId,
-    };
+    const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: true, integrationId, workspaceId };
 
     return htmlResponse(
       buildPopupCloseHtml({
@@ -336,7 +323,6 @@ export async function GET(req: Request): Promise<NextResponse> {
     const msg = e instanceof Error ? e.message : 'Unexpected error';
     const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'server_error', detail: msg };
 
-    // Si no podemos calcular origin, igual mostramos algo cerrable
     const safeOrigin = origin || 'https://example.com';
 
     return htmlResponse(
