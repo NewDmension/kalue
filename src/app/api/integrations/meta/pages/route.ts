@@ -8,7 +8,7 @@ import { decryptToken } from '@/server/crypto/tokenCrypto';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type MetaPage = { id: string; name: string };
+type MetaPage = { id: string; name: string; perms: string[] };
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -17,7 +17,7 @@ function getEnv(name: string): string {
 }
 
 function getWorkspaceId(req: Request): string {
-  const v = (req.headers.get('x-workspace-id') ?? '').trim();
+  const v = req.headers.get('x-workspace-id');
   if (!v) throw new Error('Missing x-workspace-id header');
   return v;
 }
@@ -34,20 +34,35 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
+function pickStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === 'string');
+}
+
+type GraphAccountsItem = {
+  id?: unknown;
+  name?: unknown;
+  access_token?: unknown;
+  perms?: unknown;
+};
+
 type GraphAccountsResp = {
-  data?: Array<{ id?: unknown; name?: unknown; access_token?: unknown }>;
+  data?: GraphAccountsItem[];
   paging?: unknown;
   error?: { message?: string; type?: string; code?: number; fbtrace_id?: string };
 };
 
-async function readAsJson(res: Response): Promise<unknown> {
+async function safeGraphJson(res: Response): Promise<{ raw: unknown; parsed: GraphAccountsResp }> {
   const text = await res.text();
-  if (!text) return null;
+  let raw: unknown = null;
   try {
-    return JSON.parse(text) as unknown;
+    raw = text ? (JSON.parse(text) as unknown) : null;
   } catch {
-    return { _nonJson: true, text };
+    raw = { _nonJson: true, text };
   }
+
+  const parsed: GraphAccountsResp = isRecord(raw) ? (raw as GraphAccountsResp) : {};
+  return { raw, parsed };
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -59,7 +74,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const workspaceId = getWorkspaceId(req);
     const integrationId = getIntegrationId(req);
 
-    // 1) auth user desde cookies (NO Authorization header)
+    // 1) auth user desde cookies
     const cookieStore = await cookies();
     const supabaseServer = createServerClient(supabaseUrl, anonKey, {
       cookies: {
@@ -75,7 +90,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     }
     const userId = userData.user.id;
 
-    // 2) admin client (service role)
+    // 2) admin client
     const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
     // 3) verify membership
@@ -118,10 +133,10 @@ export async function GET(req: Request): Promise<NextResponse> {
     }
 
     // 5) Graph: /me/accounts
-    // ⚠️ NO pedimos "tasks" (te daba error)
+    // Pedimos access_token (page token) + perms, para depurar y para poder trabajar luego con Page endpoints.
     const graph = new URL('https://graph.facebook.com/v20.0/me/accounts');
     graph.searchParams.set('access_token', userAccessToken);
-    graph.searchParams.set('fields', 'id,name');
+    graph.searchParams.set('fields', 'id,name,perms,access_token');
     graph.searchParams.set('limit', '200');
 
     const res = await fetch(graph.toString(), {
@@ -133,8 +148,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       cache: 'no-store',
     });
 
-    const raw = await readAsJson(res);
-    const parsed: GraphAccountsResp = isRecord(raw) ? (raw as GraphAccountsResp) : {};
+    const { raw, parsed } = await safeGraphJson(res);
 
     if (!res.ok) {
       return NextResponse.json(
@@ -153,10 +167,14 @@ export async function GET(req: Request): Promise<NextResponse> {
         const id = typeof p.id === 'string' ? p.id : null;
         const name = typeof p.name === 'string' ? p.name : null;
         if (!id || !name) return null;
-        return { id, name };
+
+        // perms suele venir como array de strings
+        const perms = pickStringArray(p.perms);
+        return { id, name, perms };
       })
       .filter((v): v is MetaPage => v !== null);
 
+    // ⚠️ NO devolvemos page access_token al cliente.
     return NextResponse.json({
       rawCount: Array.isArray(parsed.data) ? parsed.data.length : 0,
       pages,
