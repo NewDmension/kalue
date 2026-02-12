@@ -1,18 +1,22 @@
+// src/app/api/integrations/meta/forms/route.ts
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+
 import { decryptToken } from '@/server/crypto/tokenCrypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type LeadForm = {
-  id: string;
-  name: string;
-  status: string | null;
-  created_time: string | null;
-};
+type MetaForm = { id: string; name: string; status?: string | null };
+
+function json(status: number, payload: Record<string, unknown>) {
+  return new NextResponse(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  });
+}
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -20,49 +24,126 @@ function getEnv(name: string): string {
   return v;
 }
 
-function getWorkspaceId(req: Request): string {
-  const v = req.headers.get('x-workspace-id');
-  if (!v) throw new Error('Missing x-workspace-id header');
-  return v;
-}
-
-function getQuery(req: Request, key: string): string {
-  const url = new URL(req.url);
-  const v = url.searchParams.get(key);
-  const s = v?.trim() ?? '';
-  if (!s) throw new Error(`Missing ${key} query param`);
-  return s;
-}
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function pickString(v: unknown): string | null {
-  return typeof v === 'string' && v.trim() ? v : null;
+function pickString(v: unknown, key: string): string {
+  if (!isRecord(v)) return '';
+  const x = v[key];
+  return typeof x === 'string' ? x : '';
 }
 
-async function safeJson(res: Response): Promise<unknown> {
+function getWorkspaceId(req: Request): string {
+  const v = (req.headers.get('x-workspace-id') ?? '').trim();
+  if (!v) throw new Error('Missing x-workspace-id header');
+  return v;
+}
+
+function getQuery(req: Request, name: string): string {
+  const url = new URL(req.url);
+  return (url.searchParams.get(name) ?? '').trim();
+}
+
+async function isWorkspaceMember(args: { admin: SupabaseClient; workspaceId: string; userId: string }): Promise<boolean> {
+  const { data, error } = await args.admin
+    .from('workspace_members')
+    .select('user_id')
+    .eq('workspace_id', args.workspaceId)
+    .eq('user_id', args.userId)
+    .limit(1);
+
+  if (error) return false;
+  return Array.isArray(data) && data.length > 0;
+}
+
+type AccountsItem = { id?: unknown; access_token?: unknown; name?: unknown };
+type AccountsResp = { data?: AccountsItem[]; error?: unknown };
+
+async function graphGet(url: string, accessToken: string): Promise<{ ok: boolean; status: number; raw: unknown }> {
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: { accept: 'application/json', authorization: `Bearer ${accessToken}` },
+    cache: 'no-store',
+  });
+
   const text = await res.text();
-  if (!text) return null;
+  let raw: unknown = null;
   try {
-    return JSON.parse(text) as unknown;
+    raw = text ? (JSON.parse(text) as unknown) : null;
   } catch {
-    return { _nonJson: true, text };
+    raw = { _nonJson: true, text };
+  }
+
+  return { ok: res.ok, status: res.status, raw };
+}
+
+async function getUserAccessToken(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  integrationId: string;
+}): Promise<string> {
+  const { data, error } = await args.admin
+    .from('integration_oauth_tokens')
+    .select('access_token_ciphertext')
+    .eq('workspace_id', args.workspaceId)
+    .eq('integration_id', args.integrationId)
+    .eq('provider', 'meta')
+    .maybeSingle();
+
+  if (error) throw new Error(`db_error: ${error.message}`);
+  if (!data?.access_token_ciphertext) throw new Error('token_not_found');
+
+  try {
+    return decryptToken(data.access_token_ciphertext);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'decrypt_failed';
+    throw new Error(`decrypt_failed: ${msg}`);
   }
 }
 
-type GraphResp = {
-  data?: Array<{ id?: unknown; name?: unknown; status?: unknown; created_time?: unknown }>;
-  error?: { message?: unknown; type?: unknown; code?: unknown; error_subcode?: unknown; fbtrace_id?: unknown };
-};
+async function getPageAccessToken(args: {
+  graphVersion: string;
+  userAccessToken: string;
+  pageId: string;
+}): Promise<{ pageToken: string; pageName?: string }> {
+  // Nota: "perms" ya no existe aquí -> usamos access_token (page token)
+  const url = new URL(`https://graph.facebook.com/${args.graphVersion}/me/accounts`);
+  url.searchParams.set('fields', 'id,name,access_token');
+  url.searchParams.set('limit', '200');
 
-function pickGraphError(raw: unknown): string {
-  if (!isRecord(raw)) return 'Unknown graph error';
-  const err = raw.error;
-  if (!isRecord(err)) return 'Unknown graph error';
-  if (typeof err.message === 'string') return err.message;
-  return JSON.stringify(err);
+  const r = await graphGet(url.toString(), args.userAccessToken);
+  if (!r.ok) throw new Error(`graph_error_me_accounts`);
+
+  const parsed = (isRecord(r.raw) ? (r.raw as AccountsResp) : {}) as AccountsResp;
+  const arr = Array.isArray(parsed.data) ? parsed.data : [];
+
+  for (const it of arr) {
+    const id = typeof it.id === 'string' ? it.id : '';
+    if (id !== args.pageId) continue;
+    const token = typeof it.access_token === 'string' ? it.access_token : '';
+    const name = typeof it.name === 'string' ? it.name : undefined;
+    if (!token) throw new Error('page_token_missing');
+    return { pageToken: token, pageName: name };
+  }
+
+  throw new Error('page_not_found_in_me_accounts');
+}
+
+type FormsItem = { id?: unknown; name?: unknown; status?: unknown };
+type FormsResp = { data?: FormsItem[]; error?: unknown };
+
+function toForms(raw: unknown): MetaForm[] {
+  const parsed = (isRecord(raw) ? (raw as FormsResp) : {}) as FormsResp;
+  const arr = Array.isArray(parsed.data) ? parsed.data : [];
+  const out: MetaForm[] = [];
+  for (const f of arr) {
+    const id = typeof f.id === 'string' ? f.id : '';
+    const name = typeof f.name === 'string' ? f.name : '';
+    const status = typeof f.status === 'string' ? f.status : null;
+    if (id && name) out.push({ id, name, status });
+  }
+  return out;
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -75,7 +156,10 @@ export async function GET(req: Request): Promise<NextResponse> {
     const integrationId = getQuery(req, 'integrationId');
     const pageId = getQuery(req, 'pageId');
 
-    // 1) auth user desde cookies
+    if (!integrationId) return json(400, { error: 'missing_integrationId' });
+    if (!pageId) return json(400, { error: 'missing_pageId' });
+
+    // Auth user (cookies)
     const cookieStore = await cookies();
     const supabaseServer = createServerClient(supabaseUrl, anonKey, {
       cookies: {
@@ -86,105 +170,33 @@ export async function GET(req: Request): Promise<NextResponse> {
     });
 
     const { data: userData, error: userErr } = await supabaseServer.auth.getUser();
-    if (userErr || !userData.user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    if (userErr || !userData.user) return json(401, { error: 'Unauthorized' });
+
     const userId = userData.user.id;
 
-    // 2) admin client
-    const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+    // Admin
+    const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-    // 3) verify membership
-    const { data: member, error: memberErr } = await supabaseAdmin
-      .from('workspace_members')
-      .select('workspace_id,user_id')
-      .eq('workspace_id', workspaceId)
-      .eq('user_id', userId)
-      .maybeSingle();
+    const ok = await isWorkspaceMember({ admin, workspaceId, userId });
+    if (!ok) return json(403, { error: 'Forbidden' });
 
-    if (memberErr) {
-      return NextResponse.json({ error: 'db_error', detail: memberErr.message }, { status: 500 });
-    }
-    if (!member) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-    }
+    const userAccessToken = await getUserAccessToken({ admin, workspaceId, integrationId });
 
-    // 4) load oauth token ciphertext
-    const { data: tok, error: tokErr } = await supabaseAdmin
-      .from('integration_oauth_tokens')
-      .select('access_token_ciphertext')
-      .eq('workspace_id', workspaceId)
-      .eq('integration_id', integrationId)
-      .eq('provider', 'meta')
-      .maybeSingle();
+    const graphVersion = (process.env.META_GRAPH_VERSION?.trim() || 'v20.0').replace(/^v/i, 'v');
+    const { pageToken } = await getPageAccessToken({ graphVersion, userAccessToken, pageId });
 
-    if (tokErr) {
-      return NextResponse.json({ error: 'db_error', detail: tokErr.message }, { status: 500 });
-    }
-    if (!tok?.access_token_ciphertext) {
-      return NextResponse.json({ error: 'token_not_found' }, { status: 404 });
-    }
+    // Leadgen forms
+    const formsUrl = new URL(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(pageId)}/leadgen_forms`);
+    formsUrl.searchParams.set('fields', 'id,name,status');
+    formsUrl.searchParams.set('limit', '200');
 
-    let userAccessToken = '';
-    try {
-      userAccessToken = decryptToken(tok.access_token_ciphertext);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'decrypt_failed';
-      return NextResponse.json({ error: 'decrypt_failed', detail: msg }, { status: 500 });
-    }
+    const r = await graphGet(formsUrl.toString(), pageToken);
+    if (!r.ok) return json(r.status, { error: 'graph_error', where: 'page/leadgen_forms', raw: r.raw });
 
-    // 5) Graph: /{pageId}/leadgen_forms
-    const graph = new URL(`https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}/leadgen_forms`);
-    graph.searchParams.set('access_token', userAccessToken);
-    graph.searchParams.set('fields', 'id,name,status,created_time');
-    graph.searchParams.set('limit', '200');
-
-    const res = await fetch(graph.toString(), {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${userAccessToken}`,
-      },
-      cache: 'no-store',
-    });
-
-    const raw = await safeJson(res);
-    const parsed: GraphResp = isRecord(raw) ? (raw as GraphResp) : {};
-
-    if (!res.ok) {
-      return NextResponse.json(
-        {
-          error: 'graph_error',
-          status: res.status,
-          message: pickGraphError(raw),
-          raw,
-        },
-        { status: 400 },
-      );
-    }
-
-    const forms: LeadForm[] = (parsed.data ?? [])
-      .map((f) => {
-        const id = pickString(f.id);
-        const name = pickString(f.name);
-        if (!id || !name) return null;
-        return {
-          id,
-          name,
-          status: pickString(f.status),
-          created_time: pickString(f.created_time),
-        };
-      })
-      .filter((v): v is LeadForm => v !== null);
-
-    return NextResponse.json({
-      ok: true,
-      count: forms.length,
-      forms,
-      raw,
-    });
+    const forms = toForms(r.raw);
+    return json(200, { ok: true, pageId, forms });
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'Unknown error';
-    return NextResponse.json({ error: msg }, { status: 400 });
+    const msg = e instanceof Error ? e.message : 'server_error';
+    return json(500, { error: 'server_error', detail: msg });
   }
 }
