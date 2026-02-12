@@ -147,6 +147,84 @@ function InfoModal(props: InfoModalProps) {
 }
 
 /* =======================
+   Modal: Confirm
+======================= */
+
+type ConfirmModalProps = {
+  open: boolean;
+  title: string;
+  description?: string;
+  confirmText?: string;
+  cancelText?: string;
+  busy?: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+};
+
+function ConfirmModal(props: ConfirmModalProps) {
+  if (!props.open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[99] flex items-center justify-center bg-black/60 backdrop-blur-[6px] p-4">
+      <div className="w-full max-w-[560px] card-glass rounded-2xl border border-white/10 p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-lg font-semibold text-white">{props.title}</p>
+            {props.description ? (
+              <p className="mt-2 text-sm text-white/70 whitespace-pre-line">{props.description}</p>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={props.onCancel}
+            disabled={props.busy}
+            className={cx(
+              'rounded-xl border px-3 py-2 text-sm transition',
+              props.busy
+                ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10'
+            )}
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={props.onCancel}
+            disabled={props.busy}
+            className={cx(
+              'rounded-xl border px-4 py-2 text-sm transition',
+              props.busy
+                ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+            )}
+          >
+            {props.cancelText ?? 'Cancelar'}
+          </button>
+
+          <button
+            type="button"
+            onClick={props.onConfirm}
+            disabled={props.busy}
+            className={cx(
+              'rounded-xl border px-4 py-2 text-sm transition',
+              props.busy
+                ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                : 'border-amber-400/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15'
+            )}
+          >
+            {props.busy ? 'Procesando…' : props.confirmText ?? 'Confirmar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* =======================
    Modal: Create Wizard (GHL style)
 ======================= */
 
@@ -258,8 +336,6 @@ function statusBadge(status: IntegrationStatus): { text: string; className: stri
 }
 
 function buildConfigureHref(it: IntegrationItem): string {
-  // Importante: NO hardcodeamos "meta" aquí; usamos it.provider
-  // y encode por seguridad aunque sea UUID.
   return `/integrations/${encodeURIComponent(it.provider)}/${encodeURIComponent(it.id)}`;
 }
 
@@ -279,6 +355,11 @@ export default function IntegracionesPage() {
   const [infoOpen, setInfoOpen] = useState<boolean>(false);
   const [infoTitle, setInfoTitle] = useState<string>('Listo');
   const [infoDesc, setInfoDesc] = useState<string>('');
+
+  // confirm disconnect modal
+  const [confirmOpen, setConfirmOpen] = useState<boolean>(false);
+  const [confirmIntegration, setConfirmIntegration] = useState<IntegrationItem | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState<boolean>(false);
 
   const workspaceId = useMemo(() => getActiveWorkspaceId(), []);
 
@@ -428,6 +509,85 @@ export default function IntegracionesPage() {
     }
   }, [busy, closeWizard, load, wizardName, wizardProvider, workspaceId]);
 
+  const askDisconnect = useCallback(
+    (it: IntegrationItem) => {
+      if (busy) return;
+      setConfirmIntegration(it);
+      setConfirmOpen(true);
+    },
+    [busy]
+  );
+
+  const doDisconnect = useCallback(async () => {
+    if (!confirmIntegration) return;
+    if (confirmBusy) return;
+
+    const token = await getAccessToken();
+    if (!token) {
+      setConfirmOpen(false);
+      setConfirmIntegration(null);
+      setInfoTitle('No hay sesión');
+      setInfoDesc('Inicia sesión para desconectar integraciones.');
+      setInfoOpen(true);
+      return;
+    }
+
+    if (!workspaceId) {
+      setConfirmOpen(false);
+      setConfirmIntegration(null);
+      setInfoTitle('Sin workspace activo');
+      setInfoDesc('Selecciona un workspace antes de desconectar.');
+      setInfoOpen(true);
+      return;
+    }
+
+    setConfirmBusy(true);
+
+    try {
+      // Endpoint específico meta (el que ya tienes/vas a crear)
+      const res = await fetch('/api/integrations/meta/disconnect', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          'x-workspace-id': workspaceId,
+        },
+        body: JSON.stringify({ integrationId: confirmIntegration.id }),
+      });
+
+      const raw = await safeJson(res);
+
+      if (!res.ok) {
+        setConfirmBusy(false);
+        setConfirmOpen(false);
+        setConfirmIntegration(null);
+
+        setInfoTitle('No se pudo desconectar');
+        setInfoDesc(pickErrorMessage(raw, `Error (${res.status})`));
+        setInfoOpen(true);
+        return;
+      }
+
+      setConfirmBusy(false);
+      setConfirmOpen(false);
+      setConfirmIntegration(null);
+
+      setInfoTitle('Integración desconectada');
+      setInfoDesc('Se ha eliminado el token y la integración ha vuelto a estado DRAFT.');
+      setInfoOpen(true);
+
+      await load();
+    } catch (e: unknown) {
+      setConfirmBusy(false);
+      setConfirmOpen(false);
+      setConfirmIntegration(null);
+
+      setInfoTitle('No se pudo desconectar');
+      setInfoDesc(e instanceof Error ? e.message : 'Error desconocido');
+      setInfoOpen(true);
+    }
+  }, [confirmBusy, confirmIntegration, load, workspaceId]);
+
   return (
     <div className="container-default py-8 text-white">
       <div className="mb-6 flex flex-col gap-2">
@@ -543,6 +703,21 @@ export default function IntegracionesPage() {
                       </div>
 
                       <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => askDisconnect(it)}
+                          disabled={busy}
+                          className={cx(
+                            'rounded-xl border px-4 py-2 text-sm transition',
+                            busy
+                              ? 'border-white/10 bg-white/5 text-white/40 cursor-not-allowed'
+                              : 'border-amber-400/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/15'
+                          )}
+                          title="Borra el token y vuelve a estado DRAFT"
+                        >
+                          Desconectar
+                        </button>
+
                         <Link
                           href={href}
                           prefetch={false}
@@ -568,6 +743,25 @@ export default function IntegracionesPage() {
         setName={setWizardName}
         onClose={closeWizard}
         onCreate={() => void createIntegration()}
+      />
+
+      <ConfirmModal
+        open={confirmOpen}
+        title="¿Desconectar integración?"
+        description={
+          confirmIntegration
+            ? `Se borrará el token OAuth y esta integración volverá a estado DRAFT.\n\nIntegración: ${confirmIntegration.name}\nID: ${confirmIntegration.id}`
+            : undefined
+        }
+        confirmText="Sí, desconectar"
+        cancelText="Cancelar"
+        busy={confirmBusy}
+        onCancel={() => {
+          if (confirmBusy) return;
+          setConfirmOpen(false);
+          setConfirmIntegration(null);
+        }}
+        onConfirm={() => void doDisconnect()}
       />
 
       <InfoModal open={infoOpen} title={infoTitle} description={infoDesc} onClose={() => setInfoOpen(false)} />
