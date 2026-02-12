@@ -120,9 +120,8 @@ const LOGIN_SCOPE_ALLOWLIST = new Set<string>([
   'pages_show_list',
   'pages_read_engagement',
   'business_management',
-  'pages_manage_ads', // ✅ necesario para leadgen_forms en tu caso
-  'leads_retrieval',  // ✅ imprescindible para leer leads (y a veces para forms)
 ]);
+
 
 
 function normalizeScopes(raw: string): string {
@@ -175,7 +174,7 @@ export async function POST(req: Request) {
      */
     const scopesRaw = getEnv(
   'META_OAUTH_SCOPES',
-  'public_profile,pages_show_list,pages_read_engagement,business_management,pages_manage_ads,leads_retrieval'
+  'public_profile,pages_show_list,pages_read_engagement,business_management'
 );
 
 
@@ -228,13 +227,12 @@ export async function POST(req: Request) {
     let scope = normalizeScopes(scopesRaw);
 
     // ✅ mínimos reales para listar pages + fallback business manager
-    scope = ensureRequiredScopes(scope, [
+  scope = ensureRequiredScopes(scope, [
   'public_profile',
   'pages_show_list',
   'business_management',
-  'pages_manage_ads', // ✅
-  'leads_retrieval',  // ✅
 ]);
+
 
     if (!scope) {
       return json(500, { error: 'server_error', detail: 'META_OAUTH_SCOPES resolved to empty scope list.' });
