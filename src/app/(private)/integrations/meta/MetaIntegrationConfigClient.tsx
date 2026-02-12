@@ -23,6 +23,11 @@ type IntegrationRow = {
 
 type MetaPage = { id: string; name: string };
 
+// ✅ Wizard types (PRO)
+type WizardStep = 'page' | 'forms' | 'final';
+
+type MetaForm = { id: string; name: string };
+
 type OAuthResultMessage =
   | {
       type: 'KALUE_META_OAUTH_RESULT';
@@ -164,7 +169,6 @@ async function fetchPages(args: { integrationId: string; workspaceId: string; to
     method: 'GET',
     headers: {
       'x-workspace-id': args.workspaceId,
-      // no hace daño: algunas rutas lo ignoran, pero si mañana cambias a Bearer, ya está listo
       authorization: `Bearer ${args.token}`,
     },
   });
@@ -186,6 +190,85 @@ async function fetchPages(args: { integrationId: string; workspaceId: string; to
   return pages;
 }
 
+// ✅ Wizard: fetch forms
+async function fetchForms(args: {
+  integrationId: string;
+  workspaceId: string;
+  token: string;
+  pageId: string;
+}): Promise<MetaForm[]> {
+  const url = `/api/integrations/meta/forms?integrationId=${encodeURIComponent(args.integrationId)}&pageId=${encodeURIComponent(args.pageId)}`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'x-workspace-id': args.workspaceId,
+      authorization: `Bearer ${args.token}`,
+    },
+  });
+
+  const raw = await safeJson(res);
+  if (!res.ok) {
+    throw new Error(pickErrorMessage(raw, `No se pudieron cargar Forms (${res.status})`));
+  }
+
+  const formsRaw = isRecord(raw) ? raw.forms : null;
+  if (!Array.isArray(formsRaw)) return [];
+
+  const forms: MetaForm[] = [];
+  for (const f of formsRaw) {
+    if (isRecord(f) && typeof f.id === 'string' && typeof f.name === 'string') {
+      forms.push({ id: f.id, name: f.name });
+    }
+  }
+  return forms;
+}
+
+// ✅ Wizard: upsert mappings (bulk)
+async function upsertMappings(args: {
+  integrationId: string;
+  workspaceId: string;
+  token: string;
+  page: MetaPage;
+  forms: MetaForm[];
+}): Promise<void> {
+  const res = await postJson({
+    url: '/api/integrations/meta/mappings/upsert',
+    token: args.token,
+    workspaceId: args.workspaceId,
+    body: {
+      integrationId: args.integrationId,
+      pageId: args.page.id,
+      pageName: args.page.name,
+      forms: args.forms.map((f) => ({ formId: f.id, formName: f.name })),
+    },
+  });
+
+  const raw = await safeJson(res);
+  if (!res.ok) {
+    throw new Error(pickErrorMessage(raw, `No se pudo guardar el mapping (${res.status})`));
+  }
+}
+
+// ✅ Wizard: subscribe webhook (leadgen) for page
+async function subscribeWebhook(args: {
+  integrationId: string;
+  workspaceId: string;
+  token: string;
+  pageId: string;
+}): Promise<void> {
+  const res = await postJson({
+    url: '/api/integrations/meta/webhooks/subscribe',
+    token: args.token,
+    workspaceId: args.workspaceId,
+    body: { integrationId: args.integrationId, pageId: args.pageId },
+  });
+
+  const raw = await safeJson(res);
+  if (!res.ok) {
+    throw new Error(pickErrorMessage(raw, `No se pudo suscribir el webhook (${res.status})`));
+  }
+}
+
 function useWorkspaceIdReady(): { workspaceId: string; ready: boolean } {
   const [workspaceId, setWorkspaceId] = useState<string>('');
 
@@ -196,7 +279,6 @@ function useWorkspaceIdReady(): { workspaceId: string; ready: boolean } {
       return;
     }
 
-    // fallback a localStorage
     try {
       const fromLs = (window.localStorage.getItem('kalue.activeWorkspaceId') ?? '').trim();
       if (fromLs) setWorkspaceId(fromLs);
@@ -226,6 +308,16 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const [pagesLoading, setPagesLoading] = useState<boolean>(false);
   const [pagesError, setPagesError] = useState<string | null>(null);
   const [pages, setPages] = useState<MetaPage[]>([]);
+
+  // ✅ Wizard state (isolated, no rompe nada)
+  const [wizardStep, setWizardStep] = useState<WizardStep>('page');
+  const [selectedPageId, setSelectedPageId] = useState<string>('');
+
+  const [formsLoading, setFormsLoading] = useState<boolean>(false);
+  const [formsError, setFormsError] = useState<string | null>(null);
+  const [forms, setForms] = useState<MetaForm[]>([]);
+  const [selectedFormIds, setSelectedFormIds] = useState<Record<string, boolean>>({});
+  const [activateBusy, setActivateBusy] = useState<boolean>(false);
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
 
@@ -322,9 +414,22 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, ready, workspaceId]);
 
+  const resetWizard = useCallback(() => {
+    setWizardStep('page');
+    setSelectedPageId('');
+    setForms([]);
+    setFormsError(null);
+    setFormsLoading(false);
+    setSelectedFormIds({});
+    setActivateBusy(false);
+  }, []);
+
   const loadPages = useCallback(async (): Promise<void> => {
     setPagesError(null);
     setPages([]);
+
+    // Wizard reset cuando vuelves a revisar Pages
+    resetWizard();
 
     if (!ready) return;
     if (!normalizedId || !isUuid(normalizedId)) return;
@@ -344,7 +449,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       setPagesLoading(false);
       setPagesError(e instanceof Error ? e.message : 'Error cargando Pages');
     }
-  }, [normalizedId, ready, workspaceId]);
+  }, [normalizedId, ready, resetWizard, workspaceId]);
 
   // Carga inicial
   useEffect(() => {
@@ -359,8 +464,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       setPages([]);
       setPagesError(null);
       setPagesLoading(false);
+      resetWizard();
     }
-  }, [integration?.status, loadPages]);
+  }, [integration?.status, loadPages, resetWizard]);
 
   // Compat: query params (por si aún se usan)
   useEffect(() => {
@@ -412,7 +518,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
             setInfo('Meta conectada ✅');
             window.setTimeout(() => setInfo(null), 2500);
           } else {
-            // si por lo que sea el status aún no refleja, deja info y el usuario puede refrescar
             setInfo('OAuth OK. Esperando que el servidor refleje el estado…');
             window.setTimeout(() => setInfo(null), 4000);
           }
@@ -421,7 +526,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         return;
       }
 
-      // msg.ok === false
       stopPolling();
 
       const desc = msg.errorDescription ?? '';
@@ -446,7 +550,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
     pollTimerRef.current = window.setInterval(() => {
       void (async () => {
-        // timeout
         if (pollDeadlineRef.current && Date.now() > pollDeadlineRef.current) {
           stopPolling();
           return;
@@ -509,11 +612,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         return;
       }
 
-      // abre popup
       setOauthBusy(false);
       openOauthPopup(url);
 
-      // feedback + fallback (por si postMessage no llega por cualquier motivo)
       setInfo('Abriendo ventana de conexión…');
       window.setTimeout(() => setInfo('Esperando confirmación de Meta…'), 900);
       startPollingUntilConnected();
@@ -523,7 +624,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, oauthBusy, ready, startPollingUntilConnected, workspaceId]);
 
-  // Seguridad: si desmonta la página, para polling
   useEffect(() => {
     return () => stopPolling();
   }, [stopPolling]);
@@ -531,6 +631,159 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const status: IntegrationStatus = integration?.status ?? 'draft';
   const b = statusBadge(status);
   const isConnected = status === 'connected';
+
+  // ✅ Wizard derived
+  const selectedPage = useMemo<MetaPage | null>(() => {
+    if (!selectedPageId) return null;
+    const p = pages.find((x) => x.id === selectedPageId);
+    return p ?? null;
+  }, [pages, selectedPageId]);
+
+  const selectedForms = useMemo<MetaForm[]>(() => {
+    const out: MetaForm[] = [];
+    for (const f of forms) {
+      if (selectedFormIds[f.id]) out.push(f);
+    }
+    return out;
+  }, [forms, selectedFormIds]);
+
+  const handleSelectPage = useCallback(
+    async (pageId: string) => {
+      setError(null);
+      setInfo(null);
+
+      setSelectedPageId(pageId);
+      setWizardStep('page');
+
+      // reset forms step
+      setForms([]);
+      setFormsError(null);
+      setFormsLoading(false);
+      setSelectedFormIds({});
+      setActivateBusy(false);
+    },
+    []
+  );
+
+  const handleLoadForms = useCallback(async () => {
+    setFormsError(null);
+    setForms([]);
+    setSelectedFormIds({});
+
+    if (!ready) return;
+    if (!normalizedId || !isUuid(normalizedId)) return;
+    if (!selectedPage) {
+      setFormsError('Selecciona una Page primero.');
+      return;
+    }
+
+    const token = await getAccessToken();
+    if (!token) {
+      setFormsError('Sin sesión. Vuelve a iniciar sesión.');
+      return;
+    }
+
+    setFormsLoading(true);
+    try {
+      const data = await fetchForms({
+        integrationId: normalizedId,
+        workspaceId,
+        token,
+        pageId: selectedPage.id,
+      });
+
+      setForms(data);
+      setFormsLoading(false);
+      setWizardStep('forms');
+
+      // pro: si solo hay 1 form, lo preseleccionamos
+      if (data.length === 1) {
+        setSelectedFormIds({ [data[0].id]: true });
+      }
+    } catch (e: unknown) {
+      setFormsLoading(false);
+      setFormsError(e instanceof Error ? e.message : 'Error cargando Forms');
+    }
+  }, [normalizedId, ready, selectedPage, workspaceId]);
+
+  const toggleForm = useCallback((formId: string) => {
+    setSelectedFormIds((prev) => {
+      const next: Record<string, boolean> = { ...prev };
+      next[formId] = !Boolean(prev[formId]);
+      return next;
+    });
+  }, []);
+
+  const selectAllForms = useCallback(() => {
+    setSelectedFormIds(() => {
+      const next: Record<string, boolean> = {};
+      for (const f of forms) next[f.id] = true;
+      return next;
+    });
+  }, [forms]);
+
+  const clearAllForms = useCallback(() => {
+    setSelectedFormIds({});
+  }, []);
+
+  const handleSaveAndActivate = useCallback(async () => {
+    if (activateBusy) return;
+
+    setError(null);
+    setInfo(null);
+
+    if (!ready) {
+      setError('No hay workspace activo.');
+      return;
+    }
+    if (!normalizedId || !isUuid(normalizedId)) {
+      setError('Integration ID inválido.');
+      return;
+    }
+    if (!selectedPage) {
+      setError('Selecciona una Page primero.');
+      return;
+    }
+    if (selectedForms.length === 0) {
+      setError('Selecciona al menos un Lead Form.');
+      return;
+    }
+
+    const token = await getAccessToken();
+    if (!token) {
+      setError('Sin sesión. Vuelve a iniciar sesión.');
+      return;
+    }
+
+    setActivateBusy(true);
+    setInfo('Guardando mapping y activando webhook…');
+
+    try {
+      await upsertMappings({
+        integrationId: normalizedId,
+        workspaceId,
+        token,
+        page: selectedPage,
+        forms: selectedForms,
+      });
+
+      await subscribeWebhook({
+        integrationId: normalizedId,
+        workspaceId,
+        token,
+        pageId: selectedPage.id,
+      });
+
+      setActivateBusy(false);
+      setWizardStep('final');
+      setInfo('✅ Listo: mappings guardados y webhook activado. Ya puedes recibir leads.');
+      window.setTimeout(() => setInfo(null), 3500);
+    } catch (e: unknown) {
+      setActivateBusy(false);
+      setInfo(null);
+      setError(e instanceof Error ? e.message : 'No se pudo activar la integración.');
+    }
+  }, [activateBusy, normalizedId, ready, selectedForms, selectedPage, workspaceId]);
 
   return (
     <div className="p-6 text-white">
@@ -679,28 +932,221 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
               {pages.length > 0 ? (
                 <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/75">
-                  <p className="text-white/90 font-semibold">Pages disponibles ({pages.length})</p>
-                  <ul className="mt-2 space-y-2">
-                    {pages.map((p) => (
-                      <li key={p.id} className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-white/90">{p.name}</div>
-                          <div className="font-mono text-[11px] text-white/45">{p.id}</div>
-                        </div>
-                        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-white/70">
-                          detectada
-                        </span>
-                      </li>
-                    ))}
+                  <div className="flex items-center justify-between">
+                    <p className="text-white/90 font-semibold">Pages disponibles ({pages.length})</p>
+
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] text-white/70">
+                      Wizard PRO
+                    </span>
+                  </div>
+
+                  {/* Step indicator */}
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                    <span
+                      className={cx(
+                        'rounded-full border px-2 py-1',
+                        wizardStep === 'page' ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/60'
+                      )}
+                    >
+                      1) Page
+                    </span>
+                    <span
+                      className={cx(
+                        'rounded-full border px-2 py-1',
+                        wizardStep === 'forms' ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/60'
+                      )}
+                    >
+                      2) Forms
+                    </span>
+                    <span
+                      className={cx(
+                        'rounded-full border px-2 py-1',
+                        wizardStep === 'final' ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200' : 'border-white/10 bg-white/5 text-white/60'
+                      )}
+                    >
+                      3) Activado
+                    </span>
+                  </div>
+
+                  {/* Step 1: pick page */}
+                  <ul className="mt-3 space-y-2">
+                    {pages.map((p) => {
+                      const selected = p.id === selectedPageId;
+                      return (
+                        <li key={p.id}>
+                          <button
+                            type="button"
+                            onClick={() => void handleSelectPage(p.id)}
+                            className={cx(
+                              'w-full flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition',
+                              selected ? 'border-indigo-400/30 bg-indigo-500/10' : 'border-white/10 bg-white/5 hover:bg-white/10'
+                            )}
+                          >
+                            <div className="min-w-0">
+                              <div className={cx('truncate', selected ? 'text-white' : 'text-white/90')}>{p.name}</div>
+                              <div className="font-mono text-[11px] text-white/45">{p.id}</div>
+                            </div>
+                            <span
+                              className={cx(
+                                'rounded-full border px-2 py-1 text-[10px]',
+                                selected ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/70'
+                              )}
+                            >
+                              {selected ? 'seleccionada' : 'detectar'}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
+
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-[11px] text-white/60">
+                      {selectedPage ? (
+                        <>
+                          Page seleccionada: <span className="text-white/85 font-semibold">{selectedPage.name}</span>
+                        </>
+                      ) : (
+                        <>Selecciona una Page para continuar.</>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleLoadForms()}
+                      disabled={!selectedPage || formsLoading}
+                      className={cx(
+                        'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-200 hover:bg-indigo-500/15 transition',
+                        !selectedPage || formsLoading ? 'opacity-60 cursor-not-allowed' : ''
+                      )}
+                      title="Listar Lead Forms de la Page seleccionada"
+                    >
+                      {formsLoading ? 'Cargando Forms…' : 'Continuar →'}
+                    </button>
+                  </div>
+
+                  {/* Step 2: forms */}
+                  {formsError ? (
+                    <div className="mt-3 rounded-2xl border border-red-400/20 bg-red-500/10 p-3 text-[11px] text-red-200 whitespace-pre-line">
+                      {formsError}
+                    </div>
+                  ) : null}
+
+                  {wizardStep === 'forms' ? (
+                    <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-white/90">Lead Forms ({forms.length})</p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => selectAllForms()}
+                            className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/80 hover:bg-white/10"
+                          >
+                            Seleccionar todo
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => clearAllForms()}
+                            className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/80 hover:bg-white/10"
+                          >
+                            Limpiar
+                          </button>
+                        </div>
+                      </div>
+
+                      {forms.length === 0 ? (
+                        <div className="mt-3 text-[11px] text-white/60">
+                          No se detectaron forms para esta Page (o tu app aún no tiene permiso <span className="font-mono">leads_retrieval</span>).
+                        </div>
+                      ) : (
+                        <ul className="mt-3 space-y-2">
+                          {forms.map((f) => {
+                            const checked = Boolean(selectedFormIds[f.id]);
+                            return (
+                              <li key={f.id}>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleForm(f.id)}
+                                  className={cx(
+                                    'w-full flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition',
+                                    checked ? 'border-indigo-400/30 bg-indigo-500/10' : 'border-white/10 bg-black/20 hover:bg-white/10'
+                                  )}
+                                >
+                                  <div className="min-w-0">
+                                    <div className="truncate text-white/90">{f.name}</div>
+                                    <div className="font-mono text-[11px] text-white/45">{f.id}</div>
+                                  </div>
+                                  <span
+                                    className={cx(
+                                      'rounded-full border px-2 py-1 text-[10px]',
+                                      checked ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/70'
+                                    )}
+                                  >
+                                    {checked ? 'incluido' : '—'}
+                                  </span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setWizardStep('page')}
+                          className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
+                        >
+                          ← Volver
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => void handleSaveAndActivate()}
+                          disabled={activateBusy || selectedForms.length === 0 || !selectedPage}
+                          className={cx(
+                            'rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 hover:bg-emerald-500/15 transition',
+                            activateBusy || selectedForms.length === 0 || !selectedPage ? 'opacity-60 cursor-not-allowed' : ''
+                          )}
+                          title="Guarda los mappings y suscribe el webhook leadgen"
+                        >
+                          {activateBusy ? 'Activando…' : 'Guardar y activar'}
+                        </button>
+                      </div>
+
+                      <div className="mt-2 text-[11px] text-white/55">
+                        Esto guardará el mapping (Page+Form) y activará el webhook para recibir leads en tiempo real.
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* Step 3: final */}
+                  {wizardStep === 'final' && selectedPage ? (
+                    <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-xs text-emerald-200">
+                      <p className="font-semibold">✅ Integración activada</p>
+                      <p className="mt-2 text-emerald-100/80">
+                        Page: <span className="font-semibold">{selectedPage.name}</span> · Forms:{" "}
+                        <span className="font-semibold">{selectedForms.length}</span>
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => resetWizard()}
+                          className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10"
+                        >
+                          Configurar otra Page/Form
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
               <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
-                <p className="text-white/90 font-semibold">Siguiente (cuando haya Pages)</p>
+                <p className="text-white/90 font-semibold">Siguiente</p>
                 <ul className="mt-2 list-disc pl-5 space-y-1">
                   <li>Elegir Page</li>
-                  <li>Listar y elegir Lead Form</li>
+                  <li>Listar y elegir Lead Forms</li>
                   <li>Guardar mapping (Page + Form)</li>
                   <li>Suscribir Webhook (leadgen)</li>
                 </ul>
