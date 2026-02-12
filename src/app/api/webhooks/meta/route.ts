@@ -1,6 +1,6 @@
 // src/app/api/webhooks/meta/route.ts
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
 
 import { decryptToken } from '@/server/crypto/tokenCrypto';
@@ -58,11 +58,6 @@ function getString(obj: unknown, key: string): string | null {
   return typeof v === 'string' ? v : null;
 }
 
-function pickStringArray(v: unknown): string[] {
-  if (!Array.isArray(v)) return [];
-  return v.filter((x): x is string => typeof x === 'string');
-}
-
 /** Meta webhook payload (leadgen) */
 type MetaWebhook = {
   object?: string;
@@ -87,17 +82,11 @@ type GraphAccountsItem = {
   id?: unknown;
   name?: unknown;
   access_token?: unknown;
-  // ojo: "perms" NO siempre existe, y en tu error no existe en ese node type
 };
 
 type GraphAccountsResp = {
   data?: GraphAccountsItem[];
   error?: GraphError;
-};
-
-type GraphLeadFieldItem = {
-  name?: unknown;
-  values?: unknown;
 };
 
 type GraphLeadResp = {
@@ -145,7 +134,6 @@ async function fetchPageAccessToken(args: {
   userAccessToken: string;
   pageId: string;
 }): Promise<MetaPageToken> {
-  // /me/accounts devuelve páginas a las que el usuario tiene acceso, con access_token por página
   const url = new URL(`https://graph.facebook.com/${args.graphVersion}/me/accounts`);
   url.searchParams.set('fields', 'id,name,access_token');
   url.searchParams.set('limit', '200');
@@ -213,17 +201,72 @@ function extractLeadFields(metaLead: unknown): { full_name: string | null; email
 }
 
 function buildVerifyToken(): string {
-  // compat: si tienes META_VERIFY_TOKEN ya puesto, úsalo.
-  // si algún entorno usa META_WEBHOOK_VERIFY_TOKEN, también lo aceptamos.
-  return (
-    getEnvOptional('META_VERIFY_TOKEN') ||
-    getEnvOptional('META_WEBHOOK_VERIFY_TOKEN') ||
-    ''
-  );
+  // compat: META_VERIFY_TOKEN (preferido) o META_WEBHOOK_VERIFY_TOKEN (legacy)
+  return getEnvOptional('META_VERIFY_TOKEN') || getEnvOptional('META_WEBHOOK_VERIFY_TOKEN') || '';
+}
+
+async function logWebhookEvent(args: {
+  admin: SupabaseClient;
+  provider: string;
+  workspaceId: string | null;
+  integrationId: string | null;
+  eventType: string | null;
+  objectId: string | null;
+  payload: unknown;
+}): Promise<void> {
+  await args.admin.from('integration_webhook_events').insert({
+    provider: args.provider,
+    workspace_id: args.workspaceId,
+    integration_id: args.integrationId,
+    event_type: args.eventType,
+    object_id: args.objectId,
+    payload: args.payload,
+    // received_at tiene default now()
+  });
+}
+
+type MappingRow = {
+  id: string;
+  workspace_id: string;
+  integration_id: string;
+  page_id: string;
+  form_id: string | null;
+};
+
+async function resolveMapping(args: {
+  admin: SupabaseClient;
+  pageId: string;
+  formId: string | null;
+}): Promise<MappingRow | null> {
+  // 1) match exacto page+form
+  if (args.formId) {
+    const { data, error } = await args.admin
+      .from('integration_meta_mappings')
+      .select('id, workspace_id, integration_id, page_id, form_id')
+      .eq('provider', 'meta')
+      .eq('page_id', args.pageId)
+      .eq('form_id', args.formId)
+      .limit(1)
+      .maybeSingle();
+
+    if (!error && data) return data as MappingRow;
+  }
+
+  // 2) fallback page_id con form_id null (si aún no eligiste form)
+  const { data: fb, error: fbErr } = await args.admin
+    .from('integration_meta_mappings')
+    .select('id, workspace_id, integration_id, page_id, form_id')
+    .eq('provider', 'meta')
+    .eq('page_id', args.pageId)
+    .is('form_id', null)
+    .limit(1)
+    .maybeSingle();
+
+  if (fbErr) return null;
+  return fb ? (fb as MappingRow) : null;
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
-  // ✅ 1) Verificación oficial de Meta (hub.challenge)
   const url = new URL(req.url);
   const mode = url.searchParams.get('hub.mode');
   const token = url.searchParams.get('hub.verify_token');
@@ -239,7 +282,6 @@ export async function GET(req: Request): Promise<NextResponse> {
     return new NextResponse('Forbidden', { status: 403 });
   }
 
-  // ✅ 2) Salud / debug
   return NextResponse.json({
     ok: true,
     route: '/api/webhooks/meta',
@@ -271,14 +313,16 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const graphVersion = (process.env.META_GRAPH_VERSION?.trim() || 'v20.0').replace(/^v/i, 'v');
 
-  // Auditoría: guardamos el webhook crudo (PRO)
-  // (si falla no rompemos el proceso)
+  // Auditoría PRO: guardamos el webhook crudo siempre
   try {
-    await supabaseAdmin.from('integration_webhook_events').insert({
+    await logWebhookEvent({
+      admin: supabaseAdmin,
       provider: 'meta',
-      event_type: 'raw',
-      payload: body as unknown as Json,
-      received_at: new Date().toISOString(),
+      workspaceId: null,
+      integrationId: null,
+      eventType: 'raw',
+      objectId: payload.object ?? null,
+      payload: body,
     });
   } catch {
     // no-op
@@ -287,9 +331,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const entries = Array.isArray(payload.entry) ? payload.entry : [];
 
   for (const e of entries) {
-    const pageId = typeof e.id === 'string' ? e.id : null;
-    if (!pageId) continue;
-
+    const pageIdFromEntry = typeof e.id === 'string' ? e.id : null;
     const changes = Array.isArray(e.changes) ? e.changes : [];
 
     for (const c of changes) {
@@ -297,27 +339,39 @@ export async function POST(req: Request): Promise<NextResponse> {
 
       const leadgenId = c.value?.leadgen_id ?? null;
       const formId = c.value?.form_id ?? null;
+      const pageId = c.value?.page_id ?? pageIdFromEntry;
 
-      if (!leadgenId || !formId) continue;
-
-      // 1) Encontrar mapping (workspace/integration) por page_id + form_id
-      const { data: mapping, error: mapErr } = await supabaseAdmin
-        .from('integration_meta_mappings')
-        .select('workspace_id, integration_id, page_id, form_id')
-        .eq('page_id', pageId)
-        .eq('form_id', formId)
-        .limit(1)
-        .maybeSingle();
-
-      if (mapErr || !mapping?.workspace_id || !mapping?.integration_id) {
-        // Log de “unmatched”
+      if (!pageId) {
         try {
-          await supabaseAdmin.from('integration_events').insert({
-            workspace_id: mapping?.workspace_id ?? null,
-            integration_id: mapping?.integration_id ?? null,
+          await logWebhookEvent({
+            admin: supabaseAdmin,
             provider: 'meta',
-            type: 'webhook_unmatched',
-            payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenId } as Json,
+            workspaceId: null,
+            integrationId: null,
+            eventType: 'leadgen_missing_page_id',
+            objectId: leadgenId,
+            payload: { entry: e, change: c },
+          });
+        } catch {
+          // no-op
+        }
+        continue;
+      }
+
+      // 1) Encontrar mapping (workspace/integration) por page_id + form_id (o fallback page_id + NULL)
+      const mapping = await resolveMapping({ admin: supabaseAdmin, pageId, formId });
+
+      if (!mapping?.workspace_id || !mapping?.integration_id) {
+        // Log “unmatched”
+        try {
+          await logWebhookEvent({
+            admin: supabaseAdmin,
+            provider: 'meta',
+            workspaceId: null,
+            integrationId: null,
+            eventType: 'webhook_unmatched',
+            objectId: leadgenId,
+            payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenId },
           });
         } catch {
           // no-op
@@ -327,6 +381,21 @@ export async function POST(req: Request): Promise<NextResponse> {
 
       const workspaceId = String(mapping.workspace_id);
       const integrationId = String(mapping.integration_id);
+
+      // Log evento leadgen ya ruteado (PRO)
+      try {
+        await logWebhookEvent({
+          admin: supabaseAdmin,
+          provider: 'meta',
+          workspaceId,
+          integrationId,
+          eventType: 'leadgen',
+          objectId: leadgenId,
+          payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenId },
+        });
+      } catch {
+        // no-op
+      }
 
       // 2) Recuperar user access token (cifrado) de esta integración
       const { data: tok, error: tokErr } = await supabaseAdmin
@@ -339,12 +408,14 @@ export async function POST(req: Request): Promise<NextResponse> {
 
       if (tokErr || !tok?.access_token_ciphertext) {
         try {
-          await supabaseAdmin.from('integration_events').insert({
-            workspace_id: workspaceId,
-            integration_id: integrationId,
+          await logWebhookEvent({
+            admin: supabaseAdmin,
             provider: 'meta',
-            type: 'error',
-            payload: { reason: 'oauth_token_not_found', page_id: pageId, form_id: formId } as Json,
+            workspaceId,
+            integrationId,
+            eventType: 'error',
+            objectId: leadgenId,
+            payload: { reason: 'oauth_token_not_found', page_id: pageId, form_id: formId },
           });
         } catch {
           // no-op
@@ -358,12 +429,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'decrypt_failed';
         try {
-          await supabaseAdmin.from('integration_events').insert({
-            workspace_id: workspaceId,
-            integration_id: integrationId,
+          await logWebhookEvent({
+            admin: supabaseAdmin,
             provider: 'meta',
-            type: 'error',
-            payload: { reason: 'decrypt_failed', message: msg } as Json,
+            workspaceId,
+            integrationId,
+            eventType: 'error',
+            objectId: leadgenId,
+            payload: { reason: 'decrypt_failed', message: msg },
           });
         } catch {
           // no-op
@@ -382,12 +455,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'page_token_fetch_failed';
         try {
-          await supabaseAdmin.from('integration_events').insert({
-            workspace_id: workspaceId,
-            integration_id: integrationId,
+          await logWebhookEvent({
+            admin: supabaseAdmin,
             provider: 'meta',
-            type: 'error',
-            payload: { reason: 'page_token_fetch_failed', page_id: pageId, form_id: formId, message: msg } as Json,
+            workspaceId,
+            integrationId,
+            eventType: 'error',
+            objectId: leadgenId,
+            payload: { reason: 'page_token_fetch_failed', page_id: pageId, form_id: formId, message: msg },
           });
         } catch {
           // no-op
@@ -395,13 +470,16 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      // 4) Fetch lead details
+      // 4) Fetch lead details + persist
       try {
+        if (!leadgenId) {
+          // No se puede procesar sin leadgen_id
+          continue;
+        }
+
         const metaLead = await fetchLeadDetails({ graphVersion, leadgenId, pageAccessToken });
         const extracted = extractLeadFields(metaLead);
 
-        // 4.1 Guardar en integration_leads (raw + extraído)
-        //    (idempotencia: por workspace/provider/external_id)
         const leadPayload: Json = {
           leadgen_id: leadgenId,
           page_id: pageId,
@@ -411,6 +489,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           raw: metaLead as unknown as Json,
         };
 
+        // 4.1 Guardar en integration_leads (raw + extraído)
         const { error: insErr } = await supabaseAdmin.from('integration_leads').upsert(
           {
             workspace_id: workspaceId,
@@ -424,12 +503,14 @@ export async function POST(req: Request): Promise<NextResponse> {
 
         if (insErr) {
           try {
-            await supabaseAdmin.from('integration_events').insert({
-              workspace_id: workspaceId,
-              integration_id: integrationId,
+            await logWebhookEvent({
+              admin: supabaseAdmin,
               provider: 'meta',
-              type: 'error',
-              payload: { reason: 'integration_leads_upsert_failed', leadgen_id: leadgenId } as Json,
+              workspaceId,
+              integrationId,
+              eventType: 'error',
+              objectId: leadgenId,
+              payload: { reason: 'integration_leads_upsert_failed', leadgen_id: leadgenId, detail: insErr.message },
             });
           } catch {
             // no-op
@@ -437,8 +518,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           continue;
         }
 
-        // 4.2 (Opcional PRO) Normalizar a tabla leads también
-        //     — si no existe la tabla/campos, no rompemos
+        // 4.2 (Opcional) Normalizar también a tabla leads
         try {
           await supabaseAdmin.from('leads').upsert(
             {
@@ -458,12 +538,14 @@ export async function POST(req: Request): Promise<NextResponse> {
 
         // 4.3 Log éxito
         try {
-          await supabaseAdmin.from('integration_events').insert({
-            workspace_id: workspaceId,
-            integration_id: integrationId,
+          await logWebhookEvent({
+            admin: supabaseAdmin,
             provider: 'meta',
-            type: 'lead_imported',
-            payload: { leadgen_id: leadgenId, page_id: pageId, form_id: formId } as Json,
+            workspaceId,
+            integrationId,
+            eventType: 'lead_imported',
+            objectId: leadgenId,
+            payload: { leadgen_id: leadgenId, page_id: pageId, form_id: formId },
           });
         } catch {
           // no-op
@@ -471,12 +553,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'lead_process_failed';
         try {
-          await supabaseAdmin.from('integration_events').insert({
-            workspace_id: workspaceId,
-            integration_id: integrationId,
+          await logWebhookEvent({
+            admin: supabaseAdmin,
             provider: 'meta',
-            type: 'error',
-            payload: { reason: 'lead_process_failed', leadgen_id: leadgenId, message: msg } as Json,
+            workspaceId,
+            integrationId,
+            eventType: 'error',
+            objectId: leadgenId,
+            payload: { reason: 'lead_process_failed', leadgen_id: leadgenId, message: msg },
           });
         } catch {
           // no-op
