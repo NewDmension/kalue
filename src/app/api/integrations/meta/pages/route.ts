@@ -242,11 +242,35 @@ export async function GET(req: Request): Promise<NextResponse> {
     const accounts = await graphGet<GraphAccountsResp>(accountsUrl.toString(), userAccessToken);
 
     if (!accounts.res.ok) {
-      return NextResponse.json(
-        { error: 'graph_error', where: 'me/accounts', status: accounts.res.status, meta: accounts.parsed.error ?? accounts.parsed, raw: accounts.raw },
-        { status: accounts.res.status }
-      );
-    }
+  const msg =
+    typeof accounts.parsed?.error?.message === 'string'
+      ? accounts.parsed.error.message
+      : 'Meta Graph error';
+
+  const code =
+    typeof accounts.parsed?.error?.code === 'number'
+      ? accounts.parsed.error.code
+      : undefined;
+
+  const fbtrace =
+    typeof accounts.parsed?.error?.fbtrace_id === 'string'
+      ? accounts.parsed.error.fbtrace_id
+      : undefined;
+
+  return NextResponse.json(
+    {
+      error: 'graph_error',
+      where: 'me/accounts',
+      status: accounts.res.status,
+      detail: msg,
+      code,
+      fbtrace_id: fbtrace,
+      raw: accounts.raw,
+    },
+    { status: accounts.res.status }
+  );
+}
+
 
     const pagesFromAccounts = toMetaPagesFromAccounts(accounts.parsed);
 
