@@ -55,6 +55,7 @@ type GraphAccountsResp = {
 async function safeGraphJson(res: Response): Promise<{ raw: unknown; parsed: GraphAccountsResp }> {
   const text = await res.text();
   let raw: unknown = null;
+
   try {
     raw = text ? (JSON.parse(text) as unknown) : null;
   } catch {
@@ -74,8 +75,8 @@ export async function GET(req: Request): Promise<NextResponse> {
     const workspaceId = getWorkspaceId(req);
     const integrationId = getIntegrationId(req);
 
-    // 1) auth user desde cookies
     const cookieStore = await cookies();
+
     const supabaseServer = createServerClient(supabaseUrl, anonKey, {
       cookies: {
         get: (name) => cookieStore.get(name)?.value,
@@ -88,12 +89,13 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (userErr || !userData.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+
     const userId = userData.user.id;
 
-    // 2) admin client
-    const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false },
+    });
 
-    // 3) verify membership
     const { data: member, error: memberErr } = await supabaseAdmin
       .from('workspace_members')
       .select('workspace_id,user_id')
@@ -104,11 +106,11 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (memberErr) {
       return NextResponse.json({ error: 'db_error', detail: memberErr.message }, { status: 500 });
     }
+
     if (!member) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    // 4) load oauth token ciphertext
     const { data: tok, error: tokErr } = await supabaseAdmin
       .from('integration_oauth_tokens')
       .select('access_token_ciphertext')
@@ -120,23 +122,28 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (tokErr) {
       return NextResponse.json({ error: 'db_error', detail: tokErr.message }, { status: 500 });
     }
+
     if (!tok?.access_token_ciphertext) {
       return NextResponse.json({ error: 'token_not_found' }, { status: 404 });
     }
 
+    // 🔥 COMPAT MODE: soporta token cifrado o en claro
     let userAccessToken = '';
+
     try {
       userAccessToken = decryptToken(tok.access_token_ciphertext);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'decrypt_failed';
-      return NextResponse.json({ error: 'decrypt_failed', detail: msg }, { status: 500 });
+    } catch {
+      // Si falla decrypt, asumimos que está guardado en claro (modo temporal)
+      userAccessToken = tok.access_token_ciphertext;
     }
 
-    // 5) Graph: /me/accounts
-    // Pedimos access_token (page token) + perms, para depurar y para poder trabajar luego con Page endpoints.
+    if (!userAccessToken || typeof userAccessToken !== 'string') {
+      return NextResponse.json({ error: 'invalid_token_format' }, { status: 500 });
+    }
+
     const graph = new URL('https://graph.facebook.com/v20.0/me/accounts');
     graph.searchParams.set('access_token', userAccessToken);
-    graph.searchParams.set('fields', 'id,name,perms,access_token');
+    graph.searchParams.set('fields', 'id,name,perms');
     graph.searchParams.set('limit', '200');
 
     const res = await fetch(graph.toString(), {
@@ -168,17 +175,14 @@ export async function GET(req: Request): Promise<NextResponse> {
         const name = typeof p.name === 'string' ? p.name : null;
         if (!id || !name) return null;
 
-        // perms suele venir como array de strings
         const perms = pickStringArray(p.perms);
         return { id, name, perms };
       })
       .filter((v): v is MetaPage => v !== null);
 
-    // ⚠️ NO devolvemos page access_token al cliente.
     return NextResponse.json({
       rawCount: Array.isArray(parsed.data) ? parsed.data.length : 0,
       pages,
-      raw,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
