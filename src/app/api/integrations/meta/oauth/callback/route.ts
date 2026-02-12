@@ -66,12 +66,6 @@ function htmlResponse(html: string): NextResponse {
   });
 }
 
-/**
- * Devuelve una mini página que:
- * - avisa a la ventana padre (window.opener) con postMessage
- * - intenta cerrarse
- * - si no puede, muestra botón "Cerrar"
- */
 function buildPopupCloseHtml(args: {
   ok: boolean;
   origin: string;
@@ -163,15 +157,8 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     const origin = getBaseUrl(req);
 
-    // Si Meta devuelve error
     if (error) {
-      const payload = {
-        type: 'KALUE_META_OAUTH_RESULT',
-        ok: false,
-        error,
-        errorDescription,
-      };
-
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error, errorDescription };
       return htmlResponse(
         buildPopupCloseHtml({
           ok: false,
@@ -196,7 +183,6 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
 
-    // Validar state (firma + ttl)
     const parts = state.split('.');
     if (parts.length !== 2) {
       const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_format' };
@@ -242,7 +228,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Estado expirado' }));
     }
 
-    // 1) Intercambio code -> access_token
+    // 1) code -> access_token
     const redirectUri = `${origin}/api/integrations/meta/oauth/callback`;
 
     const tokenUrl = new URL(`https://graph.facebook.com/${graphVersion}/oauth/access_token`);
@@ -290,8 +276,21 @@ export async function GET(req: Request): Promise<NextResponse> {
     );
 
     if (upsertErr) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'db_upsert_failed' };
-      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error guardando token' }));
+      const payload = {
+        type: 'KALUE_META_OAUTH_RESULT',
+        ok: false,
+        error: 'db_upsert_failed',
+        detail: upsertErr,
+      };
+      return htmlResponse(
+        buildPopupCloseHtml({
+          ok: false,
+          origin,
+          payload,
+          title: 'Error guardando token',
+          subtitle: 'No se pudo guardar el token en la base de datos.',
+        })
+      );
     }
 
     await admin
