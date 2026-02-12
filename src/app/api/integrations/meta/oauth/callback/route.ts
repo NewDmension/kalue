@@ -138,6 +138,16 @@ function buildPopupCloseHtml(args: {
 </html>`;
 }
 
+async function safeGraphJson(res: Response): Promise<{ ok: boolean; raw: unknown }> {
+  const text = await res.text();
+  if (!text) return { ok: res.ok, raw: null };
+  try {
+    return { ok: res.ok, raw: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: res.ok, raw: { _nonJson: true, text } };
+  }
+}
+
 export async function GET(req: Request): Promise<NextResponse> {
   try {
     const supabaseUrl = requireEnv('NEXT_PUBLIC_SUPABASE_URL');
@@ -158,7 +168,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const origin = getBaseUrl(req);
 
     if (error) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error, errorDescription };
+      const payload: Record<string, unknown> = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error, errorDescription };
       return htmlResponse(
         buildPopupCloseHtml({
           ok: false,
@@ -166,12 +176,12 @@ export async function GET(req: Request): Promise<NextResponse> {
           payload,
           title: 'Conexión cancelada',
           subtitle: errorDescription || 'Se canceló o falló la autorización en Meta.',
-        })
+        }),
       );
     }
 
     if (!code || !state) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'missing_code_or_state' };
+      const payload: Record<string, unknown> = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'missing_code_or_state' };
       return htmlResponse(
         buildPopupCloseHtml({
           ok: false,
@@ -179,13 +189,13 @@ export async function GET(req: Request): Promise<NextResponse> {
           payload,
           title: 'Error de conexión',
           subtitle: 'Faltan parámetros del callback (code/state).',
-        })
+        }),
       );
     }
 
     const parts = state.split('.');
     if (parts.length !== 2) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_format' };
+      const payload: Record<string, unknown> = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_format' };
       return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
     }
 
@@ -194,7 +204,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const expectedSig = hmacSha256Base64url(stateSecret, encodedPayload);
 
     if (sig !== expectedSig) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_signature' };
+      const payload: Record<string, unknown> = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_signature' };
       return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
     }
 
@@ -213,19 +223,19 @@ export async function GET(req: Request): Promise<NextResponse> {
     const ttl = pickNumber(stateObj, 'ttl');
 
     if (!integrationId || !workspaceId || !iat || !ttl) {
-      const payload = {
+      const payloadOut: Record<string, unknown> = {
         type: 'KALUE_META_OAUTH_RESULT',
         ok: false,
         error: 'invalid_state_payload',
         detail: { integrationId: Boolean(integrationId), workspaceId: Boolean(workspaceId), iat, ttl },
       };
-      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload: payloadOut, title: 'Error de conexión' }));
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    if (now > iat + ttl) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'state_expired' };
-      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Estado expirado' }));
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (nowSec > iat + ttl) {
+      const payloadOut: Record<string, unknown> = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'state_expired' };
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload: payloadOut, title: 'Estado expirado' }));
     }
 
     // 1) code -> access_token
@@ -238,33 +248,40 @@ export async function GET(req: Request): Promise<NextResponse> {
     tokenUrl.searchParams.set('code', code);
 
     const tokenRes = await fetch(tokenUrl.toString(), { method: 'GET' });
-    const tokenJson: unknown = await tokenRes.json();
+    const { ok: tokenOk, raw: tokenRaw } = await safeGraphJson(tokenRes);
 
-    if (!tokenRes.ok) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'token_exchange_failed', detail: tokenJson };
+    if (!tokenOk) {
+      const payloadOut: Record<string, unknown> = {
+        type: 'KALUE_META_OAUTH_RESULT',
+        ok: false,
+        error: 'token_exchange_failed',
+        detail: tokenRaw,
+      };
       return htmlResponse(
         buildPopupCloseHtml({
           ok: false,
           origin,
-          payload,
+          payload: payloadOut,
           title: 'Error de conexión',
           subtitle: 'No se pudo completar el intercambio del token.',
-        })
+        }),
       );
     }
 
     const accessToken =
-      isRecord(tokenJson) && typeof tokenJson['access_token'] === 'string' ? tokenJson['access_token'] : '';
+      isRecord(tokenRaw) && typeof tokenRaw['access_token'] === 'string' ? tokenRaw['access_token'] : '';
+
     if (!accessToken) {
-      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'missing_access_token' };
-      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
+      const payloadOut: Record<string, unknown> = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'missing_access_token' };
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload: payloadOut, title: 'Error de conexión' }));
     }
 
     // ⚠️ Placeholder: cambia por TU cifrado real
     const access_token_ciphertext = accessToken;
 
-    const admin: SupabaseClient = createClient(supabaseUrl, serviceKey);
+    const admin: SupabaseClient = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
+    // 2) Guardar token (upsert)
     const { error: upsertErr } = await admin.from('integration_oauth_tokens').upsert(
       {
         workspace_id: workspaceId,
@@ -272,43 +289,70 @@ export async function GET(req: Request): Promise<NextResponse> {
         provider: 'meta',
         access_token_ciphertext,
       },
-      { onConflict: 'workspace_id,integration_id,provider' }
+      { onConflict: 'workspace_id,integration_id,provider' },
     );
 
     if (upsertErr) {
-      const payload = {
+      const payloadOut: Record<string, unknown> = {
         type: 'KALUE_META_OAUTH_RESULT',
         ok: false,
         error: 'db_upsert_failed',
-        detail: upsertErr,
+        detail: { message: upsertErr.message, code: upsertErr.code, hint: upsertErr.hint, details: upsertErr.details },
       };
+
       return htmlResponse(
         buildPopupCloseHtml({
           ok: false,
           origin,
-          payload,
+          payload: payloadOut,
           title: 'Error guardando token',
           subtitle: 'No se pudo guardar el token en la base de datos.',
-        })
+        }),
       );
     }
 
-    await admin
+    // 3) Marcar integración como connected (SIN last_error)
+    const nowIso = new Date().toISOString();
+
+    const { error: updErr } = await admin
       .from('integrations')
-      .update({ status: 'connected', last_error: null, updated_at: new Date().toISOString() })
+      .update({
+        status: 'connected',
+        connected_at: nowIso,
+        updated_at: nowIso,
+      })
       .eq('id', integrationId)
       .eq('workspace_id', workspaceId);
 
-    const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: true, integrationId, workspaceId };
+    if (updErr) {
+      const payloadOut: Record<string, unknown> = {
+        type: 'KALUE_META_OAUTH_RESULT',
+        ok: false,
+        error: 'integration_update_failed',
+        detail: { message: updErr.message, code: updErr.code, hint: updErr.hint, details: updErr.details },
+      };
+
+      return htmlResponse(
+        buildPopupCloseHtml({
+          ok: false,
+          origin,
+          payload: payloadOut,
+          title: 'Error actualizando estado',
+          subtitle: updErr.message,
+        }),
+      );
+    }
+
+    const payloadOut: Record<string, unknown> = { type: 'KALUE_META_OAUTH_RESULT', ok: true, integrationId, workspaceId };
 
     return htmlResponse(
       buildPopupCloseHtml({
         ok: true,
         origin,
-        payload,
+        payload: payloadOut,
         title: 'Conexión completada',
         subtitle: 'Puedes volver a Kalue. Esta ventana se cerrará sola.',
-      })
+      }),
     );
   } catch (e: unknown) {
     const origin = (() => {
@@ -320,7 +364,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     })();
 
     const msg = e instanceof Error ? e.message : 'Unexpected error';
-    const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'server_error', detail: msg };
+    const payload: Record<string, unknown> = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'server_error', detail: msg };
 
     const safeOrigin = origin || 'https://example.com';
 
@@ -331,7 +375,7 @@ export async function GET(req: Request): Promise<NextResponse> {
         payload,
         title: 'Error de servidor',
         subtitle: msg,
-      })
+      }),
     );
   }
 }

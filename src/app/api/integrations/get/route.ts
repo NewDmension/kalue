@@ -1,3 +1,4 @@
+// src/app/api/integrations/get/route.ts
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -35,6 +36,7 @@ async function getAuthedUserId(supabase: SupabaseClient): Promise<string | null>
 
 async function isWorkspaceMember(args: { admin: SupabaseClient; workspaceId: string; userId: string }): Promise<boolean> {
   const { data, error } = await args.admin
+    .schema('public')
     .from('workspace_members')
     .select('user_id')
     .eq('workspace_id', args.workspaceId)
@@ -59,8 +61,9 @@ export async function GET(req: Request) {
     const token = getBearer(req);
     if (!token) return json(401, { error: 'login_required' });
 
-    const workspaceId = req.headers.get('x-workspace-id');
+    const workspaceId = (req.headers.get('x-workspace-id') ?? '').trim();
     if (!workspaceId) return json(400, { error: 'missing_workspace_id' });
+    if (!isUuid(workspaceId)) return json(400, { error: 'invalid_workspace_id' });
 
     const rawId = getQueryParam(req, 'integrationId').trim();
     const low = rawId.toLowerCase();
@@ -69,22 +72,33 @@ export async function GET(req: Request) {
       return json(400, { error: 'invalid_integration_id', detail: `received: ${rawId || '(empty)'}` });
     }
 
+    const debug = getQueryParam(req, 'debug') === '1';
+
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false, autoRefreshToken: false },
     });
 
     const userId = await getAuthedUserId(userClient);
     if (!userId) return json(401, { error: 'login_required' });
 
-    const admin = createClient(supabaseUrl, serviceKey);
+    const admin = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
 
     const ok = await isWorkspaceMember({ admin, workspaceId, userId });
     if (!ok) return json(403, { error: 'not_member' });
 
-    // ⚠️ En debug devolvemos config/secrets. Luego lo normal es NO devolver secrets al cliente.
+    // 👇 Devolvemos connected_at + updated_at para depurar el "DRAFT"
+    const selectBase =
+      'id, workspace_id, provider, name, status, created_at, connected_at, updated_at, config';
+
+    const select = debug ? `${selectBase}, secrets` : selectBase;
+
     const { data, error } = await admin
+      .schema('public')
       .from('integrations')
-      .select('id, workspace_id, provider, name, status, created_at, config, secrets')
+      .select(select)
       .eq('workspace_id', workspaceId)
       .eq('id', rawId)
       .limit(1)

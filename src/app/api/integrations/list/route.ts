@@ -1,3 +1,4 @@
+// src/app/api/integrations/list/route.ts
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -33,8 +34,8 @@ function pickErrMeta(err: unknown): { detail?: string; hint?: string; code?: str
     typeof e?.details === 'string'
       ? e.details
       : typeof e?.message === 'string'
-      ? e.message
-      : undefined;
+        ? e.message
+        : undefined;
 
   const hint = typeof e?.hint === 'string' ? e.hint : undefined;
   const code = typeof e?.code === 'string' ? e.code : undefined;
@@ -48,11 +49,7 @@ async function getAuthedUserId(supabase: SupabaseClient): Promise<string | null>
   return data.user?.id ?? null;
 }
 
-async function isWorkspaceMember(args: {
-  admin: SupabaseClient;
-  workspaceId: string;
-  userId: string;
-}): Promise<boolean> {
+async function isWorkspaceMember(args: { admin: SupabaseClient; workspaceId: string; userId: string }): Promise<boolean> {
   const { data, error } = await args.admin
     .schema('public')
     .from('workspace_members')
@@ -74,7 +71,7 @@ export async function GET(req: Request) {
     const token = getBearer(req);
     if (!token) return json(401, { error: 'login_required' });
 
-    const workspaceId = req.headers.get('x-workspace-id');
+    const workspaceId = (req.headers.get('x-workspace-id') ?? '').trim();
     if (!workspaceId) return json(400, { error: 'missing_workspace_id' });
     if (!isUuid(workspaceId)) return json(400, { error: 'invalid_workspace_id' });
 
@@ -96,7 +93,7 @@ export async function GET(req: Request) {
     const { data, error } = await admin
       .schema('public')
       .from('integrations')
-      .select('id, provider, name, status, created_at')
+      .select('id, provider, name, status, created_at, connected_at, updated_at')
       .eq('workspace_id', workspaceId)
       .order('created_at', { ascending: false });
 
@@ -108,6 +105,7 @@ export async function GET(req: Request) {
     return json(200, { ok: true, integrations: data ?? [] });
   } catch (e: unknown) {
     const meta = pickErrMeta(e);
-    return json(500, { error: 'server_error', ...meta, detail: meta.detail ?? (e instanceof Error ? e.message : 'Unexpected error') });
+    const detail = meta.detail ?? (e instanceof Error ? e.message : 'Unexpected error');
+    return json(500, { error: 'server_error', ...meta, detail });
   }
 }
