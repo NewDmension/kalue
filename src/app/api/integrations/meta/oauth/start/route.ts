@@ -111,13 +111,15 @@ function getBaseUrl(req: Request): string {
 }
 
 /**
- * ✅ SOLO SCOPES DE LOGIN SEGUROS (fase 1: conectar bien).
- * Cualquier cosa fuera se filtra para evitar "Invalid Scopes".
+ * ✅ Allowlist de scopes “seguros” para fase 1 (conectar + listar pages).
+ * Añadimos business_management para poder sacar Pages vía Business Manager
+ * cuando /me/accounts devuelva vacío (caso típico).
  */
 const LOGIN_SCOPE_ALLOWLIST = new Set<string>([
   'public_profile',
   'pages_show_list',
   'pages_read_engagement',
+  'business_management',
 ]);
 
 function normalizeScopes(raw: string): string {
@@ -164,13 +166,13 @@ export async function POST(req: Request) {
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
 
     /**
-     * ✅ FASE 1 (conectar login sin errores):
-     * NO uses leads_retrieval aquí.
-     * (Luego lo añadiremos en fase 2 cuando tengamos pages ok y revisemos permisos avanzados)
+     * ✅ FASE 1:
+     * - No pedimos leads_retrieval ni nada “avanzado”.
+     * - Pedimos business_management para el fallback de Pages (Business Manager).
      */
     const scopesRaw = getEnv(
       'META_OAUTH_SCOPES',
-      'public_profile,pages_show_list,pages_read_engagement'
+      'public_profile,pages_show_list,pages_read_engagement,business_management'
     );
 
     const ttlSeconds = Number.parseInt(getEnv('META_OAUTH_STATE_TTL_SECONDS', '900'), 10);
@@ -221,8 +223,8 @@ export async function POST(req: Request) {
 
     let scope = normalizeScopes(scopesRaw);
 
-    // ✅ mínimos reales para conectar y listar pages
-    scope = ensureRequiredScopes(scope, ['public_profile', 'pages_show_list']);
+    // ✅ mínimos reales para listar pages + fallback business manager
+    scope = ensureRequiredScopes(scope, ['public_profile', 'pages_show_list', 'business_management']);
 
     if (!scope) {
       return json(500, { error: 'server_error', detail: 'META_OAUTH_SCOPES resolved to empty scope list.' });
