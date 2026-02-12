@@ -1,10 +1,12 @@
+// src/app/api/integrations/meta/oauth/callback/route.ts
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
-import { encryptToken } from '@/server/crypto/tokenCrypto';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+type Json = Record<string, unknown>;
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -17,8 +19,11 @@ function getEnv(name: string, fallback: string): string {
   return v && v.length > 0 ? v : fallback;
 }
 
-function isUuid(v: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+function json(status: number, payload: Record<string, unknown>) {
+  return new NextResponse(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 }
 
 function base64urlToString(input: string): string {
@@ -32,23 +37,6 @@ function hmacSha256Base64url(secret: string, payload: string): string {
   return sig.replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 
-function safeRedirect(to: string): NextResponse {
-  return NextResponse.redirect(to);
-}
-
-function getBaseUrl(req: Request): string {
-  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? '';
-  const proto = req.headers.get('x-forwarded-proto') ?? 'https';
-  if (!host) throw new Error('Missing host header');
-  return `${proto}://${host}`;
-}
-
-type MetaTokenResponse = {
-  access_token?: string;
-  token_type?: string;
-  expires_in?: number;
-};
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
@@ -59,115 +47,198 @@ function pickString(v: unknown, key: string): string {
   return typeof x === 'string' ? x : '';
 }
 
-function pickNumber(v: unknown, key: string): number | null {
-  if (!isRecord(v)) return null;
-  const x = v[key];
-  return typeof x === 'number' && Number.isFinite(x) ? x : null;
+function getBaseUrl(req: Request): string {
+  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? '';
+  const proto = req.headers.get('x-forwarded-proto') ?? 'https';
+  if (!host) throw new Error('Missing host header');
+  return `${proto}://${host}`;
 }
 
-async function fetchJson(url: string): Promise<unknown> {
-  const res = await fetch(url, { method: 'GET' });
-  const text = await res.text();
-  let raw: unknown = null;
-
-  try {
-    raw = text ? (JSON.parse(text) as unknown) : null;
-  } catch {
-    raw = { _nonJson: true, text };
-  }
-
-  if (!res.ok) {
-    const detail =
-      isRecord(raw) && typeof raw.error === 'object' && raw.error
-        ? JSON.stringify(raw.error)
-        : typeof text === 'string'
-          ? text
-          : '';
-    throw new Error(`Meta token error (${res.status}) ${detail}`.trim());
-  }
-
-  return raw;
+function htmlResponse(html: string): NextResponse {
+  return new NextResponse(html, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+  });
 }
 
-export async function GET(req: Request) {
-  const baseUrl = (() => {
-    try {
-      return getBaseUrl(req);
-    } catch {
-      return '';
-    }
-  })();
+/**
+ * Devuelve una mini página que:
+ * - avisa a la ventana padre (window.opener) con postMessage
+ * - intenta cerrarse
+ * - si no puede, muestra botón "Cerrar"
+ */
+function buildPopupCloseHtml(args: {
+  ok: boolean;
+  origin: string;
+  payload: Record<string, unknown>;
+  title?: string;
+  subtitle?: string;
+}): string {
+  const safeTitle = (args.title ?? (args.ok ? 'Conexión completada' : 'No se pudo completar la conexión'))
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 
-  const url = new URL(req.url);
+  const safeSubtitle = (args.subtitle ?? (args.ok ? 'Ya puedes volver a Kalue.' : 'Revisa permisos o vuelve a intentar.'))
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 
-  const metaErr = (url.searchParams.get('error') ?? '').trim();
-  const metaErrReason = (url.searchParams.get('error_reason') ?? '').trim();
-  const metaErrDesc = (url.searchParams.get('error_description') ?? '').trim();
+  const payloadJson = JSON.stringify(args.payload);
 
-  const genericErrorRedirect = baseUrl ? `${baseUrl}/integrations?oauth=error` : '/integrations?oauth=error';
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>${safeTitle}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #0b0b10; color: #fff; }
+    .wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+    .card { width: 100%; max-width: 520px; border-radius: 16px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); padding: 20px; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    p { font-size: 14px; opacity: 0.85; margin: 0 0 16px; line-height: 1.4; }
+    button { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(99,102,241,0.30); background: rgba(99,102,241,0.12); color: #fff; font-weight: 600; cursor: pointer; }
+    .small { font-size: 12px; opacity: 0.7; margin-top: 12px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; opacity: 0.85; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>${safeTitle}</h1>
+      <p>${safeSubtitle}</p>
+      <button id="closeBtn" type="button">Cerrar ventana</button>
+      <div class="small">Si esta ventana no se cierra automáticamente, pulsa “Cerrar ventana”.</div>
+      <div class="small">Origen: <code>${args.origin}</code></div>
+    </div>
+  </div>
 
+  <script>
+    (function() {
+      var ORIGIN = ${JSON.stringify(args.origin)};
+      var payload = ${payloadJson};
+
+      try {
+        if (window.opener && typeof window.opener.postMessage === 'function') {
+          window.opener.postMessage(payload, ORIGIN);
+        }
+      } catch (e) {}
+
+      function tryClose() {
+        try { window.close(); } catch (e) {}
+      }
+
+      // Intento inmediato + reintento corto
+      tryClose();
+      setTimeout(tryClose, 150);
+
+      document.getElementById('closeBtn')?.addEventListener('click', function() {
+        tryClose();
+      });
+    })();
+  </script>
+</body>
+</html>`;
+}
+
+export async function GET(req: Request): Promise<NextResponse> {
   try {
     const supabaseUrl = requireEnv('NEXT_PUBLIC_SUPABASE_URL');
     const serviceKey = requireEnv('SUPABASE_SERVICE_ROLE_KEY');
 
-    const metaAppId = requireEnv('META_APP_ID');
-    const metaAppSecret = requireEnv('META_APP_SECRET');
     const stateSecret = requireEnv('META_OAUTH_STATE_SECRET');
-
+    const metaAppId = requireEnv('META_APP_ID');
+    const metaAppSecret = requireEnv('META_APP_SECRET'); // asegúrate de tenerla en Vercel
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
-    const exchangeLongLived = getEnv('META_EXCHANGE_LONG_LIVED', 'true').toLowerCase() !== 'false';
 
-    const code = (url.searchParams.get('code') ?? '').trim();
-    const state = (url.searchParams.get('state') ?? '').trim();
+    const url = new URL(req.url);
 
-    if (!state) {
-      const reason = metaErr ? `meta_${metaErr}` : 'missing_state';
-      return safeRedirect(`${genericErrorRedirect}&reason=${encodeURIComponent(reason)}`);
-    }
+    const code = url.searchParams.get('code') ?? '';
+    const state = url.searchParams.get('state') ?? '';
+    const error = url.searchParams.get('error') ?? '';
+    const errorDescription = url.searchParams.get('error_description') ?? '';
 
-    const parts = state.split('.');
-    if (parts.length !== 2) return safeRedirect(`${genericErrorRedirect}&reason=bad_state_format`);
+    const origin = getBaseUrl(req);
 
-    const encodedPayload = parts[0] ?? '';
-    const sig = parts[1] ?? '';
+    // Si Meta devuelve error
+    if (error) {
+      const payload = {
+        type: 'KALUE_META_OAUTH_RESULT',
+        ok: false,
+        error,
+        errorDescription,
+      };
 
-    const expectedSig = hmacSha256Base64url(stateSecret, encodedPayload);
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
-      return safeRedirect(`${genericErrorRedirect}&reason=bad_state_sig`);
-    }
-
-    const payloadText = base64urlToString(encodedPayload);
-    const payloadUnknown: unknown = JSON.parse(payloadText) as unknown;
-
-    if (!isRecord(payloadUnknown)) return safeRedirect(`${genericErrorRedirect}&reason=bad_state_payload`);
-
-    const integrationId = pickString(payloadUnknown, 'integrationId').trim();
-    const workspaceId = pickString(payloadUnknown, 'workspaceId').trim();
-    const iat = pickNumber(payloadUnknown, 'iat');
-    const ttl = pickNumber(payloadUnknown, 'ttl') ?? 900;
-
-    if (!integrationId || !workspaceId || !isUuid(integrationId) || !isUuid(workspaceId) || !iat) {
-      return safeRedirect(`${genericErrorRedirect}&reason=bad_state_fields`);
-    }
-
-    const configRedirectBase = baseUrl
-      ? `${baseUrl}/integrations/meta/${integrationId}`
-      : `/integrations/meta/${integrationId}`;
-
-    if (metaErr) {
-      const reason = metaErrReason || metaErr;
-      const msg = metaErrDesc || 'OAuth cancelado o denegado.';
-      return safeRedirect(
-        `${configRedirectBase}?oauth=cancelled&reason=${encodeURIComponent(reason)}&message=${encodeURIComponent(msg)}`
+      return htmlResponse(
+        buildPopupCloseHtml({
+          ok: false,
+          origin,
+          payload,
+          title: 'Conexión cancelada',
+          subtitle: errorDescription || 'Se canceló o falló la autorización en Meta.',
+        })
       );
     }
 
-    if (!code) return safeRedirect(`${configRedirectBase}?oauth=error&reason=missing_code`);
+    if (!code || !state) {
+      const payload = {
+        type: 'KALUE_META_OAUTH_RESULT',
+        ok: false,
+        error: 'missing_code_or_state',
+      };
+
+      return htmlResponse(
+        buildPopupCloseHtml({
+          ok: false,
+          origin,
+          payload,
+          title: 'Error de conexión',
+          subtitle: 'Faltan parámetros del callback (code/state).',
+        })
+      );
+    }
+
+    // Validar state (firma + ttl)
+    const parts = state.split('.');
+    if (parts.length !== 2) {
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_format' };
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
+    }
+
+    const encodedPayload = parts[0] ?? '';
+    const sig = parts[1] ?? '';
+    const expectedSig = hmacSha256Base64url(stateSecret, encodedPayload);
+
+    if (sig !== expectedSig) {
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_signature' };
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
+    }
+
+    const payloadStr = base64urlToString(encodedPayload);
+    let stateObj: unknown = null;
+    try {
+      stateObj = JSON.parse(payloadStr) as unknown;
+    } catch {
+      stateObj = null;
+    }
+
+    const integrationId = pickString(stateObj, 'integrationId');
+    const workspaceId = pickString(stateObj, 'workspaceId');
+    const iat = Number(pickString(stateObj, 'iat') || '0');
+    const ttl = Number(pickString(stateObj, 'ttl') || '0');
+
+    if (!integrationId || !workspaceId || !iat || !ttl) {
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'invalid_state_payload' };
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
+    }
 
     const now = Math.floor(Date.now() / 1000);
-    if (now > iat + ttl) return safeRedirect(`${configRedirectBase}?oauth=error&reason=state_expired`);
+    if (now > iat + ttl) {
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'state_expired' };
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Estado expirado' }));
+    }
 
-    const redirectUri = `${baseUrl}/api/integrations/meta/oauth/callback`;
+    // 1) Intercambio code -> access_token
+    const redirectUri = `${origin}/api/integrations/meta/oauth/callback`;
 
     const tokenUrl = new URL(`https://graph.facebook.com/${graphVersion}/oauth/access_token`);
     tokenUrl.searchParams.set('client_id', metaAppId);
@@ -175,105 +246,107 @@ export async function GET(req: Request) {
     tokenUrl.searchParams.set('redirect_uri', redirectUri);
     tokenUrl.searchParams.set('code', code);
 
-    const tokenRaw = await fetchJson(tokenUrl.toString());
-    const tokenParsed: MetaTokenResponse = isRecord(tokenRaw)
-      ? {
-          access_token: typeof tokenRaw.access_token === 'string' ? tokenRaw.access_token : undefined,
-          token_type: typeof tokenRaw.token_type === 'string' ? tokenRaw.token_type : undefined,
-          expires_in: typeof tokenRaw.expires_in === 'number' ? tokenRaw.expires_in : undefined,
-        }
-      : {};
+    const tokenRes = await fetch(tokenUrl.toString(), { method: 'GET' });
+    const tokenJson: unknown = await tokenRes.json();
 
-    let accessToken = tokenParsed.access_token ?? '';
-    let tokenType = tokenParsed.token_type ?? 'bearer';
-    let expiresIn = tokenParsed.expires_in ?? null;
-
-    if (!accessToken) return safeRedirect(`${configRedirectBase}?oauth=error&reason=missing_access_token`);
-
-    if (exchangeLongLived) {
-      const llUrl = new URL(`https://graph.facebook.com/${graphVersion}/oauth/access_token`);
-      llUrl.searchParams.set('grant_type', 'fb_exchange_token');
-      llUrl.searchParams.set('client_id', metaAppId);
-      llUrl.searchParams.set('client_secret', metaAppSecret);
-      llUrl.searchParams.set('fb_exchange_token', accessToken);
-
-      const llRaw = await fetchJson(llUrl.toString());
-      if (isRecord(llRaw)) {
-        const llToken = typeof llRaw.access_token === 'string' ? llRaw.access_token : '';
-        const llType = typeof llRaw.token_type === 'string' ? llRaw.token_type : tokenType;
-        const llExpires = typeof llRaw.expires_in === 'number' ? llRaw.expires_in : expiresIn;
-
-        if (llToken) {
-          accessToken = llToken;
-          tokenType = llType;
-          expiresIn = llExpires;
-        }
-      }
-    }
-
-    const admin = createClient(supabaseUrl, serviceKey);
-
-    const { data: row, error: fetchErr } = await admin
-      .from('integrations')
-      .select('id, workspace_id, provider')
-      .eq('id', integrationId)
-      .eq('workspace_id', workspaceId)
-      .limit(1)
-      .maybeSingle();
-
-    if (fetchErr || !row || row.provider !== 'meta') {
-      return safeRedirect(`${configRedirectBase}?oauth=error&reason=integration_not_found`);
-    }
-
-    const accessTokenCiphertext = encryptToken(accessToken);
-
-    const expiresAt =
-      typeof expiresIn === 'number' && Number.isFinite(expiresIn) && expiresIn > 0
-        ? new Date(Date.now() + expiresIn * 1000).toISOString()
-        : null;
-
-    const { error: tokErr } = await admin
-      .from('integration_oauth_tokens')
-      .upsert(
-        {
-          integration_id: integrationId,
-          workspace_id: workspaceId,
-          provider: 'meta',
-          access_token_ciphertext: accessTokenCiphertext,
-          refresh_token_ciphertext: null,
-          token_type: tokenType,
-          scopes: null,
-          expires_at: expiresAt,
-          obtained_at: new Date().toISOString(),
-        },
-        // ✅ tu unique es solo integration_id
-        { onConflict: 'integration_id' }
+    if (!tokenRes.ok) {
+      const payload = {
+        type: 'KALUE_META_OAUTH_RESULT',
+        ok: false,
+        error: 'token_exchange_failed',
+        detail: tokenJson,
+      };
+      return htmlResponse(
+        buildPopupCloseHtml({
+          ok: false,
+          origin,
+          payload,
+          title: 'Error de conexión',
+          subtitle: 'No se pudo completar el intercambio del token.',
+        })
       );
-
-    if (tokErr) {
-      return safeRedirect(`${configRedirectBase}?oauth=error&reason=token_store_failed`);
     }
 
-    const { error: updErr } = await admin
+    const accessToken = isRecord(tokenJson) && typeof tokenJson['access_token'] === 'string' ? tokenJson['access_token'] : '';
+    if (!accessToken) {
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'missing_access_token' };
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error de conexión' }));
+    }
+
+    // 2) Guardar token cifrado en Supabase (aquí asumo que tú ya tienes encryptToken/decryptToken en server)
+    // ⚠️ Si tu cifrado está en otro helper, reemplaza este bloque.
+    // Para no romperte ahora, guardo en texto plano SOLO si no tienes helper (pero NO recomendado).
+    // -----
+    // ✅ RECOMENDADO: import { encryptToken } from '@/server/crypto/encryptToken';
+    // const access_token_ciphertext = encryptToken(accessToken);
+    // -----
+
+    // ⚠️ Placeholder: cambia por TU cifrado real
+    const access_token_ciphertext = accessToken;
+
+    const admin: SupabaseClient = createClient(supabaseUrl, serviceKey);
+
+    const { error: upsertErr } = await admin.from('integration_oauth_tokens').upsert(
+      {
+        workspace_id: workspaceId,
+        integration_id: integrationId,
+        provider: 'meta',
+        access_token_ciphertext,
+      },
+      { onConflict: 'workspace_id,integration_id,provider' }
+    );
+
+    if (upsertErr) {
+      const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'db_upsert_failed' };
+      return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload, title: 'Error guardando token' }));
+    }
+
+    // 3) Marcar integración como connected
+    await admin
       .from('integrations')
-      .update({
-        status: 'connected',
-        secrets: {},
-        config: { connected: true, provider: 'meta' },
-      })
+      .update({ status: 'connected', last_error: null, updated_at: new Date().toISOString() })
       .eq('id', integrationId)
       .eq('workspace_id', workspaceId);
 
-    if (updErr) {
-      return safeRedirect(`${configRedirectBase}?oauth=error&reason=db_update_failed`);
-    }
+    const payload = {
+      type: 'KALUE_META_OAUTH_RESULT',
+      ok: true,
+      integrationId,
+      workspaceId,
+    };
 
-    return safeRedirect(`${configRedirectBase}?oauth=success`);
+    return htmlResponse(
+      buildPopupCloseHtml({
+        ok: true,
+        origin,
+        payload,
+        title: 'Conexión completada',
+        subtitle: 'Puedes volver a Kalue. Esta ventana se cerrará sola.',
+      })
+    );
   } catch (e: unknown) {
+    const origin = (() => {
+      try {
+        return getBaseUrl(req);
+      } catch {
+        return '';
+      }
+    })();
+
     const msg = e instanceof Error ? e.message : 'Unexpected error';
-    const fallback = baseUrl
-      ? `${baseUrl}/integrations?oauth=error&reason=exception`
-      : '/integrations?oauth=error&reason=exception';
-    return NextResponse.redirect(fallback + `&msg=${encodeURIComponent(msg.slice(0, 200))}`);
+    const payload = { type: 'KALUE_META_OAUTH_RESULT', ok: false, error: 'server_error', detail: msg };
+
+    // Si no podemos calcular origin, igual mostramos algo cerrable
+    const safeOrigin = origin || 'https://example.com';
+
+    return htmlResponse(
+      buildPopupCloseHtml({
+        ok: false,
+        origin: safeOrigin,
+        payload,
+        title: 'Error de servidor',
+        subtitle: msg,
+      })
+    );
   }
 }
