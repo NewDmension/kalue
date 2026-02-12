@@ -39,6 +39,58 @@ function pickStringArray(v: unknown): string[] {
   return v.filter((x): x is string => typeof x === 'string');
 }
 
+function pickString(v: unknown, key: string): string {
+  if (!isRecord(v)) return '';
+  const x = v[key];
+  return typeof x === 'string' ? x : '';
+}
+
+// ✅ acepta token en claro o JSON envelope
+function extractAccessTokenFromString(raw: string): string {
+  const s = raw.trim();
+  if (!s) return '';
+
+  // Caso normal: token en claro
+  if (!s.startsWith('{')) return s;
+
+  // Caso: JSON
+  try {
+    const obj: unknown = JSON.parse(s);
+    const t1 = pickString(obj, 'access_token');
+    if (t1) return t1;
+
+    const t2 = pickString(obj, 'token');
+    if (t2) return t2;
+
+    // Si no encontramos claves típicas, no es útil
+    return '';
+  } catch {
+    // No es JSON válido → probablemente era token en claro con caracteres raros / o basura
+    return '';
+  }
+}
+
+function resolveUserAccessToken(ciphertext: string): { ok: true; token: string } | { ok: false; error: string; detail?: string } {
+  const input = ciphertext.trim();
+  if (!input) return { ok: false, error: 'token_missing' };
+
+  // 1) Intento normal: descifrar
+  try {
+    const decrypted = decryptToken(input);
+    const token = extractAccessTokenFromString(decrypted);
+    if (token) return { ok: true, token };
+
+    return { ok: false, error: 'decrypt_ok_but_token_invalid', detail: 'Decrypted value did not contain a usable access token.' };
+  } catch (e: unknown) {
+    // 2) Fallback: puede que NO esté cifrado aún (tu caso)
+    const fallback = extractAccessTokenFromString(input);
+    if (fallback) return { ok: true, token: fallback };
+
+    const msg = e instanceof Error ? e.message : 'decrypt_failed';
+    return { ok: false, error: 'decrypt_failed', detail: msg };
+  }
+}
+
 type GraphError = { message?: string; type?: string; code?: number; fbtrace_id?: string };
 
 type GraphPaging = {
@@ -100,7 +152,10 @@ function toMetaPagesFromOwnedPages(parsed: GraphOwnedPagesResp): MetaPage[] {
     .filter((v): v is MetaPage => v !== null);
 }
 
-async function graphGet<T extends Record<string, unknown>>(url: string, userAccessToken: string): Promise<{ raw: unknown; parsed: T; res: Response }> {
+async function graphGet<T extends Record<string, unknown>>(
+  url: string,
+  userAccessToken: string
+): Promise<{ raw: unknown; parsed: T; res: Response }> {
   const res = await fetch(url, {
     method: 'GET',
     headers: {
@@ -170,13 +225,11 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (tokErr) return NextResponse.json({ error: 'db_error', detail: tokErr.message }, { status: 500 });
     if (!tok?.access_token_ciphertext) return NextResponse.json({ error: 'token_not_found' }, { status: 404 });
 
-    let userAccessToken = '';
-    try {
-      userAccessToken = decryptToken(tok.access_token_ciphertext);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'decrypt_failed';
-      return NextResponse.json({ error: 'decrypt_failed', detail: msg }, { status: 500 });
+    const resolved = resolveUserAccessToken(tok.access_token_ciphertext);
+    if (!resolved.ok) {
+      return NextResponse.json({ error: resolved.error, detail: resolved.detail ?? '' }, { status: 500 });
     }
+    const userAccessToken = resolved.token;
 
     const graphVersion = process.env.META_GRAPH_VERSION?.trim() || 'v20.0';
 
