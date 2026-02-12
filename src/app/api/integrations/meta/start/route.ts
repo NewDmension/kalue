@@ -13,11 +13,6 @@ function getEnv(name: string): string {
   return v;
 }
 
-function getEnvOptional(name: string): string | null {
-  const v = process.env[name];
-  return v && v.trim().length > 0 ? v.trim() : null;
-}
-
 function getBearerToken(req: Request): string {
   const h = req.headers.get('authorization');
   if (!h) throw new Error('Missing Authorization header');
@@ -36,59 +31,17 @@ function randomState(): string {
   return crypto.randomBytes(24).toString('hex');
 }
 
-function splitScopes(raw: string): string[] {
-  return raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
-/**
- * Lista blanca de permisos seguros para desbloquear el login (fase 1: conectar bien).
- * Luego ya añadiremos los de lead ads / webhooks cuando toque.
- */
-const LOGIN_SCOPE_ALLOWLIST = new Set<string>([
-  'public_profile',
-  'pages_show_list',
-  'pages_read_engagement',
-]);
-
-function normalizeLoginScopes(scopes: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-
-  for (const s of scopes) {
-    const key = s.trim();
-    if (!key) continue;
-    if (!LOGIN_SCOPE_ALLOWLIST.has(key)) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(key);
-  }
-
-  // Meta suele tolerar scope vacío, pero mejor asegurar mínimos si el env estuviera mal
-  if (out.length === 0) {
-    out.push('public_profile', 'pages_show_list');
-  }
-
-  return out;
-}
-
 function buildMetaOAuthUrl(args: {
   appId: string;
   redirectUri: string;
   state: string;
 }): string {
-  // 1) Scopes desde env
-  const rawFromEnv = getEnvOptional('META_OAUTH_SCOPES') ?? 'public_profile,pages_show_list,pages_read_engagement';
-  const scopesFromEnv = splitScopes(rawFromEnv);
-
-  // 2) Filtramos a lista blanca (evita "Invalid Scopes" como leads_retrieval)
-  const finalScopes = normalizeLoginScopes(scopesFromEnv);
-  const scope = finalScopes.join(',');
-
-  // 3) Graph version
-  const graphVersion = getEnvOptional('META_GRAPH_VERSION') ?? 'v20.0';
+  const scope = [
+    // mínimos típicos para lead ads (puede ajustarse luego)
+    'pages_show_list',
+    'pages_read_engagement',
+    'leads_retrieval',
+  ].join(',');
 
   const params = new URLSearchParams({
     client_id: args.appId,
@@ -98,7 +51,7 @@ function buildMetaOAuthUrl(args: {
     scope,
   });
 
-  return `https://www.facebook.com/${graphVersion}/dialog/oauth?${params.toString()}`;
+  return `https://www.facebook.com/v19.0/dialog/oauth?${params.toString()}`;
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -173,9 +126,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       payload: { at: nowIso } as Json,
     });
 
-    // 5) Redirect a Meta OAuth (devolvemos url al frontend)
+    // 5) Redirect a Meta OAuth
     const url = buildMetaOAuthUrl({ appId: metaAppId, redirectUri, state });
-    return NextResponse.json({ url });
+return NextResponse.json({ url });
+
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : 'Unknown error';
     return NextResponse.json({ error: message }, { status: 400 });

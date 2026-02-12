@@ -110,18 +110,22 @@ function getBaseUrl(req: Request): string {
   return `${proto}://${host}`;
 }
 
-function normalizeScopes(raw: string): string {
-  // Evita scopes que sabemos que te rompen el login
-  const invalid = new Set<string>([
-    'pages_manage_ads', // ❌ Meta lo rechaza como scope de Facebook Login en tu caso
-    'leads_access', // ❌ no es el scope correcto
-  ]);
+/**
+ * ✅ SOLO SCOPES DE LOGIN SEGUROS (fase 1: conectar bien).
+ * Cualquier cosa fuera se filtra para evitar "Invalid Scopes".
+ */
+const LOGIN_SCOPE_ALLOWLIST = new Set<string>([
+  'public_profile',
+  'pages_show_list',
+  'pages_read_engagement',
+]);
 
+function normalizeScopes(raw: string): string {
   const items = raw
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
-    .filter((s) => !invalid.has(s));
+    .filter((s) => LOGIN_SCOPE_ALLOWLIST.has(s));
 
   const seen = new Set<string>();
   const deduped: string[] = [];
@@ -131,6 +135,7 @@ function normalizeScopes(raw: string): string {
       deduped.push(s);
     }
   }
+
   return deduped.join(',');
 }
 
@@ -158,10 +163,15 @@ export async function POST(req: Request) {
 
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
 
-    // ✅ Lead Ads: scopes típicos (mínimo)
-    // - pages_show_list: listar pages
-    // - leads_retrieval: listar lead forms / leer leads
-    const scopesRaw = getEnv('META_OAUTH_SCOPES', 'public_profile,pages_show_list,leads_retrieval');
+    /**
+     * ✅ FASE 1 (conectar login sin errores):
+     * NO uses leads_retrieval aquí.
+     * (Luego lo añadiremos en fase 2 cuando tengamos pages ok y revisemos permisos avanzados)
+     */
+    const scopesRaw = getEnv(
+      'META_OAUTH_SCOPES',
+      'public_profile,pages_show_list,pages_read_engagement'
+    );
 
     const ttlSeconds = Number.parseInt(getEnv('META_OAUTH_STATE_TTL_SECONDS', '900'), 10);
     const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 900;
@@ -211,8 +221,8 @@ export async function POST(req: Request) {
 
     let scope = normalizeScopes(scopesRaw);
 
-    // ✅ fuerza mínimos reales
-    scope = ensureRequiredScopes(scope, ['pages_show_list', 'leads_retrieval']);
+    // ✅ mínimos reales para conectar y listar pages
+    scope = ensureRequiredScopes(scope, ['public_profile', 'pages_show_list']);
 
     if (!scope) {
       return json(500, { error: 'server_error', detail: 'META_OAUTH_SCOPES resolved to empty scope list.' });
@@ -225,7 +235,7 @@ export async function POST(req: Request) {
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('scope', scope);
 
-    // ✅ fuerza que Meta vuelva a pedir permisos (muy importante al cambiar scopes)
+    // ✅ fuerza que Meta vuelva a pedir permisos (al cambiar scopes)
     authUrl.searchParams.set('auth_type', 'rerequest');
 
     return json(200, { ok: true, url: authUrl.toString(), debug: { redirectUri, scope } });
