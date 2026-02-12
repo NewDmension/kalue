@@ -81,9 +81,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function pickErrorMessage(raw: unknown, fallback: string): string {
   if (typeof raw === 'string') return raw;
+
   if (isRecord(raw)) {
     const base = typeof raw.error === 'string' ? raw.error : fallback;
-    const detail = typeof raw.detail === 'string' ? raw.detail : '';
+
+    const detailVal = raw.detail;
+    const detail =
+      typeof detailVal === 'string'
+        ? detailVal
+        : detailVal !== undefined
+          ? safeStringify(detailVal)
+          : '';
+
     const hint = typeof raw.hint === 'string' ? raw.hint : '';
     const code = typeof raw.code === 'string' ? raw.code : '';
 
@@ -93,8 +102,10 @@ function pickErrorMessage(raw: unknown, fallback: string): string {
 
     return extras ? `${base}\n${extras}` : base;
   }
+
   return fallback;
 }
+
 
 function safeStringify(v: unknown): string {
   try {
