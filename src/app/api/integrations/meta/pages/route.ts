@@ -42,7 +42,6 @@ function pickStringArray(v: unknown): string[] {
 type GraphAccountsItem = {
   id?: unknown;
   name?: unknown;
-  access_token?: unknown;
   perms?: unknown;
 };
 
@@ -55,15 +54,23 @@ type GraphAccountsResp = {
 async function safeGraphJson(res: Response): Promise<{ raw: unknown; parsed: GraphAccountsResp }> {
   const text = await res.text();
   let raw: unknown = null;
-
   try {
     raw = text ? (JSON.parse(text) as unknown) : null;
   } catch {
     raw = { _nonJson: true, text };
   }
-
   const parsed: GraphAccountsResp = isRecord(raw) ? (raw as GraphAccountsResp) : {};
   return { raw, parsed };
+}
+
+async function safeJson(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { _nonJson: true, text };
+  }
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -72,11 +79,14 @@ export async function GET(req: Request): Promise<NextResponse> {
     const anonKey = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY');
     const serviceKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
 
+    const metaAppId = getEnv('META_APP_ID');
+    const metaAppSecret = getEnv('META_APP_SECRET');
+
     const workspaceId = getWorkspaceId(req);
     const integrationId = getIntegrationId(req);
 
+    // 1) auth user desde cookies
     const cookieStore = await cookies();
-
     const supabaseServer = createServerClient(supabaseUrl, anonKey, {
       cookies: {
         get: (name) => cookieStore.get(name)?.value,
@@ -89,13 +99,12 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (userErr || !userData.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-
     const userId = userData.user.id;
 
-    const supabaseAdmin = createClient(supabaseUrl, serviceKey, {
-      auth: { persistSession: false },
-    });
+    // 2) admin client
+    const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
+    // 3) verify membership
     const { data: member, error: memberErr } = await supabaseAdmin
       .from('workspace_members')
       .select('workspace_id,user_id')
@@ -106,11 +115,11 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (memberErr) {
       return NextResponse.json({ error: 'db_error', detail: memberErr.message }, { status: 500 });
     }
-
     if (!member) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
+    // 4) load oauth token ciphertext
     const { data: tok, error: tokErr } = await supabaseAdmin
       .from('integration_oauth_tokens')
       .select('access_token_ciphertext')
@@ -122,25 +131,31 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (tokErr) {
       return NextResponse.json({ error: 'db_error', detail: tokErr.message }, { status: 500 });
     }
-
     if (!tok?.access_token_ciphertext) {
       return NextResponse.json({ error: 'token_not_found' }, { status: 404 });
     }
 
-    // 🔥 COMPAT MODE: soporta token cifrado o en claro
+    // ✅ compat: token cifrado o en claro
     let userAccessToken = '';
-
     try {
       userAccessToken = decryptToken(tok.access_token_ciphertext);
     } catch {
-      // Si falla decrypt, asumimos que está guardado en claro (modo temporal)
       userAccessToken = tok.access_token_ciphertext;
     }
 
-    if (!userAccessToken || typeof userAccessToken !== 'string') {
-      return NextResponse.json({ error: 'invalid_token_format' }, { status: 500 });
+    if (!userAccessToken) {
+      return NextResponse.json({ error: 'invalid_token' }, { status: 500 });
     }
 
+    // 4.1) debug_token (para saber permisos reales, tipo de token, caducidad, etc.)
+    const debugUrl = new URL('https://graph.facebook.com/debug_token');
+    debugUrl.searchParams.set('input_token', userAccessToken);
+    debugUrl.searchParams.set('access_token', `${metaAppId}|${metaAppSecret}`);
+
+    const debugRes = await fetch(debugUrl.toString(), { method: 'GET', cache: 'no-store' });
+    const debugTokenRaw = await safeJson(debugRes);
+
+    // 5) Graph: /me/accounts
     const graph = new URL('https://graph.facebook.com/v20.0/me/accounts');
     graph.searchParams.set('access_token', userAccessToken);
     graph.searchParams.set('fields', 'id,name,perms');
@@ -148,10 +163,7 @@ export async function GET(req: Request): Promise<NextResponse> {
 
     const res = await fetch(graph.toString(), {
       method: 'GET',
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${userAccessToken}`,
-      },
+      headers: { accept: 'application/json' },
       cache: 'no-store',
     });
 
@@ -164,8 +176,9 @@ export async function GET(req: Request): Promise<NextResponse> {
           status: res.status,
           meta: parsed.error ?? parsed,
           raw,
+          debugToken: debugTokenRaw,
         },
-        { status: res.status },
+        { status: res.status }
       );
     }
 
@@ -174,7 +187,6 @@ export async function GET(req: Request): Promise<NextResponse> {
         const id = typeof p.id === 'string' ? p.id : null;
         const name = typeof p.name === 'string' ? p.name : null;
         if (!id || !name) return null;
-
         const perms = pickStringArray(p.perms);
         return { id, name, perms };
       })
@@ -183,6 +195,8 @@ export async function GET(req: Request): Promise<NextResponse> {
     return NextResponse.json({
       rawCount: Array.isArray(parsed.data) ? parsed.data.length : 0,
       pages,
+      raw,
+      debugToken: debugTokenRaw,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
