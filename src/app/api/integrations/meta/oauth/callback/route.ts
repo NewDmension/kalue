@@ -2,6 +2,7 @@
 import { NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { encryptToken } from '@/server/crypto/tokenCrypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -276,8 +277,9 @@ export async function GET(req: Request): Promise<NextResponse> {
       return htmlResponse(buildPopupCloseHtml({ ok: false, origin, payload: payloadOut, title: 'Error de conexión' }));
     }
 
-    // ⚠️ Placeholder: cambia por TU cifrado real
-    const access_token_ciphertext = accessToken;
+   // ✅ Cifrar token antes de guardar (requerido para decryptToken en el resto de rutas)
+const access_token_ciphertext = encryptToken(accessToken);
+
 
     const admin: SupabaseClient = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
