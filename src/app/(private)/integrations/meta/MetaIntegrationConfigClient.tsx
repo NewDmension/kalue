@@ -1,3 +1,4 @@
+// MetaIntegrationConfigClient.tsx
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -115,7 +116,7 @@ async function postJson(args: {
   });
 }
 
-function openOauthPopup(url: string) {
+function openOauthPopup(url: string): Window | null {
   const width = 540;
   const height = 720;
 
@@ -136,7 +137,7 @@ function openOauthPopup(url: string) {
 
   if (!win) {
     window.location.href = url;
-    return;
+    return null;
   }
 
   try {
@@ -144,6 +145,8 @@ function openOauthPopup(url: string) {
   } catch {
     // no-op
   }
+
+  return win;
 }
 
 function statusBadge(status: IntegrationStatus): { text: string; className: string } {
@@ -156,10 +159,14 @@ function statusBadge(status: IntegrationStatus): { text: string; className: stri
   return { text: 'DRAFT', className: 'border-white/15 bg-white/5 text-white/70' };
 }
 
-async function fetchPages(args: { integrationId: string; workspaceId: string }): Promise<MetaPage[]> {
+async function fetchPages(args: { integrationId: string; workspaceId: string; token: string }): Promise<MetaPage[]> {
   const res = await fetch(`/api/integrations/meta/pages?integrationId=${encodeURIComponent(args.integrationId)}`, {
     method: 'GET',
-    headers: { 'x-workspace-id': args.workspaceId },
+    headers: {
+      'x-workspace-id': args.workspaceId,
+      // no hace daño: algunas rutas lo ignoran, pero si mañana cambias a Bearer, ya está listo
+      authorization: `Bearer ${args.token}`,
+    },
   });
 
   const raw = await safeJson(res);
@@ -189,7 +196,7 @@ function useWorkspaceIdReady(): { workspaceId: string; ready: boolean } {
       return;
     }
 
-    // fallback a localStorage (tu caso real)
+    // fallback a localStorage
     try {
       const fromLs = (window.localStorage.getItem('kalue.activeWorkspaceId') ?? '').trim();
       if (fromLs) setWorkspaceId(fromLs);
@@ -204,7 +211,10 @@ function useWorkspaceIdReady(): { workspaceId: string; ready: boolean } {
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
   const searchParams = useSearchParams();
   const { workspaceId, ready } = useWorkspaceIdReady();
+
   const originRef = useRef<string>('');
+  const pollTimerRef = useRef<number | null>(null);
+  const pollDeadlineRef = useRef<number>(0);
 
   const [loading, setLoading] = useState<boolean>(true);
   const [oauthBusy, setOauthBusy] = useState<boolean>(false);
@@ -219,39 +229,45 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      originRef.current = window.location.origin;
+  const stopPolling = useCallback((): void => {
+    if (pollTimerRef.current) {
+      window.clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
     }
+    pollDeadlineRef.current = 0;
   }, []);
 
-  const loadIntegration = useCallback(async () => {
+  useEffect(() => {
+    if (typeof window !== 'undefined') originRef.current = window.location.origin;
+  }, []);
+
+  const loadIntegration = useCallback(async (): Promise<IntegrationRow | null> => {
     setLoading(true);
     setError(null);
 
     if (!ready) {
       setLoading(false);
       setError('No hay workspace activo (aún). Abre el selector de workspace y vuelve a entrar.');
-      return;
+      return null;
     }
 
     if (!normalizedId) {
       setLoading(false);
       setError('No se recibió un Integration ID válido en la ruta. Vuelve a Integraciones y reintenta.');
-      return;
+      return null;
     }
 
     if (!isUuid(normalizedId)) {
       setLoading(false);
       setError(`Integration ID inválido. Valor recibido: ${normalizedId}`);
-      return;
+      return null;
     }
 
     const token = await getAccessToken();
     if (!token) {
       setLoading(false);
       setError('Para configurar integraciones necesitas iniciar sesión.');
-      return;
+      return null;
     }
 
     try {
@@ -268,14 +284,14 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       if (!res.ok) {
         setLoading(false);
         setError(pickErrorMessage(raw, `No se pudo cargar (${res.status})`));
-        return;
+        return null;
       }
 
       const row = isRecord(raw) ? raw.integration : null;
       if (!isRecord(row)) {
         setLoading(false);
         setError('Respuesta inválida del servidor.');
-        return;
+        return null;
       }
 
       const id = typeof row.id === 'string' ? row.id : String(row.id);
@@ -298,22 +314,30 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
       setIntegration(parsed);
       setLoading(false);
+      return parsed;
     } catch (e: unknown) {
       setLoading(false);
       setError(e instanceof Error ? e.message : 'Error cargando integración');
+      return null;
     }
   }, [normalizedId, ready, workspaceId]);
 
-  const loadPages = useCallback(async () => {
+  const loadPages = useCallback(async (): Promise<void> => {
     setPagesError(null);
     setPages([]);
 
     if (!ready) return;
     if (!normalizedId || !isUuid(normalizedId)) return;
 
+    const token = await getAccessToken();
+    if (!token) {
+      setPagesError('Sin sesión. Vuelve a iniciar sesión.');
+      return;
+    }
+
     setPagesLoading(true);
     try {
-      const data = await fetchPages({ integrationId: normalizedId, workspaceId });
+      const data = await fetchPages({ integrationId: normalizedId, workspaceId, token });
       setPages(data);
       setPagesLoading(false);
     } catch (e: unknown) {
@@ -322,10 +346,12 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, ready, workspaceId]);
 
+  // Carga inicial
   useEffect(() => {
     void loadIntegration();
   }, [loadIntegration]);
 
+  // Cuando cambia a connected, intenta páginas
   useEffect(() => {
     if (integration?.status === 'connected') {
       void loadPages();
@@ -336,14 +362,14 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [integration?.status, loadPages]);
 
-  // ✅ compat: si aún usas query params (puede quedarse)
+  // Compat: query params (por si aún se usan)
   useEffect(() => {
     const oauth = searchParams.get('oauth');
 
     if (oauth === 'success') {
       setInfo('Conexión completada. Actualizando estado…');
-      void loadIntegration().then(() => {
-        setInfo('Meta conectada ✅');
+      void loadIntegration().then((row) => {
+        if (row?.status === 'connected') setInfo('Meta conectada ✅');
         window.setTimeout(() => setInfo(null), 2500);
       });
       return;
@@ -362,58 +388,80 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // ✅ NUEVO: escuchar resultado del popup (postMessage)
+  // ✅ postMessage del popup + fallback polling
   useEffect(() => {
-    function onMessage(ev: MessageEvent): void {
+    function onMessage(ev: MessageEvent<unknown>): void {
       if (!originRef.current) return;
       if (ev.origin !== originRef.current) return;
 
-      const data = ev.data as unknown;
+      const data = ev.data;
       if (!isRecord(data)) return;
+      if (data.type !== 'KALUE_META_OAUTH_RESULT') return;
 
-      const type = typeof data.type === 'string' ? data.type : '';
-      if (type !== 'KALUE_META_OAUTH_RESULT') return;
+      const msg = data as OAuthResultMessage;
 
-      const ok = data.ok;
-
-      if (ok === true) {
-        // refresca y muestra OK
+      if (msg.ok) {
+        stopPolling();
         setError(null);
         setInfo('Conexión completada. Actualizando estado…');
 
         void (async () => {
-          try {
-            await loadIntegration();
-            // si queda connected, loadPages se disparará por el efecto; aún así podemos forzarlo:
+          const row = await loadIntegration();
+          if (row?.status === 'connected') {
             await loadPages();
             setInfo('Meta conectada ✅');
             window.setTimeout(() => setInfo(null), 2500);
-          } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : 'Error refrescando tras OAuth';
-            setInfo(null);
-            setError(msg);
+          } else {
+            // si por lo que sea el status aún no refleja, deja info y el usuario puede refrescar
+            setInfo('OAuth OK. Esperando que el servidor refleje el estado…');
+            window.setTimeout(() => setInfo(null), 4000);
           }
         })();
 
         return;
       }
 
-      if (ok === false) {
-        const err = typeof data.error === 'string' ? data.error : 'oauth_failed';
-        const desc = typeof data.errorDescription === 'string' ? data.errorDescription : '';
-        const detail = isRecord(data) ? data.detail : undefined;
+      // msg.ok === false
+      stopPolling();
 
-        const msg =
-          desc ? `${err}\n\n${desc}` : detail ? `${err}\n\n${safeStringify(detail)}` : err;
+      const desc = msg.errorDescription ?? '';
+      const detail = msg.detail;
+      const composed = desc
+        ? `${msg.error}\n\n${desc}`
+        : detail
+          ? `${msg.error}\n\n${safeStringify(detail)}`
+          : msg.error;
 
-        setInfo(null);
-        setError(msg);
-      }
+      setInfo(null);
+      setError(composed);
     }
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [loadIntegration, loadPages]);
+  }, [loadIntegration, loadPages, stopPolling]);
+
+  const startPollingUntilConnected = useCallback(() => {
+    stopPolling();
+    pollDeadlineRef.current = Date.now() + 45_000; // 45s
+
+    pollTimerRef.current = window.setInterval(() => {
+      void (async () => {
+        // timeout
+        if (pollDeadlineRef.current && Date.now() > pollDeadlineRef.current) {
+          stopPolling();
+          return;
+        }
+
+        const row = await loadIntegration();
+        if (row?.status === 'connected') {
+          stopPolling();
+          await loadPages();
+          setInfo('Meta conectada ✅');
+          window.setTimeout(() => setInfo(null), 2500);
+        }
+      })();
+    }, 1200);
+  }, [loadIntegration, loadPages, stopPolling]);
 
   const handleConnectMeta = useCallback(async () => {
     if (oauthBusy) return;
@@ -461,20 +509,28 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         return;
       }
 
+      // abre popup
       setOauthBusy(false);
       openOauthPopup(url);
 
-      // Opcional: feedback inmediato
+      // feedback + fallback (por si postMessage no llega por cualquier motivo)
       setInfo('Abriendo ventana de conexión…');
-      window.setTimeout(() => setInfo(null), 2000);
+      window.setTimeout(() => setInfo('Esperando confirmación de Meta…'), 900);
+      startPollingUntilConnected();
     } catch (e: unknown) {
       setOauthBusy(false);
       setError(e instanceof Error ? e.message : 'Error iniciando OAuth');
     }
-  }, [normalizedId, oauthBusy, ready, workspaceId]);
+  }, [normalizedId, oauthBusy, ready, startPollingUntilConnected, workspaceId]);
 
-  const b = statusBadge(integration?.status ?? 'draft');
-  const isConnected = integration?.status === 'connected';
+  // Seguridad: si desmonta la página, para polling
+  useEffect(() => {
+    return () => stopPolling();
+  }, [stopPolling]);
+
+  const status: IntegrationStatus = integration?.status ?? 'draft';
+  const b = statusBadge(status);
+  const isConnected = status === 'connected';
 
   return (
     <div className="p-6 text-white">
@@ -504,7 +560,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15 transition',
                 oauthBusy || !ready ? 'opacity-60 cursor-not-allowed' : ''
               )}
-              title="Reautoriza Meta (útil si cambias permisos o si el token expira)"
+              title={isConnected ? 'Reautoriza Meta (si cambias permisos o el token expira)' : 'Conecta con Meta (OAuth)'}
             >
               {oauthBusy ? 'Conectando…' : isConnected ? 'Re-conectar' : 'Conectar'}
             </button>
@@ -615,7 +671,8 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-200">
                   <p className="font-semibold">⚠️ No se encontraron Pages para esta cuenta.</p>
                   <p className="mt-2 text-xs text-amber-100/80 leading-relaxed">
-                    Esto suele ser permisos / Business Integrations. Abajo te digo exactamente qué revisar.
+                    Si tu usuario SÍ tiene Pages, esto normalmente es: permisos en la integración comercial, o el usuario conectado no es
+                    el que administra esas Pages en el Business Manager.
                   </p>
                 </div>
               ) : null}
