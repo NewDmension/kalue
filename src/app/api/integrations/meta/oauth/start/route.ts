@@ -110,28 +110,38 @@ function getBaseUrl(req: Request): string {
   return `${proto}://${host}`;
 }
 
+function envTrue(name: string): boolean {
+  const v = (process.env[name] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
 /**
- * ✅ Allowlist de scopes “seguros” para fase 1 (conectar + listar pages).
- * Añadimos business_management para poder sacar Pages vía Business Manager
- * cuando /me/accounts devuelva vacío (caso típico).
+ * ✅ Allowlist de scopes.
+ * Importante: leads_retrieval SOLO lo dejamos pasar si META_ENABLE_LEADS_RETRIEVAL_OAUTH=true
+ * para no “solicitar” algo que Meta aún no te ha concedido.
  */
-const LOGIN_SCOPE_ALLOWLIST = new Set<string>([
-  'public_profile',
-  'pages_show_list',
-  'pages_read_engagement',
-  'pages_manage_ads',
-  'business_management',
-]);
+function makeAllowlist(): Set<string> {
+  const s = new Set<string>([
+    'public_profile',
+    'pages_show_list',
+    'pages_read_engagement',
+    'pages_manage_ads',
+    'business_management',
+  ]);
 
+  if (envTrue('META_ENABLE_LEADS_RETRIEVAL_OAUTH')) {
+    s.add('leads_retrieval');
+  }
 
+  return s;
+}
 
-
-function normalizeScopes(raw: string): string {
+function normalizeScopes(raw: string, allowlist: Set<string>): string {
   const items = raw
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
-    .filter((s) => LOGIN_SCOPE_ALLOWLIST.has(s));
+    .filter((s) => allowlist.has(s));
 
   const seen = new Set<string>();
   const deduped: string[] = [];
@@ -145,7 +155,7 @@ function normalizeScopes(raw: string): string {
   return deduped.join(',');
 }
 
-function ensureRequiredScopes(scopeCsv: string, required: string[]): string {
+function ensureRequiredScopes(scopeCsv: string, required: string[], allowlist: Set<string>): string {
   const items = scopeCsv
     .split(',')
     .map((s) => s.trim())
@@ -153,6 +163,7 @@ function ensureRequiredScopes(scopeCsv: string, required: string[]): string {
 
   const set = new Set(items);
   for (const r of required) {
+    if (!allowlist.has(r)) continue;
     if (!set.has(r)) items.push(r);
   }
   return items.join(',');
@@ -169,16 +180,10 @@ export async function POST(req: Request) {
 
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
 
-    /**
-     * ✅ FASE 1:
-     * - No pedimos leads_retrieval ni nada “avanzado”.
-     * - Pedimos business_management para el fallback de Pages (Business Manager).
-     */
     const scopesRaw = getEnv(
-  'META_OAUTH_SCOPES',
-  'public_profile,pages_show_list,pages_read_engagement,business_management'
-);
-
+      'META_OAUTH_SCOPES',
+      'public_profile,pages_show_list,pages_read_engagement,pages_manage_ads,business_management'
+    );
 
     const ttlSeconds = Number.parseInt(getEnv('META_OAUTH_STATE_TTL_SECONDS', '900'), 10);
     const ttl = Number.isFinite(ttlSeconds) && ttlSeconds > 0 ? ttlSeconds : 900;
@@ -221,23 +226,24 @@ export async function POST(req: Request) {
       nonce: crypto.randomBytes(12).toString('hex'),
     };
 
-    const statePayload = JSON.stringify(statePayloadObj);
-    const encodedPayload = base64url(statePayload);
+    const encodedPayload = base64url(JSON.stringify(statePayloadObj));
     const sig = hmacSha256Base64url(stateSecret, encodedPayload);
     const state = `${encodedPayload}.${sig}`;
 
-    let scope = normalizeScopes(scopesRaw);
+    const allowlist = makeAllowlist();
+    let scope = normalizeScopes(scopesRaw, allowlist);
 
-    // ✅ mínimos reales para listar pages + fallback business manager
-  scope = ensureRequiredScopes(scope, [
-  'public_profile',
-  'pages_show_list',
-  'pages_read_engagement',
-  'pages_manage_ads',
-  'business_management',
-]);
+    // mínimos para pages
+    scope = ensureRequiredScopes(
+      scope,
+      ['public_profile', 'pages_show_list', 'pages_read_engagement', 'pages_manage_ads', 'business_management'],
+      allowlist
+    );
 
-
+    // si está activado el flag, lo forzamos también
+    if (envTrue('META_ENABLE_LEADS_RETRIEVAL_OAUTH')) {
+      scope = ensureRequiredScopes(scope, ['leads_retrieval'], allowlist);
+    }
 
     if (!scope) {
       return json(500, { error: 'server_error', detail: 'META_OAUTH_SCOPES resolved to empty scope list.' });
@@ -250,7 +256,7 @@ export async function POST(req: Request) {
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('scope', scope);
 
-    // ✅ fuerza que Meta vuelva a pedir permisos (al cambiar scopes)
+    // fuerza que Meta vuelva a pedir permisos (al cambiar scopes)
     authUrl.searchParams.set('auth_type', 'rerequest');
 
     return json(200, { ok: true, url: authUrl.toString(), debug: { redirectUri, scope } });
