@@ -110,38 +110,35 @@ function getBaseUrl(req: Request): string {
   return `${proto}://${host}`;
 }
 
-function envTrue(name: string): boolean {
-  const v = (process.env[name] ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
-}
-
 /**
- * ✅ Allowlist de scopes.
- * Importante: leads_retrieval SOLO lo dejamos pasar si META_ENABLE_LEADS_RETRIEVAL_OAUTH=true
- * para no “solicitar” algo que Meta aún no te ha concedido.
+ * ✅ Allowlist de scopes permitidos por tu app.
+ * IMPORTANTE: si no están aquí, aunque los pongas en META_OAUTH_SCOPES, se filtrarán.
  */
-function makeAllowlist(): Set<string> {
-  const s = new Set<string>([
-    'public_profile',
-    'pages_show_list',
-    'pages_read_engagement',
-    'pages_manage_ads',
-    'business_management',
-  ]);
+const LOGIN_SCOPE_ALLOWLIST = new Set<string>([
+  'public_profile',
+  'email',
 
-  if (envTrue('META_ENABLE_LEADS_RETRIEVAL_OAUTH')) {
-    s.add('leads_retrieval');
-  }
+  // Pages
+  'pages_show_list',
+  'pages_read_engagement',
+  'pages_manage_ads',
+  'pages_manage_metadata',
 
-  return s;
-}
+  // Business / Ads
+  'business_management',
+  'ads_management',
+  'ads_read',
 
-function normalizeScopes(raw: string, allowlist: Set<string>): string {
+  // Leads
+  'leads_retrieval',
+]);
+
+function normalizeScopes(raw: string): string {
   const items = raw
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
-    .filter((s) => allowlist.has(s));
+    .filter((s) => LOGIN_SCOPE_ALLOWLIST.has(s));
 
   const seen = new Set<string>();
   const deduped: string[] = [];
@@ -155,7 +152,7 @@ function normalizeScopes(raw: string, allowlist: Set<string>): string {
   return deduped.join(',');
 }
 
-function ensureRequiredScopes(scopeCsv: string, required: string[], allowlist: Set<string>): string {
+function ensureRequiredScopes(scopeCsv: string, required: string[]): string {
   const items = scopeCsv
     .split(',')
     .map((s) => s.trim())
@@ -163,7 +160,6 @@ function ensureRequiredScopes(scopeCsv: string, required: string[], allowlist: S
 
   const set = new Set(items);
   for (const r of required) {
-    if (!allowlist.has(r)) continue;
     if (!set.has(r)) items.push(r);
   }
   return items.join(',');
@@ -180,9 +176,15 @@ export async function POST(req: Request) {
 
     const graphVersion = getEnv('META_GRAPH_VERSION', 'v20.0');
 
+    /**
+     * ✅ AHORA pedimos lo necesario para:
+     * - listar Pages
+     * - suscribir leadgen webhook
+     * - poder leer leads (cuando llegue el paso)
+     */
     const scopesRaw = getEnv(
       'META_OAUTH_SCOPES',
-      'public_profile,pages_show_list,pages_read_engagement,pages_manage_ads,business_management'
+      'public_profile,pages_show_list,pages_read_engagement,pages_manage_ads,pages_manage_metadata,business_management,ads_management,leads_retrieval'
     );
 
     const ttlSeconds = Number.parseInt(getEnv('META_OAUTH_STATE_TTL_SECONDS', '900'), 10);
@@ -202,12 +204,15 @@ export async function POST(req: Request) {
 
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false, autoRefreshToken: false },
     });
 
     const userId = await getAuthedUserId(userClient);
     if (!userId) return json(401, { error: 'login_required' });
 
-    const admin = createClient(supabaseUrl, serviceKey);
+    const admin = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
 
     const ok = await isWorkspaceMember({ admin, workspaceId, userId });
     if (!ok) return json(403, { error: 'not_member' });
@@ -226,24 +231,24 @@ export async function POST(req: Request) {
       nonce: crypto.randomBytes(12).toString('hex'),
     };
 
-    const encodedPayload = base64url(JSON.stringify(statePayloadObj));
+    const statePayload = JSON.stringify(statePayloadObj);
+    const encodedPayload = base64url(statePayload);
     const sig = hmacSha256Base64url(stateSecret, encodedPayload);
     const state = `${encodedPayload}.${sig}`;
 
-    const allowlist = makeAllowlist();
-    let scope = normalizeScopes(scopesRaw, allowlist);
+    let scope = normalizeScopes(scopesRaw);
 
-    // mínimos para pages
-    scope = ensureRequiredScopes(
-      scope,
-      ['public_profile', 'pages_show_list', 'pages_read_engagement', 'pages_manage_ads', 'business_management'],
-      allowlist
-    );
-
-    // si está activado el flag, lo forzamos también
-    if (envTrue('META_ENABLE_LEADS_RETRIEVAL_OAUTH')) {
-      scope = ensureRequiredScopes(scope, ['leads_retrieval'], allowlist);
-    }
+    // ✅ mínimos + lo crítico para leadgen
+    scope = ensureRequiredScopes(scope, [
+      'public_profile',
+      'pages_show_list',
+      'pages_read_engagement',
+      'pages_manage_ads',
+      'pages_manage_metadata',
+      'business_management',
+      'ads_management',
+      'leads_retrieval',
+    ]);
 
     if (!scope) {
       return json(500, { error: 'server_error', detail: 'META_OAUTH_SCOPES resolved to empty scope list.' });
@@ -256,7 +261,7 @@ export async function POST(req: Request) {
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('scope', scope);
 
-    // fuerza que Meta vuelva a pedir permisos (al cambiar scopes)
+    // ✅ fuerza re-pedir permisos si ya autorizaste antes
     authUrl.searchParams.set('auth_type', 'rerequest');
 
     return json(200, { ok: true, url: authUrl.toString(), debug: { redirectUri, scope } });
