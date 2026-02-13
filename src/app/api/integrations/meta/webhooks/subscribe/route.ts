@@ -147,12 +147,14 @@ async function getPageAccessToken(args: {
   throw new Error('page_not_found_in_me_accounts');
 }
 
-function detectNeedsLeadsRetrieval(raw: unknown): boolean {
+function detectMissingLeadsRetrieval(raw: unknown): boolean {
+  // Meta suele devolver:
+  // error.message: "(#200) To subscribe to the leadgen field, one of these permissions is needed: leads_retrieval"
   if (!isRecord(raw)) return false;
   const err = raw.error;
   if (!isRecord(err)) return false;
-  const msg = err.message;
-  return typeof msg === 'string' && msg.includes('leads_retrieval');
+  const msg = typeof err.message === 'string' ? err.message : '';
+  return msg.includes('leads_retrieval');
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -190,6 +192,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (!ok) return json(403, { error: 'not_member' });
 
     const graphVersion = (process.env.META_GRAPH_VERSION?.trim() || 'v20.0').replace(/^v/i, 'v');
+
     const userAccessToken = await getUserAccessToken({ admin, workspaceId, integrationId });
     const { pageToken, pageName } = await getPageAccessToken({ graphVersion, userAccessToken, pageId });
 
@@ -198,12 +201,12 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     const r = await graphPost(subUrl.toString(), pageToken);
 
-    if (!r.ok) {
-      const needsLeadsRetrieval = detectNeedsLeadsRetrieval(r.raw);
-      const lastError = needsLeadsRetrieval ? 'needs_leads_retrieval' : 'subscribe_failed';
-      const mappingStatus = needsLeadsRetrieval ? 'draft' : 'error';
+    const nowIso = new Date().toISOString();
 
-      // ✅ multi-tenant ON CONFLICT
+    if (!r.ok) {
+      const missingLeads = detectMissingLeadsRetrieval(r.raw);
+
+      // Guardamos estado de subscription por workspace/integration/page (multi-tenant)
       await admin
         .from('integration_meta_webhook_subscriptions')
         .upsert(
@@ -212,34 +215,43 @@ export async function POST(req: Request): Promise<NextResponse> {
             integration_id: integrationId,
             page_id: pageId,
             subscribed: false,
-            last_error: lastError,
+            subscribed_at: null,
+            last_error: missingLeads ? 'missing_leads_retrieval' : 'subscribe_failed',
+            updated_at: nowIso,
           },
-          { onConflict: 'workspace_id,integration_id,page_id' }
+          // IMPORTANTE: idealmente debería existir un UNIQUE (workspace_id, integration_id, page_id)
+          { onConflict: 'workspace_id,integration_id,page_id' },
         );
 
-      // ✅ NO actualizar todo por integration_id. Solo el pageId del workspace.
+      // OJO: NO ponemos mapping en "error" global por permisos.
+      // Lo dejamos en draft para que el usuario pueda re-conectar/solicitar permisos.
       await admin
         .from('integration_meta_mappings')
         .update({
-          status: mappingStatus,
-          last_error: lastError,
+          status: 'draft',
           webhook_subscribed: false,
           subscribed_at: null,
+          last_error: missingLeads ? 'missing_leads_retrieval' : 'subscribe_failed',
+          updated_at: nowIso,
         })
         .eq('workspace_id', workspaceId)
         .eq('integration_id', integrationId)
         .eq('page_id', pageId);
 
-      return json(r.status, {
-        error: 'graph_error',
-        where: 'page/subscribed_apps',
-        code: lastError,
-        raw: r.raw,
-      });
+      if (missingLeads) {
+        return json(403, {
+          error: 'missing_permission',
+          missing: ['leads_retrieval'],
+          message:
+            'Meta requiere el permiso leads_retrieval para suscribir el webhook leadgen. Re-conecta y solicita permisos / App Review.',
+          raw: r.raw,
+        });
+      }
+
+      return json(r.status, { error: 'graph_error', where: 'page/subscribed_apps', raw: r.raw });
     }
 
-    const nowIso = new Date().toISOString();
-
+    // OK
     await admin
       .from('integration_meta_webhook_subscriptions')
       .upsert(
@@ -250,8 +262,9 @@ export async function POST(req: Request): Promise<NextResponse> {
           subscribed: true,
           subscribed_at: nowIso,
           last_error: null,
+          updated_at: nowIso,
         },
-        { onConflict: 'workspace_id,integration_id,page_id' }
+        { onConflict: 'workspace_id,integration_id,page_id' },
       );
 
     await admin
@@ -262,6 +275,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         subscribed_at: nowIso,
         status: 'active',
         last_error: null,
+        updated_at: nowIso,
       })
       .eq('workspace_id', workspaceId)
       .eq('integration_id', integrationId)
