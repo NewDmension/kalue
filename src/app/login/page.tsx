@@ -1,44 +1,72 @@
 // File: src/app/login/page.tsx
+import type { Metadata } from 'next';
+import Image from 'next/image';
+import Link from 'next/link';
+
 import LoginClient from '../LoginClient';
 
 export const dynamic = 'force-dynamic';
 
+export const metadata: Metadata = {
+  title: 'Login | Kalue',
+  description: 'Login to Kalue.',
+  robots: { index: false, follow: false },
+};
+
 export default function LoginPage() {
   return (
-    <main className="min-h-screen bg-white text-black">
-      <header className="border-b border-slate-200">
-        <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-5 py-4">
-          <div className="flex items-center gap-2">
-            <div className="h-9 w-9 rounded-xl border border-slate-200 bg-slate-50" aria-hidden="true" />
-            <div className="leading-tight">
-              <p className="text-sm font-semibold text-slate-900">Kalue</p>
-              <p className="text-xs text-slate-600">Login</p>
+    <main className="min-h-screen w-full text-white">
+      {/* Background */}
+      <div className="pointer-events-none fixed inset-0 -z-10">
+        <div className="absolute inset-0 bg-gradient-to-b from-[#0b1020] via-[#070a14] to-black" />
+        <div className="absolute -top-32 left-1/2 h-[520px] w-[520px] -translate-x-1/2 rounded-full bg-indigo-500/20 blur-3xl" />
+        <div className="absolute -bottom-40 left-10 h-[420px] w-[420px] rounded-full bg-violet-500/15 blur-3xl" />
+      </div>
+
+      <header className="mx-auto w-full max-w-6xl px-4 pt-6">
+        <div className="card-glass flex items-center justify-between gap-3 rounded-2xl border border-white/10 px-4 py-3">
+          <Link href="/" className="flex items-center gap-3">
+            <div className="relative h-9 w-9 overflow-hidden rounded-xl border border-white/10 bg-white/5">
+              <Image src="/logo.png" alt="Kalue" fill className="object-contain p-1.5" priority />
             </div>
-          </div>
+            <div className="leading-tight">
+              <p className="text-sm font-semibold text-white">Kalue</p>
+              <p className="text-xs text-white/60">Login</p>
+            </div>
+          </Link>
 
           <nav className="flex items-center gap-2">
-            <a
-              href="/"
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-            >
-              Home
-            </a>
-            <a
+            <Link
               href="/signup"
-              className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100"
+              className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-xs font-semibold text-indigo-200 hover:bg-indigo-500/15"
             >
               Crear cuenta
-            </a>
+            </Link>
+            <Link
+              href="/"
+              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
+            >
+              Volver
+            </Link>
           </nav>
         </div>
       </header>
 
-      <div className="mx-auto w-full max-w-[560px] px-4 py-10">
-        {/* Conservas tu UI actual sin romper nada */}
-        <div className="text-white">
-          <LoginClient />
+      <section className="mx-auto w-full max-w-[560px] px-4 pb-16 pt-10">
+        <div className="card-glass rounded-2xl border border-white/10 p-6">
+          {/* Importante: envolvemos en text-white para no romper estilos internos del LoginClient */}
+          <div className="text-white">
+            <LoginClient />
+          </div>
+
+          <div className="mt-5 text-center text-xs text-white/50">
+            ¿No tienes cuenta?{' '}
+            <Link href="/signup" className="text-indigo-200 hover:underline">
+              Crear cuenta
+            </Link>
+          </div>
         </div>
-      </div>
+      </section>
     </main>
   );
 }
