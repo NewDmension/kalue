@@ -79,6 +79,14 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
+function safeStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
 function pickErrorMessage(raw: unknown, fallback: string): string {
   if (typeof raw === 'string') return raw;
 
@@ -104,15 +112,6 @@ function pickErrorMessage(raw: unknown, fallback: string): string {
   }
 
   return fallback;
-}
-
-
-function safeStringify(v: unknown): string {
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
-  }
 }
 
 async function postJson(args: {
@@ -266,7 +265,7 @@ async function subscribeWebhook(args: {
   workspaceId: string;
   token: string;
   pageId: string;
-}): Promise<void> {
+}): Promise<{ ok: boolean; raw: unknown; status: number }> {
   const res = await postJson({
     url: '/api/integrations/meta/webhooks/subscribe',
     token: args.token,
@@ -275,9 +274,7 @@ async function subscribeWebhook(args: {
   });
 
   const raw = await safeJson(res);
-  if (!res.ok) {
-    throw new Error(pickErrorMessage(raw, `No se pudo suscribir el webhook (${res.status})`));
-  }
+  return { ok: res.ok, raw, status: res.status };
 }
 
 function useWorkspaceIdReady(): { workspaceId: string; ready: boolean } {
@@ -301,6 +298,16 @@ function useWorkspaceIdReady(): { workspaceId: string; ready: boolean } {
   return { workspaceId, ready: workspaceId.length > 0 };
 }
 
+function isNeedsLeadsRetrievalPayload(raw: unknown): boolean {
+  if (!isRecord(raw)) return false;
+  const err = typeof raw.error === 'string' ? raw.error : '';
+  const code = typeof raw.code === 'string' ? raw.code : '';
+  if (err === 'missing_permission' && code === 'needs_leads_retrieval') return true;
+  // fallback por si viene “en texto”
+  const asText = safeStringify(raw);
+  return asText.includes('leads_retrieval') || asText.includes('needs_leads_retrieval');
+}
+
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
   const searchParams = useSearchParams();
   const { workspaceId, ready } = useWorkspaceIdReady();
@@ -320,7 +327,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const [pagesError, setPagesError] = useState<string | null>(null);
   const [pages, setPages] = useState<MetaPage[]>([]);
 
-  // ✅ Wizard state (isolated, no rompe nada)
+  // ✅ Wizard state
   const [wizardStep, setWizardStep] = useState<WizardStep>('page');
   const [selectedPageId, setSelectedPageId] = useState<string>('');
 
@@ -329,6 +336,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const [forms, setForms] = useState<MetaForm[]>([]);
   const [selectedFormIds, setSelectedFormIds] = useState<Record<string, boolean>>({});
   const [activateBusy, setActivateBusy] = useState<boolean>(false);
+
+  // ✅ permission banner
+  const [needsLeadsRetrieval, setNeedsLeadsRetrieval] = useState<boolean>(false);
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
 
@@ -433,13 +443,13 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     setFormsLoading(false);
     setSelectedFormIds({});
     setActivateBusy(false);
+    setNeedsLeadsRetrieval(false);
   }, []);
 
   const loadPages = useCallback(async (): Promise<void> => {
     setPagesError(null);
     setPages([]);
 
-    // Wizard reset cuando vuelves a revisar Pages
     resetWizard();
 
     if (!ready) return;
@@ -462,12 +472,10 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, ready, resetWizard, workspaceId]);
 
-  // Carga inicial
   useEffect(() => {
     void loadIntegration();
   }, [loadIntegration]);
 
-  // Cuando cambia a connected, intenta páginas
   useEffect(() => {
     if (integration?.status === 'connected') {
       void loadPages();
@@ -479,7 +487,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [integration?.status, loadPages, resetWizard]);
 
-  // Compat: query params (por si aún se usan)
   useEffect(() => {
     const oauth = searchParams.get('oauth');
 
@@ -505,7 +512,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // ✅ postMessage del popup + fallback polling
   useEffect(() => {
     function onMessage(ev: MessageEvent<unknown>): void {
       if (!originRef.current) return;
@@ -557,7 +563,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
   const startPollingUntilConnected = useCallback(() => {
     stopPolling();
-    pollDeadlineRef.current = Date.now() + 45_000; // 45s
+    pollDeadlineRef.current = Date.now() + 45_000;
 
     pollTimerRef.current = window.setInterval(() => {
       void (async () => {
@@ -643,7 +649,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   const b = statusBadge(status);
   const isConnected = status === 'connected';
 
-  // ✅ Wizard derived
   const selectedPage = useMemo<MetaPage | null>(() => {
     if (!selectedPageId) return null;
     const p = pages.find((x) => x.id === selectedPageId);
@@ -658,28 +663,26 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     return out;
   }, [forms, selectedFormIds]);
 
-  const handleSelectPage = useCallback(
-    async (pageId: string) => {
-      setError(null);
-      setInfo(null);
+  const handleSelectPage = useCallback(async (pageId: string) => {
+    setError(null);
+    setInfo(null);
+    setNeedsLeadsRetrieval(false);
 
-      setSelectedPageId(pageId);
-      setWizardStep('page');
+    setSelectedPageId(pageId);
+    setWizardStep('page');
 
-      // reset forms step
-      setForms([]);
-      setFormsError(null);
-      setFormsLoading(false);
-      setSelectedFormIds({});
-      setActivateBusy(false);
-    },
-    []
-  );
+    setForms([]);
+    setFormsError(null);
+    setFormsLoading(false);
+    setSelectedFormIds({});
+    setActivateBusy(false);
+  }, []);
 
   const handleLoadForms = useCallback(async () => {
     setFormsError(null);
     setForms([]);
     setSelectedFormIds({});
+    setNeedsLeadsRetrieval(false);
 
     if (!ready) return;
     if (!normalizedId || !isUuid(normalizedId)) return;
@@ -707,7 +710,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       setFormsLoading(false);
       setWizardStep('forms');
 
-      // pro: si solo hay 1 form, lo preseleccionamos
       if (data.length === 1) {
         setSelectedFormIds({ [data[0].id]: true });
       }
@@ -742,6 +744,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
     setError(null);
     setInfo(null);
+    setNeedsLeadsRetrieval(false);
 
     if (!ready) {
       setError('No hay workspace activo.');
@@ -778,12 +781,27 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         forms: selectedForms,
       });
 
-      await subscribeWebhook({
+      const sub = await subscribeWebhook({
         integrationId: normalizedId,
         workspaceId,
         token,
         pageId: selectedPage.id,
       });
+
+      if (!sub.ok) {
+        const needs = isNeedsLeadsRetrievalPayload(sub.raw);
+
+        setActivateBusy(false);
+        setInfo(null);
+
+        if (needs) {
+          setNeedsLeadsRetrieval(true);
+          setWizardStep('forms'); // mantenemos el usuario en el step actual
+          return;
+        }
+
+        throw new Error(pickErrorMessage(sub.raw, `No se pudo suscribir el webhook (${sub.status})`));
+      }
 
       setActivateBusy(false);
       setWizardStep('final');
@@ -822,7 +840,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               disabled={oauthBusy || !ready}
               className={cx(
                 'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15 transition',
-                oauthBusy || !ready ? 'opacity-60 cursor-not-allowed' : ''
+                oauthBusy || !ready ? 'opacity-60 cursor-not-allowed' : '',
               )}
               title={isConnected ? 'Reautoriza Meta (si cambias permisos o el token expira)' : 'Conecta con Meta (OAuth)'}
             >
@@ -889,7 +907,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 <ul className="mt-2 list-disc pl-5 space-y-1">
                   <li>Autoriza a Kalue a acceder a tus assets de Lead Ads (según permisos).</li>
                   <li>Guarda el token cifrado por workspace (no en texto plano).</li>
-                  <li>Permite listar Pages y (cuando toque) Lead Forms y leads.</li>
+                  <li>Permite listar Pages y Lead Forms.</li>
                 </ul>
               </div>
 
@@ -918,7 +936,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                   disabled={!isConnected || pagesLoading}
                   className={cx(
                     'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10',
-                    !isConnected || pagesLoading ? 'opacity-60 cursor-not-allowed' : ''
+                    !isConnected || pagesLoading ? 'opacity-60 cursor-not-allowed' : '',
                   )}
                 >
                   {pagesLoading ? 'Buscando…' : 'Revisar Pages'}
@@ -928,16 +946,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               {pagesError ? (
                 <div className="mt-4 rounded-2xl border border-red-400/20 bg-red-500/10 p-4 text-xs text-red-200 whitespace-pre-line">
                   {pagesError}
-                </div>
-              ) : null}
-
-              {isConnected && !pagesLoading && !pagesError && pages.length === 0 ? (
-                <div className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-4 text-sm text-amber-200">
-                  <p className="font-semibold">⚠️ No se encontraron Pages para esta cuenta.</p>
-                  <p className="mt-2 text-xs text-amber-100/80 leading-relaxed">
-                    Si tu usuario SÍ tiene Pages, esto normalmente es: permisos en la integración comercial, o el usuario conectado no es
-                    el que administra esas Pages en el Business Manager.
-                  </p>
                 </div>
               ) : null}
 
@@ -951,12 +959,13 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                     </span>
                   </div>
 
-                  {/* Step indicator */}
                   <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
                     <span
                       className={cx(
                         'rounded-full border px-2 py-1',
-                        wizardStep === 'page' ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/60'
+                        wizardStep === 'page'
+                          ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200'
+                          : 'border-white/10 bg-white/5 text-white/60',
                       )}
                     >
                       1) Page
@@ -964,7 +973,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                     <span
                       className={cx(
                         'rounded-full border px-2 py-1',
-                        wizardStep === 'forms' ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/60'
+                        wizardStep === 'forms'
+                          ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200'
+                          : 'border-white/10 bg-white/5 text-white/60',
                       )}
                     >
                       2) Forms
@@ -972,14 +983,15 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                     <span
                       className={cx(
                         'rounded-full border px-2 py-1',
-                        wizardStep === 'final' ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200' : 'border-white/10 bg-white/5 text-white/60'
+                        wizardStep === 'final'
+                          ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
+                          : 'border-white/10 bg-white/5 text-white/60',
                       )}
                     >
                       3) Activado
                     </span>
                   </div>
 
-                  {/* Step 1: pick page */}
                   <ul className="mt-3 space-y-2">
                     {pages.map((p) => {
                       const selected = p.id === selectedPageId;
@@ -990,7 +1002,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                             onClick={() => void handleSelectPage(p.id)}
                             className={cx(
                               'w-full flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition',
-                              selected ? 'border-indigo-400/30 bg-indigo-500/10' : 'border-white/10 bg-white/5 hover:bg-white/10'
+                              selected ? 'border-indigo-400/30 bg-indigo-500/10' : 'border-white/10 bg-white/5 hover:bg-white/10',
                             )}
                           >
                             <div className="min-w-0">
@@ -1000,7 +1012,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                             <span
                               className={cx(
                                 'rounded-full border px-2 py-1 text-[10px]',
-                                selected ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/70'
+                                selected ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/70',
                               )}
                             >
                               {selected ? 'seleccionada' : 'detectar'}
@@ -1028,7 +1040,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                       disabled={!selectedPage || formsLoading}
                       className={cx(
                         'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-200 hover:bg-indigo-500/15 transition',
-                        !selectedPage || formsLoading ? 'opacity-60 cursor-not-allowed' : ''
+                        !selectedPage || formsLoading ? 'opacity-60 cursor-not-allowed' : '',
                       )}
                       title="Listar Lead Forms de la Page seleccionada"
                     >
@@ -1036,10 +1048,39 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                     </button>
                   </div>
 
-                  {/* Step 2: forms */}
                   {formsError ? (
                     <div className="mt-3 rounded-2xl border border-red-400/20 bg-red-500/10 p-3 text-[11px] text-red-200 whitespace-pre-line">
                       {formsError}
+                    </div>
+                  ) : null}
+
+                  {needsLeadsRetrieval ? (
+                    <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-3 text-[12px] text-amber-200">
+                      <p className="font-semibold">⚠️ Falta permiso de Meta: <span className="font-mono">leads_retrieval</span></p>
+                      <p className="mt-2 text-amber-100/80 leading-relaxed">
+                        El mapping se ha guardado en <span className="font-mono">draft</span>, pero Meta no permite suscribir el webhook
+                        <span className="font-mono"> leadgen</span> sin ese permiso.
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleConnectMeta()}
+                          className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-[11px] text-indigo-200 hover:bg-indigo-500/15"
+                        >
+                          Re-conectar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNeedsLeadsRetrieval(false)}
+                          className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10"
+                        >
+                          Entendido
+                        </button>
+                      </div>
+                      <div className="mt-2 text-[11px] text-amber-100/70">
+                        Acción en Meta Developers: tu app debe tener acceso a <span className="font-mono">leads_retrieval</span> (Advanced
+                        Access / App Review) y estar en modo <span className="font-semibold">Live</span> para producción.
+                      </div>
                     </div>
                   ) : null}
 
@@ -1067,7 +1108,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
                       {forms.length === 0 ? (
                         <div className="mt-3 text-[11px] text-white/60">
-                          No se detectaron forms para esta Page (o tu app aún no tiene permiso <span className="font-mono">leads_retrieval</span>).
+                          No se detectaron forms para esta Page.
                         </div>
                       ) : (
                         <ul className="mt-3 space-y-2">
@@ -1080,7 +1121,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                                   onClick={() => toggleForm(f.id)}
                                   className={cx(
                                     'w-full flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition',
-                                    checked ? 'border-indigo-400/30 bg-indigo-500/10' : 'border-white/10 bg-black/20 hover:bg-white/10'
+                                    checked ? 'border-indigo-400/30 bg-indigo-500/10' : 'border-white/10 bg-black/20 hover:bg-white/10',
                                   )}
                                 >
                                   <div className="min-w-0">
@@ -1090,7 +1131,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                                   <span
                                     className={cx(
                                       'rounded-full border px-2 py-1 text-[10px]',
-                                      checked ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/70'
+                                      checked ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/70',
                                     )}
                                   >
                                     {checked ? 'incluido' : '—'}
@@ -1117,7 +1158,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                           disabled={activateBusy || selectedForms.length === 0 || !selectedPage}
                           className={cx(
                             'rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 hover:bg-emerald-500/15 transition',
-                            activateBusy || selectedForms.length === 0 || !selectedPage ? 'opacity-60 cursor-not-allowed' : ''
+                            activateBusy || selectedForms.length === 0 || !selectedPage ? 'opacity-60 cursor-not-allowed' : '',
                           )}
                           title="Guarda los mappings y suscribe el webhook leadgen"
                         >
@@ -1131,12 +1172,11 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                     </div>
                   ) : null}
 
-                  {/* Step 3: final */}
                   {wizardStep === 'final' && selectedPage ? (
                     <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-xs text-emerald-200">
                       <p className="font-semibold">✅ Integración activada</p>
                       <p className="mt-2 text-emerald-100/80">
-                        Page: <span className="font-semibold">{selectedPage.name}</span> · Forms:{" "}
+                        Page: <span className="font-semibold">{selectedPage.name}</span> · Forms:{' '}
                         <span className="font-semibold">{selectedForms.length}</span>
                       </p>
                       <div className="mt-3 flex flex-wrap gap-2">
