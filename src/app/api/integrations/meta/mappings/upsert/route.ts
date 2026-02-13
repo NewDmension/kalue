@@ -1,10 +1,9 @@
+// src/app/api/integrations/meta/mappings/upsert/route.ts
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-type Json = Record<string, unknown>;
 
 function json(status: number, payload: Record<string, unknown>) {
   return new NextResponse(JSON.stringify(payload), {
@@ -128,7 +127,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     const ok = await isWorkspaceMember({ admin, workspaceId, userId });
     if (!ok) return json(403, { error: 'not_member' });
 
-    // Bulk upsert
+    const nowIso = new Date().toISOString();
+
+    // Bulk upsert: 1 row por form
     const rows = forms.map((f) => ({
       workspace_id: workspaceId,
       integration_id: integrationId,
@@ -141,25 +142,22 @@ export async function POST(req: Request): Promise<NextResponse> {
       webhook_subscribed: false,
       subscribed_at: null,
       last_error: null,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     }));
 
-    /**
-     * ✅ PRO: este onConflict asume que harás el upgrade del índice:
-     * UNIQUE (workspace_id, integration_id, page_id, form_id)
-     *
-     * Si AÚN no lo has hecho, la DB te impedirá multi-form real.
-     */
     const { data, error } = await admin
       .from('integration_meta_mappings')
       .upsert(rows, { onConflict: 'workspace_id,integration_id,page_id,form_id' })
-      .select('id, workspace_id, integration_id, page_id, page_name, form_id, form_name, status, webhook_subscribed, subscribed_at, updated_at');
+      .select(
+        'id, workspace_id, integration_id, page_id, page_name, form_id, form_name, status, webhook_subscribed, subscribed_at, updated_at'
+      );
 
     if (error) {
       return json(500, {
         error: 'db_error',
         detail: error.message,
-        hint: 'Si falla por unique constraint, aplica el SQL de upgrade del índice (multi form).',
+        hint:
+          'Si falla por unique constraint / ON CONFLICT, aplica los índices multi-form: UNIQUE (workspace_id, integration_id, page_id, form_id) WHERE form_id IS NOT NULL',
       });
     }
 

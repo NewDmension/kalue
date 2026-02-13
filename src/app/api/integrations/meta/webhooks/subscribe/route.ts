@@ -1,4 +1,4 @@
-// src/app/api/integrations/meta/webhook/subscribe/route.ts
+// src/app/api/integrations/meta/webhooks/subscribe/route.ts
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { decryptToken } from '@/server/crypto/tokenCrypto';
@@ -147,6 +147,14 @@ async function getPageAccessToken(args: {
   throw new Error('page_not_found_in_me_accounts');
 }
 
+function detectNeedsLeadsRetrieval(raw: unknown): boolean {
+  if (!isRecord(raw)) return false;
+  const err = raw.error;
+  if (!isRecord(err)) return false;
+  const msg = err.message;
+  return typeof msg === 'string' && msg.includes('leads_retrieval');
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   try {
     const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL');
@@ -185,14 +193,17 @@ export async function POST(req: Request): Promise<NextResponse> {
     const userAccessToken = await getUserAccessToken({ admin, workspaceId, integrationId });
     const { pageToken, pageName } = await getPageAccessToken({ graphVersion, userAccessToken, pageId });
 
-    // Subscribe app to page: /{page_id}/subscribed_apps
     const subUrl = new URL(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(pageId)}/subscribed_apps`);
-    // Si quieres filtrar campos del webhook: subscribed_fields=leadgen
     subUrl.searchParams.set('subscribed_fields', 'leadgen');
 
     const r = await graphPost(subUrl.toString(), pageToken);
+
     if (!r.ok) {
-      // guardamos error
+      const needsLeadsRetrieval = detectNeedsLeadsRetrieval(r.raw);
+      const lastError = needsLeadsRetrieval ? 'needs_leads_retrieval' : 'subscribe_failed';
+      const mappingStatus = needsLeadsRetrieval ? 'draft' : 'error';
+
+      // ✅ multi-tenant ON CONFLICT
       await admin
         .from('integration_meta_webhook_subscriptions')
         .upsert(
@@ -201,17 +212,30 @@ export async function POST(req: Request): Promise<NextResponse> {
             integration_id: integrationId,
             page_id: pageId,
             subscribed: false,
-            last_error: 'subscribe_failed',
+            last_error: lastError,
           },
-          { onConflict: 'integration_id,page_id' }
+          { onConflict: 'workspace_id,integration_id,page_id' }
         );
 
+      // ✅ NO actualizar todo por integration_id. Solo el pageId del workspace.
       await admin
         .from('integration_meta_mappings')
-        .update({ status: 'error', last_error: 'subscribe_failed' })
-        .eq('integration_id', integrationId);
+        .update({
+          status: mappingStatus,
+          last_error: lastError,
+          webhook_subscribed: false,
+          subscribed_at: null,
+        })
+        .eq('workspace_id', workspaceId)
+        .eq('integration_id', integrationId)
+        .eq('page_id', pageId);
 
-      return json(r.status, { error: 'graph_error', where: 'page/subscribed_apps', raw: r.raw });
+      return json(r.status, {
+        error: 'graph_error',
+        where: 'page/subscribed_apps',
+        code: lastError,
+        raw: r.raw,
+      });
     }
 
     const nowIso = new Date().toISOString();
@@ -227,7 +251,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           subscribed_at: nowIso,
           last_error: null,
         },
-        { onConflict: 'integration_id,page_id' }
+        { onConflict: 'workspace_id,integration_id,page_id' }
       );
 
     await admin
@@ -239,7 +263,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         status: 'active',
         last_error: null,
       })
-      .eq('integration_id', integrationId);
+      .eq('workspace_id', workspaceId)
+      .eq('integration_id', integrationId)
+      .eq('page_id', pageId);
 
     return json(200, { ok: true, subscribed: true, pageId, pageName: pageName ?? null });
   } catch (e: unknown) {
