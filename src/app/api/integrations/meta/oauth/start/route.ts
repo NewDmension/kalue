@@ -119,8 +119,10 @@ const LOGIN_SCOPE_ALLOWLIST = new Set<string>([
   'public_profile',
   'pages_show_list',
   'pages_read_engagement',
+  'pages_manage_ads',
   'business_management',
 ]);
+
 
 
 
@@ -230,8 +232,11 @@ export async function POST(req: Request) {
   scope = ensureRequiredScopes(scope, [
   'public_profile',
   'pages_show_list',
+  'pages_read_engagement',
+  'pages_manage_ads',
   'business_management',
 ]);
+
 
 
     if (!scope) {
