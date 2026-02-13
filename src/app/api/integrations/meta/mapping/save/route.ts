@@ -116,7 +116,8 @@ export async function POST(req: Request): Promise<NextResponse> {
           subscribed_at: null,
           last_error: null,
         },
-        { onConflict: 'integration_id' }
+        { onConflict: 'workspace_id,integration_id,page_id,form_id' }
+
       )
       .select('id, workspace_id, integration_id, page_id, page_name, form_id, form_name, status, webhook_subscribed, subscribed_at, updated_at')
       .maybeSingle();
