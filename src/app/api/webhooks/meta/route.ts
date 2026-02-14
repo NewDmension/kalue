@@ -297,9 +297,49 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const raw = Buffer.from(await req.arrayBuffer());
   const signature = req.headers.get('x-hub-signature-256');
+  // ✅ DEBUG PRO (sin romper nada): confirma que Meta está pegando al endpoint
+  const supabaseAdminPre = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+  try {
+    await logWebhookEvent({
+      admin: supabaseAdminPre,
+      provider: 'meta',
+      workspaceId: null,
+      integrationId: null,
+      eventType: 'debug_hit_before_sig',
+      objectId: null,
+      payload: {
+        has_signature: Boolean(signature),
+        signature_prefix: typeof signature === 'string' ? signature.slice(0, 12) : null,
+        content_length: req.headers.get('content-length'),
+        user_agent: req.headers.get('user-agent'),
+        ts: new Date().toISOString(),
+      },
+    });
+  } catch {
+    // no-op
+  }
 
-  const sigOk = verifyMetaSignature({ appSecret, rawBody: raw, header: signature });
-  if (!sigOk) return NextResponse.json({ error: 'invalid_signature' }, { status: 401 });
+    const sigOk = verifyMetaSignature({ appSecret, rawBody: raw, header: signature });
+  if (!sigOk) {
+    try {
+      await logWebhookEvent({
+        admin: supabaseAdminPre,
+        provider: 'meta',
+        workspaceId: null,
+        integrationId: null,
+        eventType: 'invalid_signature',
+        objectId: null,
+        payload: {
+          note: 'HMAC sha256 mismatch. If Meta hits endpoint but fails here, META_APP_SECRET is not the same app that owns the webhook config.',
+          has_signature: Boolean(signature),
+          ts: new Date().toISOString(),
+        },
+      });
+    } catch {
+      // no-op
+    }
+    return NextResponse.json({ error: 'invalid_signature' }, { status: 401 });
+  }
 
   let body: unknown;
   try {

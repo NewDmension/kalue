@@ -1,28 +1,12 @@
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
+import { decryptToken } from '@/server/crypto/tokenCrypto';
 
-type MetaFieldDataItem = {
-  name?: string;
-  values?: string[];
-};
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-type MetaLead = {
-  id: string;
-  created_time?: string;
-  field_data?: MetaFieldDataItem[];
-};
-
-type MetaLeadsPage = {
-  data?: MetaLead[];
-  paging?: {
-    cursors?: { after?: string; before?: string };
-    next?: string;
-  };
-};
-
-type ImportResult = { ok: true; imported: number; skipped: number } | { ok: false; error: string };
+type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
 
 function getEnv(name: string): string {
   const v = process.env[name];
@@ -30,27 +14,59 @@ function getEnv(name: string): string {
   return v;
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
 function safeString(v: unknown): string | null {
   return typeof v === 'string' && v.trim().length > 0 ? v.trim() : null;
 }
 
-function safeStringArray(v: unknown): string[] {
-  if (!Array.isArray(v)) return [];
-  const out: string[] = [];
-  for (const it of v) {
-    const s = safeString(it);
-    if (s) out.push(s);
-  }
-  return out;
+async function getUserFromBearer(admin: SupabaseClient, req: Request): Promise<{ userId: string } | null> {
+  const auth = req.headers.get('authorization') ?? '';
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  const token = m?.[1]?.trim() ?? null;
+  if (!token) return null;
+
+  const { data, error } = await admin.auth.getUser(token);
+  if (error) return null;
+
+  const uid = data.user?.id ?? null;
+  if (!uid) return null;
+  return { userId: uid };
 }
 
-function pickFirst(fieldData: MetaFieldDataItem[] | undefined, keys: string[]): string | null {
-  if (!Array.isArray(fieldData)) return null;
+type ImportBody = {
+  workspace_id: string;
+  integration_id: string;
+  page_id: string;
+  form_id: string;
+  limit?: number; // default 25, max 200
+};
 
+type MetaFieldDataItem = {
+  name?: unknown;
+  values?: unknown;
+};
+
+type MetaLead = {
+  id?: unknown;
+  created_time?: unknown;
+  field_data?: unknown;
+};
+
+type MetaLeadsResp = {
+  data?: unknown;
+  paging?: unknown;
+  error?: unknown;
+};
+
+function pickFirst(fieldData: MetaFieldDataItem[], keys: string[]): string | null {
   for (const k of keys) {
     for (const item of fieldData) {
-      const name = (item.name ?? '').toLowerCase();
+      const name = safeString(item.name)?.toLowerCase() ?? '';
       if (name !== k.toLowerCase()) continue;
+
       const values = Array.isArray(item.values) ? item.values : [];
       const first = values.length > 0 ? safeString(values[0]) : null;
       if (first) return first;
@@ -71,176 +87,71 @@ function normalizeEmail(raw: string | null): string | null {
   return s.includes('@') ? s : null;
 }
 
-type IntegrationRow = {
-  id: string;
-  provider: string | null;
-  workspace_id: string | null;
-  // tokens / config (ajusta nombres si difieren)
-  access_token: string | null;
-  config: Json | null;
-};
+function extractLeadFields(metaLead: MetaLead): { full_name: string | null; email: string | null; phone: string | null } {
+  const fdRaw = metaLead.field_data;
+  const fieldData: MetaFieldDataItem[] = Array.isArray(fdRaw) ? (fdRaw as MetaFieldDataItem[]) : [];
 
-function getConfigObject(config: Json | null): Record<string, Json> {
-  if (config && typeof config === 'object' && !Array.isArray(config)) return config as Record<string, Json>;
-  return {};
-}
-
-function extractFormIds(integration: IntegrationRow): string[] {
-  const cfg = getConfigObject(integration.config);
-
-  // ✅ Soporta varios shapes:
-  // - config.form_id: "123"
-  // - config.form_ids: ["123","456"]
-  // - config.forms: [{id:"123"}, ...] (si te interesa, amplía aquí)
-  const formId = safeString(cfg['form_id']);
-  const formIds = safeStringArray(cfg['form_ids']);
-
-  const merged = new Set<string>();
-  if (formId) merged.add(formId);
-  for (const id of formIds) merged.add(id);
-
-  return Array.from(merged);
-}
-
-function extractMetaToken(integration: IntegrationRow): string | null {
-  // Ajusta aquí si guardas token en config.page_access_token, etc.
-  if (integration.access_token && integration.access_token.trim().length > 0) return integration.access_token.trim();
-
-  const cfg = getConfigObject(integration.config);
-  const t1 = safeString(cfg['access_token']);
-  const t2 = safeString(cfg['page_access_token']);
-  return t1 ?? t2 ?? null;
-}
-
-async function getUserFromBearer(admin: SupabaseClient, req: Request): Promise<{ userId: string } | null> {
-  const auth = req.headers.get('authorization') ?? '';
-  const m = auth.match(/^Bearer\s+(.+)$/i);
-  const token = m?.[1]?.trim() ?? null;
-  if (!token) return null;
-
-  const { data, error } = await admin.auth.getUser(token);
-  if (error) return null;
-  const uid = data.user?.id ?? null;
-  if (!uid) return null;
-  return { userId: uid };
-}
-
-function getWorkspaceId(req: Request): string | null {
-  // ✅ 1) Header
-  const h = safeString(req.headers.get('x-workspace-id'));
-  if (h) return h;
-
-  // ✅ 2) Querystring
-  const url = new URL(req.url);
-  const q = safeString(url.searchParams.get('workspaceId'));
-  if (q) return q;
-
-  // ✅ 3) Body (si lo mandas)
-  return null;
-}
-
-async function fetchMetaLeadsPage(args: {
-  graphVersion: string;
-  formId: string;
-  token: string;
-  after?: string;
-  limit: number;
-}): Promise<{ ok: true; page: MetaLeadsPage } | { ok: false; error: string }> {
-  const { graphVersion, formId, token, after, limit } = args;
-
-  // Campos típicos que Meta devuelve: id, created_time, field_data
-  const fields = encodeURIComponent('id,created_time,field_data');
-
-  const base = `https://graph.facebook.com/${graphVersion}/${encodeURIComponent(formId)}/leads`;
-  const u = new URL(base);
-  u.searchParams.set('access_token', token);
-  u.searchParams.set('fields', fields);
-  u.searchParams.set('limit', String(limit));
-  if (after) u.searchParams.set('after', after);
-
-  const res = await fetch(u.toString(), { method: 'GET', cache: 'no-store' });
-  const text = await res.text();
-
-  if (!res.ok) {
-    // Meta suele devolver JSON con error.message
-    return { ok: false, error: `Meta error (${res.status}): ${text}` };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    return { ok: false, error: `Meta returned non-JSON: ${text}` };
-  }
-
-  // Validación ligera
-  if (!parsed || typeof parsed !== 'object') return { ok: false, error: 'Meta JSON inválido.' };
-  return { ok: true, page: parsed as MetaLeadsPage };
-}
-
-/**
- * ✅ AJUSTA ESTO A TU ESQUEMA DE LEADS
- * Por defecto inserta en tabla "leads" con columnas:
- * - external_id (unique)
- * - source ("meta")
- * - created_at (timestamp)
- * - full_name, email, phone, profession, biggest_pain
- * - raw (jsonb) opcional
- */
-type LeadInsert = {
-  external_id: string;
-  source: 'meta';
-  created_at: string; // ISO
-  full_name: string | null;
-  email: string | null;
-  phone: string | null;
-  profession: string | null;
-  biggest_pain: string | null;
-  raw: Json | null;
-};
-
-function metaLeadToInsert(meta: MetaLead): LeadInsert {
-  const fieldData = Array.isArray(meta.field_data) ? meta.field_data : [];
-
-  // Nombres comunes de Meta Lead Ads
   const full = pickFirst(fieldData, ['full_name', 'name']) ?? null;
   const email = normalizeEmail(pickFirst(fieldData, ['email'])) ?? null;
-
-  // Teléfono puede venir en varias keys
   const phone =
-    normalizePhone(
-      pickFirst(fieldData, ['phone_number', 'phone', 'mobile_phone', 'telephone'])
-    ) ?? null;
+    normalizePhone(pickFirst(fieldData, ['phone_number', 'phone', 'mobile_phone', 'telephone'])) ?? null;
 
-  const profession = pickFirst(fieldData, ['profession', 'job_title']) ?? null;
-  const pain = pickFirst(fieldData, ['biggest_pain', 'pain', 'message', 'custom_disclaimer']) ?? null;
-
-  const created = safeString(meta.created_time) ?? new Date().toISOString();
-
-  return {
-    external_id: meta.id,
-    source: 'meta',
-    created_at: created,
-    full_name: full,
-    email,
-    phone,
-    profession,
-    biggest_pain: pain,
-    raw: {
-      meta_lead: {
-        id: meta.id,
-        created_time: meta.created_time ?? null,
-        field_data: meta.field_data ?? null,
-      },
-    },
-  };
+  return { full_name: full, email, phone };
 }
 
-export async function POST(req: Request): Promise<NextResponse<ImportResult>> {
+async function fetchPageAccessToken(args: {
+  graphVersion: string;
+  userAccessToken: string;
+  pageId: string;
+}): Promise<{ page_access_token: string; page_name: string | null }> {
+  const url = new URL(`https://graph.facebook.com/${args.graphVersion}/me/accounts`);
+  url.searchParams.set('fields', 'id,name,access_token');
+  url.searchParams.set('limit', '200');
+  url.searchParams.set('access_token', args.userAccessToken);
+
+  const res = await fetch(url.toString(), { method: 'GET', cache: 'no-store' });
+  const json = (await res.json()) as unknown;
+
+  if (!res.ok) throw new Error(`me_accounts_failed:${JSON.stringify(json)}`);
+
+  const dataArr = isRecord(json) && Array.isArray(json.data) ? (json.data as unknown[]) : [];
+  for (const it of dataArr) {
+    if (!isRecord(it)) continue;
+    const id = safeString(it.id);
+    if (!id || id !== args.pageId) continue;
+
+    const tok = safeString(it.access_token);
+    if (!tok) break;
+
+    const name = safeString(it.name);
+    return { page_access_token: tok, page_name: name };
+  }
+
+  throw new Error('page_token_not_found_in_me_accounts');
+}
+
+async function logEvent(admin: SupabaseClient, payload: {
+  provider: string;
+  workspace_id: string | null;
+  integration_id: string | null;
+  event_type: string;
+  object_id: string | null;
+  payload: Json;
+}): Promise<void> {
+  await admin.from('integration_webhook_events').insert({
+    provider: payload.provider,
+    workspace_id: payload.workspace_id,
+    integration_id: payload.integration_id,
+    event_type: payload.event_type,
+    object_id: payload.object_id,
+    payload: payload.payload,
+  });
+}
+
+export async function POST(req: Request): Promise<NextResponse> {
   try {
     const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL');
     const serviceKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
-
     const admin = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
@@ -248,121 +159,175 @@ export async function POST(req: Request): Promise<NextResponse<ImportResult>> {
     const user = await getUserFromBearer(admin, req);
     if (!user) return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
 
-    // ✅ Necesitamos workspaceId para saber qué integración usar.
-    // Si tu app no es multi-workspace, puedes quitar esto y usar directamente la única integración del usuario.
-    let workspaceId = getWorkspaceId(req);
-
-    // Si lo mandas por body, lo leemos aquí (sin forzar)
-    if (!workspaceId) {
-      const bodyText = await req.text();
-      if (bodyText.trim().length > 0) {
-        let bodyJson: unknown;
-        try {
-          bodyJson = JSON.parse(bodyText) as unknown;
-        } catch {
-          bodyJson = null;
-        }
-        if (bodyJson && typeof bodyJson === 'object' && !Array.isArray(bodyJson)) {
-          const b = bodyJson as Record<string, unknown>;
-          workspaceId = safeString(b['workspaceId']);
-        }
-      }
+    let body: unknown;
+    try {
+      body = (await req.json()) as unknown;
+    } catch {
+      return NextResponse.json({ ok: false, error: 'invalid_json' }, { status: 400 });
     }
 
-    if (!workspaceId) {
+    if (!isRecord(body)) return NextResponse.json({ ok: false, error: 'invalid_body' }, { status: 400 });
+
+    const b = body as Record<string, unknown>;
+    const workspace_id = safeString(b.workspace_id);
+    const integration_id = safeString(b.integration_id);
+    const page_id = safeString(b.page_id);
+    const form_id = safeString(b.form_id);
+
+    const limitRaw = b.limit;
+    const limit =
+      typeof limitRaw === 'number' && Number.isFinite(limitRaw)
+        ? Math.max(1, Math.min(200, limitRaw))
+        : 25;
+
+    if (!workspace_id || !integration_id || !page_id || !form_id) {
       return NextResponse.json(
-        {
-          ok: false,
-          error:
-            'Falta workspaceId. Envíalo por header x-workspace-id, query ?workspaceId=, o body {workspaceId}.',
-        },
+        { ok: false, error: 'missing_required_fields', required: ['workspace_id', 'integration_id', 'page_id', 'form_id'] },
         { status: 400 }
       );
     }
 
-    // ✅ Cambia aquí si tu tabla se llama distinto
-    const INTEGRATIONS_TABLE = process.env.META_INTEGRATIONS_TABLE ?? 'integrations';
+    // 0) seguridad: comprobar que esa subscripción existe y está activa
+    const { data: sub, error: subErr } = await admin
+      .from('integration_meta_webhook_subscriptions')
+      .select('id,status,webhook_subscribed')
+      .eq('workspace_id', workspace_id)
+      .eq('integration_id', integration_id)
+      .eq('provider', 'meta')
+      .eq('page_id', page_id)
+      .eq('form_id', form_id)
+      .limit(1)
+      .maybeSingle();
 
-    // Traemos integraciones meta de ese workspace
-    const { data: integrations, error: intErr } = await admin
-      .from(INTEGRATIONS_TABLE)
-      .select('id, provider, workspace_id, access_token, config')
-      .eq('workspace_id', workspaceId)
-      .eq('provider', 'meta');
+    if (subErr) return NextResponse.json({ ok: false, error: subErr.message }, { status: 500 });
+    if (!sub) return NextResponse.json({ ok: false, error: 'subscription_not_found' }, { status: 404 });
 
-    if (intErr) return NextResponse.json({ ok: false, error: intErr.message }, { status: 500 });
-    if (!integrations || integrations.length === 0) {
-      return NextResponse.json({ ok: false, error: 'No hay integración Meta para este workspace.' }, { status: 404 });
+    // 1) token cifrado del usuario para esta integración
+    const { data: tok, error: tokErr } = await admin
+      .from('integration_oauth_tokens')
+      .select('access_token_ciphertext')
+      .eq('workspace_id', workspace_id)
+      .eq('integration_id', integration_id)
+      .eq('provider', 'meta')
+      .maybeSingle();
+
+    if (tokErr || !tok?.access_token_ciphertext) {
+      return NextResponse.json({ ok: false, error: 'oauth_token_not_found' }, { status: 404 });
     }
 
-    // Parámetros import
-    const graphVersion = process.env.META_GRAPH_VERSION ?? 'v20.0';
-    const pageLimit = Number.parseInt(process.env.META_LEADS_PAGE_LIMIT ?? '100', 10);
-    const maxPages = Number.parseInt(process.env.META_LEADS_MAX_PAGES ?? '5', 10);
+    let userAccessToken = '';
+    try {
+      userAccessToken = decryptToken(String(tok.access_token_ciphertext));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'decrypt_failed';
+      return NextResponse.json({ ok: false, error: 'decrypt_failed', message: msg }, { status: 500 });
+    }
 
-    const LEADS_TABLE = process.env.LEADS_TABLE ?? 'leads';
-    const LEADS_ON_CONFLICT = process.env.LEADS_ON_CONFLICT ?? 'external_id';
+    const graphVersion = (process.env.META_GRAPH_VERSION?.trim() || 'v20.0').replace(/^v/i, 'v');
+
+    // 2) page token (necesario para /{form_id}/leads)
+    const pageTok = await fetchPageAccessToken({ graphVersion, userAccessToken, pageId: page_id });
+    const pageAccessToken = pageTok.page_access_token;
+
+    // 3) fetch leads del form
+    const url = new URL(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(form_id)}/leads`);
+    url.searchParams.set('access_token', pageAccessToken);
+    url.searchParams.set('fields', 'created_time,field_data');
+    url.searchParams.set('limit', String(limit));
+
+    const res = await fetch(url.toString(), { method: 'GET', cache: 'no-store' });
+    const json = (await res.json()) as unknown;
+
+    if (!res.ok) {
+      await logEvent(admin, {
+        provider: 'meta',
+        workspace_id,
+        integration_id,
+        event_type: 'import_failed',
+        object_id: form_id,
+        payload: isRecord(json) ? json : { raw: json },
+      });
+      return NextResponse.json({ ok: false, error: 'graph_fetch_failed', details: json }, { status: 400 });
+    }
+
+    const parsed = isRecord(json) ? (json as MetaLeadsResp) : ({} as MetaLeadsResp);
+    const arr = isRecord(parsed) && Array.isArray(parsed.data) ? (parsed.data as unknown[]) : [];
 
     let imported = 0;
     let skipped = 0;
 
-    for (const row of integrations as IntegrationRow[]) {
-      const token = extractMetaToken(row);
-      const formIds = extractFormIds(row);
+    for (const it of arr) {
+      if (!isRecord(it)) continue;
+      const leadId = safeString(it.id);
+      if (!leadId) continue;
 
-      if (!token) continue;
-      if (formIds.length === 0) continue;
+      const extracted = extractLeadFields(it as MetaLead);
 
-      for (const formId of formIds) {
-        let after: string | undefined = undefined;
+      const leadPayload: Record<string, unknown> = {
+        leadgen_id: leadId,
+        page_id,
+        page_name: pageTok.page_name,
+        form_id,
+        extracted,
+        raw: it,
+        imported_via: 'import_route',
+      };
 
-        for (let p = 0; p < maxPages; p += 1) {
-          const pageRes = await fetchMetaLeadsPage({
-            graphVersion,
-            formId,
-            token,
-            after,
-            limit: pageLimit,
-          });
+      // A) raw storage (integration_leads)
+      const { error: insErr } = await admin.from('integration_leads').upsert(
+        {
+          workspace_id,
+          integration_id,
+          provider: 'meta',
+          external_id: leadId,
+          payload: leadPayload,
+        },
+        { onConflict: 'workspace_id,provider,external_id' }
+      );
 
-          if (!pageRes.ok) {
-            // Si Meta responde con Invalid Scopes, te lo devolverá aquí.
-            // No abortamos todo: seguimos con otras integraciones/forms.
-            continue;
-          }
-
-          const leads = Array.isArray(pageRes.page.data) ? pageRes.page.data : [];
-          if (leads.length === 0) break;
-
-          const inserts: LeadInsert[] = leads.map(metaLeadToInsert);
-
-          // Upsert por external_id (meta lead id) => evita duplicados aunque Meta y GHL estén activos.
-          const { data: upserted, error: upErr } = await admin
-            .from(LEADS_TABLE)
-            .upsert(inserts, { onConflict: LEADS_ON_CONFLICT })
-            .select('external_id');
-
-          if (upErr) {
-            // si tu tabla/columnas difieren, aquí lo verás
-            break;
-          }
-
-          const upCount = Array.isArray(upserted) ? upserted.length : 0;
-          imported += upCount;
-
-          // Los “skipped” no los sabremos exacto con upsert sin lógica extra.
-          // Aproximación: si Meta devolvió N y upsert devolvió M => skipped ~ N-M (puede variar según PostgREST).
-          const approxSkipped = Math.max(0, inserts.length - upCount);
-          skipped += approxSkipped;
-
-          after = safeString(pageRes.page.paging?.cursors?.after) ?? undefined;
-          if (!after) break;
-        }
+      if (insErr) {
+        skipped += 1;
+        continue;
       }
+
+      // B) normalizada (leads)
+      await admin.from('leads').upsert(
+        {
+          workspace_id,
+          integration_id,
+          source: 'meta',
+          external_id: leadId,
+          full_name: extracted.full_name,
+          email: extracted.email,
+          phone: extracted.phone,
+        },
+        { onConflict: 'workspace_id,source,external_id' }
+      );
+
+      imported += 1;
     }
 
+    await logEvent(admin, {
+      provider: 'meta',
+      workspace_id,
+      integration_id,
+      event_type: 'import_ok',
+      object_id: form_id,
+      payload: { imported, skipped, fetched: arr.length, limit },
+    });
+
+    // actualizar last_sync_at
+    await admin
+      .from('integration_meta_webhook_subscriptions')
+      .update({ last_sync_at: new Date().toISOString(), last_error: null })
+      .eq('workspace_id', workspace_id)
+      .eq('integration_id', integration_id)
+      .eq('provider', 'meta')
+      .eq('page_id', page_id)
+      .eq('form_id', form_id);
+
     return NextResponse.json({ ok: true, imported, skipped });
-  } catch (e) {
+  } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
