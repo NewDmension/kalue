@@ -534,6 +534,59 @@ const integrationId = String(mapping.integration_id);
         }
 
         // Aquí ya insertaremos el lead en tu tabla final cuando dejemos “Fase leads” lista.
+        // === INSERT LEAD EN TU TABLA leads (modo seguro) ===
+try {
+  const leadgenIdStr = typeof leadgenId === 'string' ? leadgenId : null;
+
+  const insertPayload: Record<string, unknown> = {
+    workspace_id: workspaceId,
+    source: 'meta',
+    full_name: extracted.full_name,
+    email: extracted.email,
+    phone: extracted.phone,
+    // Metadatos (si tu schema los tiene)
+    meta_leadgen_id: leadgenIdStr,
+    meta_page_id: pageId,
+    meta_form_id: formId,
+    meta_payload: metaLead,
+  };
+
+  const { error: insErr } = await supabaseAdmin.from('leads').insert(insertPayload);
+
+  if (insErr) {
+    await logWebhookEvent({
+      admin: supabaseAdmin,
+      provider: 'meta',
+      workspaceId,
+      integrationId,
+      eventType: 'error',
+      objectId: leadgenIdStr,
+      payload: { reason: 'lead_insert_failed', message: insErr.message, insertPayload },
+    });
+  } else {
+    await logWebhookEvent({
+      admin: supabaseAdmin,
+      provider: 'meta',
+      workspaceId,
+      integrationId,
+      eventType: 'lead_inserted',
+      objectId: leadgenIdStr,
+      payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenIdStr },
+    });
+  }
+} catch (err: unknown) {
+  const msg = err instanceof Error ? err.message : 'lead_insert_exception';
+  await logWebhookEvent({
+    admin: supabaseAdmin,
+    provider: 'meta',
+    workspaceId,
+    integrationId,
+    eventType: 'error',
+    objectId: typeof leadgenId === 'string' ? leadgenId : null,
+    payload: { reason: 'lead_insert_exception', message: msg },
+  });
+}
+
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'lead_process_failed';
         try {
