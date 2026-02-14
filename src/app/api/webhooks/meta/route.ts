@@ -224,13 +224,13 @@ async function logWebhookEvent(args: {
     event_type: args.eventType,
     object_id: args.objectId,
     payload: args.payload,
+    // received_at default now()
   });
 }
 
 /**
- * ✅ TU TABLA REAL (según lo que pasaste):
+ * ✅ TU TABLA REAL:
  * integration_meta_webhook_subscriptions
- * columnas: workspace_id, integration_id, provider, page_id, form_id, status, webhook_subscribed, ...
  */
 type SubscriptionRow = {
   id: string;
@@ -248,13 +248,10 @@ async function resolveSubscriptionMapping(args: {
   pageId: string;
   formId: string | null;
 }): Promise<SubscriptionRow | null> {
-  // 1) match exacto page+form
   if (args.formId) {
     const { data, error } = await args.admin
       .from('integration_meta_webhook_subscriptions')
-      .select(
-        'id, workspace_id, integration_id, provider, page_id, form_id, status, webhook_subscribed'
-      )
+      .select('id, workspace_id, integration_id, provider, page_id, form_id, status, webhook_subscribed')
       .eq('provider', 'meta')
       .eq('page_id', args.pageId)
       .eq('form_id', args.formId)
@@ -266,12 +263,9 @@ async function resolveSubscriptionMapping(args: {
     if (!error && data) return data as SubscriptionRow;
   }
 
-  // 2) fallback page_id con form_id null
   const { data: fb, error: fbErr } = await args.admin
     .from('integration_meta_webhook_subscriptions')
-    .select(
-      'id, workspace_id, integration_id, provider, page_id, form_id, status, webhook_subscribed'
-    )
+    .select('id, workspace_id, integration_id, provider, page_id, form_id, status, webhook_subscribed')
     .eq('provider', 'meta')
     .eq('page_id', args.pageId)
     .is('form_id', null)
@@ -318,7 +312,6 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-  // ✅ LOG mínimo si falla firma (sin guardar raw completo)
   const sigOk = verifyMetaSignature({ appSecret, rawBody: raw, header: signature });
   if (!sigOk) {
     try {
@@ -332,7 +325,6 @@ export async function POST(req: Request): Promise<NextResponse> {
         payload: {
           has_signature_header: Boolean(signature),
           body_bytes: raw.length,
-          // hash del body para correlación sin exponer contenido
           body_sha256: crypto.createHash('sha256').update(raw).digest('hex'),
         },
       });
@@ -352,7 +344,6 @@ export async function POST(req: Request): Promise<NextResponse> {
   const payload = body as MetaWebhook;
   const graphVersion = (process.env.META_GRAPH_VERSION?.trim() || 'v20.0').replace(/^v/i, 'v');
 
-  // Auditoría: guardamos el webhook crudo
   try {
     await logWebhookEvent({
       admin: supabaseAdmin,
@@ -397,7 +388,6 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      // ✅ USAR TU TABLA REAL DE SUSCRIPCIONES
       const mapping = await resolveSubscriptionMapping({ admin: supabaseAdmin, pageId, formId });
 
       if (!mapping?.workspace_id || !mapping?.integration_id) {
@@ -434,7 +424,6 @@ export async function POST(req: Request): Promise<NextResponse> {
         // no-op
       }
 
-      // 2) token del usuario (cifrado) de esta integración
       const { data: tok, error: tokErr } = await supabaseAdmin
         .from('integration_oauth_tokens')
         .select('access_token_ciphertext')
@@ -481,7 +470,6 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      // 3) page access token
       let pageAccessToken = '';
       let pageName: string | null = null;
 
@@ -507,23 +495,12 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      // 4) fetch lead + persist (OJO: tus tablas todavía hay que alinearlas en la Fase B)
       try {
         if (!leadgenId) continue;
 
         const metaLead = await fetchLeadDetails({ graphVersion, leadgenId, pageAccessToken });
         const extracted = extractLeadFields(metaLead);
 
-        const leadPayload: Json = {
-          leadgen_id: leadgenId,
-          page_id: pageId,
-          page_name: pageName,
-          form_id: formId,
-          extracted,
-          raw: metaLead as unknown as Json,
-        };
-
-        // Guardamos SOLO auditoría de éxito aquí. La inserción real la arreglamos en Fase B (SQL).
         try {
           await logWebhookEvent({
             admin: supabaseAdmin,
@@ -532,14 +509,18 @@ export async function POST(req: Request): Promise<NextResponse> {
             integrationId,
             eventType: 'lead_fetched',
             objectId: leadgenId,
-            payload: { leadgen_id: leadgenId, page_id: pageId, form_id: formId, extracted },
+            payload: {
+              leadgen_id: leadgenId,
+              page_id: pageId,
+              page_name: pageName,
+              form_id: formId,
+              extracted,
+              raw: metaLead,
+            },
           });
         } catch {
           // no-op
         }
-
-        // Aquí se seguirá con el upsert a integration_leads/leads cuando tus columnas estén listas (Fase B).
-        // (No lo forzamos ahora porque tu DB NO tiene external_id y te rompe.)
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'lead_process_failed';
         try {
