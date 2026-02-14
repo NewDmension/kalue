@@ -255,33 +255,31 @@ async function logWebhookEvent(args: {
 }
 
 /**
- * ✅ Tu tabla real:
- * integration_meta_webhook_subscriptions
- * columnas: workspace_id, integration_id, page_id, subscribed, subscribed_at, last_error, ...
+ * ✅ Tabla válida para match:
+ * integration_meta_mappings
+ * Campos clave: workspace_id, integration_id, page_id, activo
  */
-type SubscriptionRow = {
-  id: string;
+type MappingRow = {
   workspace_id: string;
   integration_id: string;
   page_id: string;
-  subscribed: boolean | null;
-  last_error: string | null;
+  activo: boolean | null;
 };
 
-async function resolveSubscriptionByPage(args: {
+async function resolveMappingByPage(args: {
   admin: SupabaseClient;
   pageId: string;
-}): Promise<SubscriptionRow | null> {
+}): Promise<MappingRow | null> {
   const { data, error } = await args.admin
-    .from('integration_meta_webhook_subscriptions')
-    .select('id, workspace_id, integration_id, page_id, subscribed, last_error')
+    .from('integration_meta_mappings')
+    .select('workspace_id, integration_id, page_id, activo')
     .eq('page_id', args.pageId)
-    .eq('subscribed', true)
+    .eq('activo', true)
     .limit(1)
     .maybeSingle();
 
   if (error) return null;
-  return data ? (data as SubscriptionRow) : null;
+  return data ? (data as MappingRow) : null;
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -401,9 +399,11 @@ export async function POST(req: Request): Promise<NextResponse> {
       }
 
       // ✅ Matching real: solo page_id + subscribed=true (tu tabla)
-      const sub = await resolveSubscriptionByPage({ admin: supabaseAdmin, pageId });
+     const mapping = await resolveMappingByPage({ admin: supabaseAdmin, pageId });
 
-      if (!sub?.workspace_id || !sub?.integration_id) {
+
+     if (!mapping?.workspace_id || !mapping?.integration_id) {
+
         try {
           await logWebhookEvent({
             admin: supabaseAdmin,
@@ -420,8 +420,9 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      const workspaceId = String(sub.workspace_id);
-      const integrationId = String(sub.integration_id);
+      const workspaceId = String(mapping.workspace_id);
+const integrationId = String(mapping.integration_id);
+
 
       try {
         await logWebhookEvent({
