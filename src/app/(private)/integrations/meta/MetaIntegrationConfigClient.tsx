@@ -25,7 +25,6 @@ type MetaPage = { id: string; name: string };
 
 // ✅ Wizard types (PRO)
 type WizardStep = 'page' | 'forms' | 'final';
-
 type MetaForm = { id: string; name: string };
 
 type OAuthResultMessage =
@@ -42,6 +41,32 @@ type OAuthResultMessage =
       errorDescription?: string;
       detail?: unknown;
     };
+
+// ✅ Subscriptions (tu tabla real) — SIN provider (porque tu DB dice que no existe)
+type SubscriptionStatus = 'active' | 'paused' | 'draft' | 'error' | string;
+
+type MetaSubscriptionRow = {
+  id: string;
+  workspace_id: string;
+  integration_id: string;
+  page_id: string;
+  form_id: string | null;
+  status: SubscriptionStatus | null;
+  webhook_subscribed: boolean | null;
+  // opcionales si existen en tu tabla (la UI los usa solo si vienen)
+  page_name?: string | null;
+  form_name?: string | null;
+  updated_at?: string | null;
+  created_at?: string | null;
+};
+
+type ListSubsResponse =
+  | { ok: true; subscriptions: MetaSubscriptionRow[] }
+  | { ok: false; error: string; detail?: unknown };
+
+type ToggleSubsResponse =
+  | { ok: true }
+  | { ok: false; error: string; detail?: unknown };
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
@@ -200,7 +225,6 @@ async function fetchPages(args: { integrationId: string; workspaceId: string; to
   return pages;
 }
 
-// ✅ Wizard: fetch forms
 async function fetchForms(args: {
   integrationId: string;
   workspaceId: string;
@@ -233,7 +257,6 @@ async function fetchForms(args: {
   return forms;
 }
 
-// ✅ Wizard: upsert mappings (bulk)
 async function upsertMappings(args: {
   integrationId: string;
   workspaceId: string;
@@ -259,7 +282,6 @@ async function upsertMappings(args: {
   }
 }
 
-// ✅ Wizard: subscribe webhook (leadgen) for page
 async function subscribeWebhook(args: {
   integrationId: string;
   workspaceId: string;
@@ -303,9 +325,95 @@ function isNeedsLeadsRetrievalPayload(raw: unknown): boolean {
   const err = typeof raw.error === 'string' ? raw.error : '';
   const code = typeof raw.code === 'string' ? raw.code : '';
   if (err === 'missing_permission' && code === 'needs_leads_retrieval') return true;
-  // fallback por si viene “en texto”
   const asText = safeStringify(raw);
   return asText.includes('leads_retrieval') || asText.includes('needs_leads_retrieval');
+}
+
+async function fetchSubscriptions(args: {
+  integrationId: string;
+  workspaceId: string;
+  token: string;
+}): Promise<MetaSubscriptionRow[]> {
+  const url = `/api/integrations/meta/subscriptions/list?integrationId=${encodeURIComponent(args.integrationId)}`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'x-workspace-id': args.workspaceId,
+      authorization: `Bearer ${args.token}`,
+    },
+  });
+
+  const raw = (await safeJson(res)) as unknown;
+
+  if (!res.ok) {
+    throw new Error(pickErrorMessage(raw, `No se pudieron cargar conexiones (${res.status})`));
+  }
+
+  if (!isRecord(raw)) return [];
+  const ok = raw.ok;
+  if (ok !== true) {
+    const msg = typeof raw.error === 'string' ? raw.error : 'Respuesta inválida';
+    throw new Error(msg);
+  }
+
+  const listRaw = raw.subscriptions;
+  if (!Array.isArray(listRaw)) return [];
+
+  const out: MetaSubscriptionRow[] = [];
+  for (const r of listRaw) {
+    if (!isRecord(r)) continue;
+    const id = typeof r.id === 'string' ? r.id : '';
+    const workspace_id = typeof r.workspace_id === 'string' ? r.workspace_id : '';
+    const integration_id = typeof r.integration_id === 'string' ? r.integration_id : '';
+    const page_id = typeof r.page_id === 'string' ? r.page_id : '';
+    const form_id = typeof r.form_id === 'string' ? r.form_id : null;
+
+    if (!id || !workspace_id || !integration_id || !page_id) continue;
+
+    out.push({
+      id,
+      workspace_id,
+      integration_id,
+      page_id,
+      form_id,
+      status: typeof r.status === 'string' ? r.status : null,
+      webhook_subscribed: typeof r.webhook_subscribed === 'boolean' ? r.webhook_subscribed : null,
+      page_name: typeof r.page_name === 'string' ? r.page_name : null,
+      form_name: typeof r.form_name === 'string' ? r.form_name : null,
+      updated_at: typeof r.updated_at === 'string' ? r.updated_at : null,
+      created_at: typeof r.created_at === 'string' ? r.created_at : null,
+    });
+  }
+
+  return out;
+}
+
+async function toggleSubscription(args: {
+  workspaceId: string;
+  token: string;
+  integrationId: string;
+  subscriptionId: string;
+  enabled: boolean;
+}): Promise<void> {
+  const res = await postJson({
+    url: '/api/integrations/meta/subscriptions/toggle',
+    token: args.token,
+    workspaceId: args.workspaceId,
+    body: {
+      integrationId: args.integrationId,
+      subscriptionId: args.subscriptionId,
+      enabled: args.enabled,
+    },
+  });
+
+  const raw = (await safeJson(res)) as unknown;
+  if (!res.ok) {
+    throw new Error(pickErrorMessage(raw, `No se pudo actualizar (${res.status})`));
+  }
+
+  if (isRecord(raw) && raw.ok === false) {
+    throw new Error(typeof raw.error === 'string' ? raw.error : 'No se pudo actualizar');
+  }
 }
 
 export default function MetaIntegrationConfigClient({ integrationId }: { integrationId: string }) {
@@ -339,6 +447,12 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
   // ✅ permission banner
   const [needsLeadsRetrieval, setNeedsLeadsRetrieval] = useState<boolean>(false);
+
+  // ✅ Subscriptions UI
+  const [subsLoading, setSubsLoading] = useState<boolean>(false);
+  const [subsError, setSubsError] = useState<string | null>(null);
+  const [subs, setSubs] = useState<MetaSubscriptionRow[]>([]);
+  const [subsBusyId, setSubsBusyId] = useState<string | null>(null);
 
   const normalizedId = useMemo(() => normalizeId(integrationId), [integrationId]);
 
@@ -472,6 +586,30 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
     }
   }, [normalizedId, ready, resetWizard, workspaceId]);
 
+  const loadSubscriptions = useCallback(async (): Promise<void> => {
+    setSubsError(null);
+    setSubs([]);
+
+    if (!ready) return;
+    if (!normalizedId || !isUuid(normalizedId)) return;
+
+    const token = await getAccessToken();
+    if (!token) {
+      setSubsError('Sin sesión. Vuelve a iniciar sesión.');
+      return;
+    }
+
+    setSubsLoading(true);
+    try {
+      const list = await fetchSubscriptions({ integrationId: normalizedId, workspaceId, token });
+      setSubs(list);
+      setSubsLoading(false);
+    } catch (e: unknown) {
+      setSubsLoading(false);
+      setSubsError(e instanceof Error ? e.message : 'No se pudieron cargar conexiones activas');
+    }
+  }, [normalizedId, ready, workspaceId]);
+
   useEffect(() => {
     void loadIntegration();
   }, [loadIntegration]);
@@ -479,13 +617,19 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
   useEffect(() => {
     if (integration?.status === 'connected') {
       void loadPages();
+      void loadSubscriptions();
     } else {
       setPages([]);
       setPagesError(null);
       setPagesLoading(false);
+
+      setSubs([]);
+      setSubsError(null);
+      setSubsLoading(false);
+
       resetWizard();
     }
-  }, [integration?.status, loadPages, resetWizard]);
+  }, [integration?.status, loadPages, loadSubscriptions, resetWizard]);
 
   useEffect(() => {
     const oauth = searchParams.get('oauth');
@@ -532,6 +676,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
           const row = await loadIntegration();
           if (row?.status === 'connected') {
             await loadPages();
+            await loadSubscriptions();
             setInfo('Meta conectada ✅');
             window.setTimeout(() => setInfo(null), 2500);
           } else {
@@ -559,7 +704,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [loadIntegration, loadPages, stopPolling]);
+  }, [loadIntegration, loadPages, loadSubscriptions, stopPolling]);
 
   const startPollingUntilConnected = useCallback(() => {
     stopPolling();
@@ -576,12 +721,13 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
         if (row?.status === 'connected') {
           stopPolling();
           await loadPages();
+          await loadSubscriptions();
           setInfo('Meta conectada ✅');
           window.setTimeout(() => setInfo(null), 2500);
         }
       })();
     }, 1200);
-  }, [loadIntegration, loadPages, stopPolling]);
+  }, [loadIntegration, loadPages, loadSubscriptions, stopPolling]);
 
   const handleConnectMeta = useCallback(async () => {
     if (oauthBusy) return;
@@ -796,7 +942,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
         if (needs) {
           setNeedsLeadsRetrieval(true);
-          setWizardStep('forms'); // mantenemos el usuario en el step actual
+          setWizardStep('forms');
           return;
         }
 
@@ -807,12 +953,60 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
       setWizardStep('final');
       setInfo('✅ Listo: mappings guardados y webhook activado. Ya puedes recibir leads.');
       window.setTimeout(() => setInfo(null), 3500);
+
+      // 🔄 refresca conexiones activas
+      await loadSubscriptions();
     } catch (e: unknown) {
       setActivateBusy(false);
       setInfo(null);
       setError(e instanceof Error ? e.message : 'No se pudo activar la integración.');
     }
-  }, [activateBusy, normalizedId, ready, selectedForms, selectedPage, workspaceId]);
+  }, [activateBusy, loadSubscriptions, normalizedId, ready, selectedForms, selectedPage, workspaceId]);
+
+  const handleToggleSubscription = useCallback(
+    async (row: MetaSubscriptionRow, enabled: boolean) => {
+      if (!ready) return;
+      if (!normalizedId || !isUuid(normalizedId)) return;
+
+      const token = await getAccessToken();
+      if (!token) {
+        setError('Sin sesión. Vuelve a iniciar sesión.');
+        return;
+      }
+
+      setSubsBusyId(row.id);
+      setError(null);
+      setInfo(null);
+
+      try {
+        await toggleSubscription({
+          workspaceId,
+          token,
+          integrationId: normalizedId,
+          subscriptionId: row.id,
+          enabled,
+        });
+
+        setSubsBusyId(null);
+        setInfo(enabled ? 'Conexión activada ✅' : 'Conexión desactivada ✅');
+        window.setTimeout(() => setInfo(null), 2000);
+
+        await loadSubscriptions();
+      } catch (e: unknown) {
+        setSubsBusyId(null);
+        setError(e instanceof Error ? e.message : 'No se pudo actualizar la conexión.');
+      }
+    },
+    [loadSubscriptions, normalizedId, ready, workspaceId]
+  );
+
+  const subsActive = useMemo(() => {
+    return subs.filter((s) => (s.webhook_subscribed ?? false) && (s.status ?? '') === 'active');
+  }, [subs]);
+
+  const subsOther = useMemo(() => {
+    return subs.filter((s) => !((s.webhook_subscribed ?? false) && (s.status ?? '') === 'active'));
+  }, [subs]);
 
   return (
     <div className="p-6 text-white">
@@ -840,7 +1034,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               disabled={oauthBusy || !ready}
               className={cx(
                 'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15 transition',
-                oauthBusy || !ready ? 'opacity-60 cursor-not-allowed' : '',
+                oauthBusy || !ready ? 'opacity-60 cursor-not-allowed' : ''
               )}
               title={isConnected ? 'Reautoriza Meta (si cambias permisos o el token expira)' : 'Conecta con Meta (OAuth)'}
             >
@@ -880,6 +1074,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
         {integration ? (
           <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            {/* CARD 1: ESTADO */}
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <p className="text-sm font-semibold text-white/90">Estado de la conexión</p>
 
@@ -923,6 +1118,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               )}
             </div>
 
+            {/* CARD 2: WIZARD */}
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -936,7 +1132,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                   disabled={!isConnected || pagesLoading}
                   className={cx(
                     'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10',
-                    !isConnected || pagesLoading ? 'opacity-60 cursor-not-allowed' : '',
+                    !isConnected || pagesLoading ? 'opacity-60 cursor-not-allowed' : ''
                   )}
                 >
                   {pagesLoading ? 'Buscando…' : 'Revisar Pages'}
@@ -965,7 +1161,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                         'rounded-full border px-2 py-1',
                         wizardStep === 'page'
                           ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200'
-                          : 'border-white/10 bg-white/5 text-white/60',
+                          : 'border-white/10 bg-white/5 text-white/60'
                       )}
                     >
                       1) Page
@@ -975,7 +1171,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                         'rounded-full border px-2 py-1',
                         wizardStep === 'forms'
                           ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200'
-                          : 'border-white/10 bg-white/5 text-white/60',
+                          : 'border-white/10 bg-white/5 text-white/60'
                       )}
                     >
                       2) Forms
@@ -985,7 +1181,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                         'rounded-full border px-2 py-1',
                         wizardStep === 'final'
                           ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200'
-                          : 'border-white/10 bg-white/5 text-white/60',
+                          : 'border-white/10 bg-white/5 text-white/60'
                       )}
                     >
                       3) Activado
@@ -1002,7 +1198,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                             onClick={() => void handleSelectPage(p.id)}
                             className={cx(
                               'w-full flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition',
-                              selected ? 'border-indigo-400/30 bg-indigo-500/10' : 'border-white/10 bg-white/5 hover:bg-white/10',
+                              selected
+                                ? 'border-indigo-400/30 bg-indigo-500/10'
+                                : 'border-white/10 bg-white/5 hover:bg-white/10'
                             )}
                           >
                             <div className="min-w-0">
@@ -1012,7 +1210,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                             <span
                               className={cx(
                                 'rounded-full border px-2 py-1 text-[10px]',
-                                selected ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/70',
+                                selected
+                                  ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200'
+                                  : 'border-white/10 bg-white/5 text-white/70'
                               )}
                             >
                               {selected ? 'seleccionada' : 'detectar'}
@@ -1040,7 +1240,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                       disabled={!selectedPage || formsLoading}
                       className={cx(
                         'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-200 hover:bg-indigo-500/15 transition',
-                        !selectedPage || formsLoading ? 'opacity-60 cursor-not-allowed' : '',
+                        !selectedPage || formsLoading ? 'opacity-60 cursor-not-allowed' : ''
                       )}
                       title="Listar Lead Forms de la Page seleccionada"
                     >
@@ -1056,7 +1256,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
 
                   {needsLeadsRetrieval ? (
                     <div className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-500/10 p-3 text-[12px] text-amber-200">
-                      <p className="font-semibold">⚠️ Falta permiso de Meta: <span className="font-mono">leads_retrieval</span></p>
+                      <p className="font-semibold">
+                        ⚠️ Falta permiso de Meta: <span className="font-mono">leads_retrieval</span>
+                      </p>
                       <p className="mt-2 text-amber-100/80 leading-relaxed">
                         El mapping se ha guardado en <span className="font-mono">draft</span>, pero Meta no permite suscribir el webhook
                         <span className="font-mono"> leadgen</span> sin ese permiso.
@@ -1079,7 +1281,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                       </div>
                       <div className="mt-2 text-[11px] text-amber-100/70">
                         Acción en Meta Developers: tu app debe tener acceso a <span className="font-mono">leads_retrieval</span> (Advanced
-                        Access / App Review) y estar en modo <span className="font-semibold">Live</span> para producción.
+                        Access / App Review) y estar en modo <span className="font-semibold">Live</span>.
                       </div>
                     </div>
                   ) : null}
@@ -1107,9 +1309,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                       </div>
 
                       {forms.length === 0 ? (
-                        <div className="mt-3 text-[11px] text-white/60">
-                          No se detectaron forms para esta Page.
-                        </div>
+                        <div className="mt-3 text-[11px] text-white/60">No se detectaron forms para esta Page.</div>
                       ) : (
                         <ul className="mt-3 space-y-2">
                           {forms.map((f) => {
@@ -1121,7 +1321,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                                   onClick={() => toggleForm(f.id)}
                                   className={cx(
                                     'w-full flex items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left transition',
-                                    checked ? 'border-indigo-400/30 bg-indigo-500/10' : 'border-white/10 bg-black/20 hover:bg-white/10',
+                                    checked
+                                      ? 'border-indigo-400/30 bg-indigo-500/10'
+                                      : 'border-white/10 bg-black/20 hover:bg-white/10'
                                   )}
                                 >
                                   <div className="min-w-0">
@@ -1131,7 +1333,9 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                                   <span
                                     className={cx(
                                       'rounded-full border px-2 py-1 text-[10px]',
-                                      checked ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200' : 'border-white/10 bg-white/5 text-white/70',
+                                      checked
+                                        ? 'border-indigo-400/30 bg-indigo-500/10 text-indigo-200'
+                                        : 'border-white/10 bg-white/5 text-white/70'
                                     )}
                                   >
                                     {checked ? 'incluido' : '—'}
@@ -1158,7 +1362,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                           disabled={activateBusy || selectedForms.length === 0 || !selectedPage}
                           className={cx(
                             'rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200 hover:bg-emerald-500/15 transition',
-                            activateBusy || selectedForms.length === 0 || !selectedPage ? 'opacity-60 cursor-not-allowed' : '',
+                            activateBusy || selectedForms.length === 0 || !selectedPage ? 'opacity-60 cursor-not-allowed' : ''
                           )}
                           title="Guarda los mappings y suscribe el webhook leadgen"
                         >
@@ -1193,14 +1397,133 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </div>
               ) : null}
 
+              {/* ✅ NUEVA CARD: CONEXIONES ACTIVAS */}
               <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
-                <p className="text-white/90 font-semibold">Siguiente</p>
-                <ul className="mt-2 list-disc pl-5 space-y-1">
-                  <li>Elegir Page</li>
-                  <li>Listar y elegir Lead Forms</li>
-                  <li>Guardar mapping (Page + Form)</li>
-                  <li>Suscribir Webhook (leadgen)</li>
-                </ul>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-white/90 font-semibold">Conexiones activas</p>
+                    <p className="mt-1 text-[11px] text-white/55">
+                      Esto indica qué Page/Form están operativos para recibir leads en este workspace.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => resetWizard()}
+                      className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-[11px] text-indigo-200 hover:bg-indigo-500/15"
+                    >
+                      Añadir conexión
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void loadSubscriptions()}
+                      disabled={!isConnected || subsLoading}
+                      className={cx(
+                        'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10',
+                        !isConnected || subsLoading ? 'opacity-60 cursor-not-allowed' : ''
+                      )}
+                    >
+                      {subsLoading ? 'Cargando…' : 'Refrescar'}
+                    </button>
+                  </div>
+                </div>
+
+                {subsError ? (
+                  <div className="mt-3 rounded-2xl border border-red-400/20 bg-red-500/10 p-3 text-[11px] text-red-200 whitespace-pre-line">
+                    {subsError}
+                  </div>
+                ) : null}
+
+                {!subsLoading && subs.length === 0 ? (
+                  <div className="mt-3 text-[11px] text-white/55">
+                    Aún no hay conexiones guardadas. Usa el wizard para crear la primera.
+                  </div>
+                ) : null}
+
+                {subsActive.length > 0 ? (
+                  <div className="mt-3">
+                    <p className="text-[11px] font-semibold text-emerald-200">Operativas ({subsActive.length})</p>
+                    <ul className="mt-2 space-y-2">
+                      {subsActive.map((s) => {
+                        const title = s.page_name ? s.page_name : `Page ${s.page_id}`;
+                        const form = s.form_name ? s.form_name : s.form_id ? `Form ${s.form_id}` : 'Form (todos)';
+                        const busy = subsBusyId === s.id;
+
+                        return (
+                          <li
+                            key={s.id}
+                            className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-3"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-emerald-100 font-semibold">{title}</div>
+                                <div className="mt-1 text-[11px] text-emerald-100/70">{form}</div>
+                                <div className="mt-2 font-mono text-[10px] text-emerald-100/50">
+                                  page_id: {s.page_id} {s.form_id ? `· form_id: ${s.form_id}` : ''}
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleSubscription(s, false)}
+                                disabled={busy}
+                                className={cx(
+                                  'rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 hover:bg-amber-500/15',
+                                  busy ? 'opacity-60 cursor-not-allowed' : ''
+                                )}
+                              >
+                                {busy ? '…' : 'Desactivar'}
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {subsOther.length > 0 ? (
+                  <div className="mt-4">
+                    <p className="text-[11px] font-semibold text-white/80">No operativas ({subsOther.length})</p>
+                    <ul className="mt-2 space-y-2">
+                      {subsOther.map((s) => {
+                        const title = s.page_name ? s.page_name : `Page ${s.page_id}`;
+                        const form = s.form_name ? s.form_name : s.form_id ? `Form ${s.form_id}` : 'Form (todos)';
+                        const busy = subsBusyId === s.id;
+
+                        const isEnabled = (s.webhook_subscribed ?? false) && (s.status ?? '') === 'active';
+
+                        return (
+                          <li key={s.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-white/90 font-semibold">{title}</div>
+                                <div className="mt-1 text-[11px] text-white/60">{form}</div>
+                                <div className="mt-2 font-mono text-[10px] text-white/45">
+                                  status: {String(s.status ?? 'null')} · webhook_subscribed: {String(s.webhook_subscribed ?? 'null')}
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => void handleToggleSubscription(s, true)}
+                                disabled={busy || isEnabled}
+                                className={cx(
+                                  'rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-[11px] text-indigo-200 hover:bg-indigo-500/15',
+                                  busy || isEnabled ? 'opacity-60 cursor-not-allowed' : ''
+                                )}
+                              >
+                                {busy ? '…' : isEnabled ? 'Activa' : 'Activar'}
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
