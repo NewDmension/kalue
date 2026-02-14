@@ -30,11 +30,14 @@ export async function GET(req: Request): Promise<NextResponse> {
   const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
   const { data, error } = await admin
-    .from('integration_meta_webhook_subscriptions')
-    .select('id, workspace_id, integration_id, page_id, form_id, status, webhook_subscribed, page_name, form_name, created_at, updated_at')
-    .eq('workspace_id', workspaceId)
-    .eq('integration_id', integrationId)
-    .order('updated_at', { ascending: false });
+  .from('integration_meta_mappings')
+  .select(
+    'id, workspace_id, integration_id, provider, page_id, page_name, form_id, form_name, status, webhook_subscribed, subscribed_at, last_sync_at, last_error, created_at, updated_at'
+  )
+  .eq('workspace_id', workspaceId)
+  .eq('integration_id', integrationId)
+  .eq('provider', 'meta')
+  .order('updated_at', { ascending: false });
 
   if (error) {
     return NextResponse.json({ ok: false, error: 'db_error', detail: error.message }, { status: 500 });

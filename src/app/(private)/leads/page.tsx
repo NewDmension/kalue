@@ -1035,15 +1035,6 @@ export default function LeadsPage() {
 
               <button
                 type="button"
-                onClick={() => setMetaImportOpen(true)}
-                className="inline-flex items-center rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-2 text-emerald-200 hover:bg-emerald-500/15"
-                title="Importa leads desde Meta (requiere endpoint + permisos leads_retrieval)"
-              >
-                Importar desde Meta
-              </button>
-
-              <button
-                type="button"
                 onClick={() => setMarkAllBellOpen(true)}
                 className="inline-flex items-center rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-indigo-200 hover:bg-indigo-500/15"
                 title="Pone read_at a todas las notificaciones pendientes"

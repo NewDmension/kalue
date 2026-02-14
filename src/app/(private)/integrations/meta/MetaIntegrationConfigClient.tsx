@@ -1425,26 +1425,44 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                     </div>
                   ) : null}
 
-                  {wizardStep === 'final' && selectedPage ? (
-                    <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-xs text-emerald-200">
-                      <p className="font-semibold">✅ Integración activada</p>
-                      <p className="mt-2 text-emerald-100/80">
-                        Page: <span className="font-semibold">{selectedPage.name}</span> · Forms:{' '}
-                        <span className="font-semibold">{selectedForms.length}</span>
-                      </p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          onClick={() => resetWizard()}
-                          className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10"
-                        >
-                          Configurar otra Page/Form
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
+                  {/* ✅ Integración activada (persistente): viene de DB (subsActive) */}
+{subsActive.length > 0 ? (
+  <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-xs text-emerald-200">
+    <p className="font-semibold">✅ Integración activada</p>
+
+    <div className="mt-2 space-y-2">
+      {subsActive.map((s) => {
+        const pageLabel = s.page_name ? s.page_name : `Page ${s.page_id}`;
+        const formLabel = s.form_name ? s.form_name : s.form_id ? `Form ${s.form_id}` : 'Form (todos)';
+
+        return (
+          <div key={s.id} className="rounded-xl border border-emerald-400/20 bg-black/20 p-3">
+            <div className="truncate text-emerald-100 font-semibold">{pageLabel}</div>
+            <div className="mt-1 text-[11px] text-emerald-100/70">{formLabel}</div>
+            <div className="mt-2 font-mono text-[10px] text-emerald-100/50">
+              page_id: {s.page_id} {s.form_id ? `· form_id: ${s.form_id}` : ''}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+
+    <div className="mt-3 flex flex-wrap gap-2">
+      <button
+        type="button"
+        onClick={() => resetWizard()}
+        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10"
+      >
+        Configurar otra Page/Form
+      </button>
+    </div>
+
+    <p className="mt-3 text-[11px] text-emerald-100/70">
+      Este estado se carga desde la base de datos. Si lo ves aquí, la conexión está guardada y operativa.
+    </p>
+  </div>
+) : null}
+
 
               {/* ✅ NUEVA CARD: CONEXIONES ACTIVAS */}
               <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
