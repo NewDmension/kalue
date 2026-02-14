@@ -29,6 +29,16 @@ function safeJsonStringify(v: unknown): string {
   }
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+function getString(obj: unknown, key: string): string | null {
+  if (!isRecord(obj)) return null;
+  const v = obj[key];
+  return typeof v === 'string' ? v : null;
+}
+
 function timingSafeEqualHex(aHex: string, bHex: string): boolean {
   const a = Buffer.from(aHex, 'hex');
   const b = Buffer.from(bHex, 'hex');
@@ -36,7 +46,7 @@ function timingSafeEqualHex(aHex: string, bHex: string): boolean {
   return crypto.timingSafeEqual(a, b);
 }
 
-function verifyMetaSignature(args: { appSecret: string; rawBody: Buffer; header: string | null }): boolean {
+function verifyMetaSignatureSha256(args: { appSecret: string; rawBody: Buffer; header: string | null }): boolean {
   if (!args.header) return false;
   const prefix = 'sha256=';
   if (!args.header.startsWith(prefix)) return false;
@@ -48,14 +58,31 @@ function verifyMetaSignature(args: { appSecret: string; rawBody: Buffer; header:
   return timingSafeEqualHex(ours, theirHex);
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null;
+function verifyMetaSignatureSha1(args: { appSecret: string; rawBody: Buffer; header: string | null }): boolean {
+  if (!args.header) return false;
+  const prefix = 'sha1=';
+  if (!args.header.startsWith(prefix)) return false;
+
+  const theirHex = args.header.slice(prefix.length).trim();
+  if (!/^[0-9a-f]{40}$/i.test(theirHex)) return false;
+
+  const ours = crypto.createHmac('sha1', args.appSecret).update(args.rawBody).digest('hex');
+  return timingSafeEqualHex(ours, theirHex);
 }
 
-function getString(obj: unknown, key: string): string | null {
-  if (!isRecord(obj)) return null;
-  const v = obj[key];
-  return typeof v === 'string' ? v : null;
+function verifyMetaSignature(args: {
+  appSecret: string;
+  rawBody: Buffer;
+  headerSha256: string | null;
+  headerSha1: string | null;
+}): { ok: boolean; algo: 'sha256' | 'sha1' | 'none' } {
+  if (verifyMetaSignatureSha256({ appSecret: args.appSecret, rawBody: args.rawBody, header: args.headerSha256 })) {
+    return { ok: true, algo: 'sha256' };
+  }
+  if (verifyMetaSignatureSha1({ appSecret: args.appSecret, rawBody: args.rawBody, header: args.headerSha1 })) {
+    return { ok: true, algo: 'sha1' };
+  }
+  return { ok: false, algo: 'none' };
 }
 
 /** Meta webhook payload (leadgen) */
@@ -224,58 +251,37 @@ async function logWebhookEvent(args: {
     event_type: args.eventType,
     object_id: args.objectId,
     payload: args.payload,
-    // received_at default now()
   });
 }
 
 /**
- * ✅ TU TABLA REAL:
+ * ✅ Tu tabla real:
  * integration_meta_webhook_subscriptions
+ * columnas: workspace_id, integration_id, page_id, subscribed, subscribed_at, last_error, ...
  */
 type SubscriptionRow = {
   id: string;
   workspace_id: string;
   integration_id: string;
-  provider: string;
   page_id: string;
-  form_id: string | null;
-  status: string | null;
-  webhook_subscribed: boolean | null;
+  subscribed: boolean | null;
+  last_error: string | null;
 };
 
-async function resolveSubscriptionMapping(args: {
+async function resolveSubscriptionByPage(args: {
   admin: SupabaseClient;
   pageId: string;
-  formId: string | null;
 }): Promise<SubscriptionRow | null> {
-  if (args.formId) {
-    const { data, error } = await args.admin
-      .from('integration_meta_webhook_subscriptions')
-      .select('id, workspace_id, integration_id, provider, page_id, form_id, status, webhook_subscribed')
-      .eq('provider', 'meta')
-      .eq('page_id', args.pageId)
-      .eq('form_id', args.formId)
-      .eq('status', 'active')
-      .eq('webhook_subscribed', true)
-      .limit(1)
-      .maybeSingle();
-
-    if (!error && data) return data as SubscriptionRow;
-  }
-
-  const { data: fb, error: fbErr } = await args.admin
+  const { data, error } = await args.admin
     .from('integration_meta_webhook_subscriptions')
-    .select('id, workspace_id, integration_id, provider, page_id, form_id, status, webhook_subscribed')
-    .eq('provider', 'meta')
+    .select('id, workspace_id, integration_id, page_id, subscribed, last_error')
     .eq('page_id', args.pageId)
-    .is('form_id', null)
-    .eq('status', 'active')
-    .eq('webhook_subscribed', true)
+    .eq('subscribed', true)
     .limit(1)
     .maybeSingle();
 
-  if (fbErr) return null;
-  return fb ? (fb as SubscriptionRow) : null;
+  if (error) return null;
+  return data ? (data as SubscriptionRow) : null;
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -298,7 +304,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     ok: true,
     route: '/api/webhooks/meta',
     ts: new Date().toISOString(),
-    note: 'Meta verification uses hub.* query params. POST expects x-hub-signature-256.',
+    note: 'Meta verification uses hub.* query params. POST expects x-hub-signature-256 (sha256) or x-hub-signature (sha1).',
   });
 }
 
@@ -308,12 +314,16 @@ export async function POST(req: Request): Promise<NextResponse> {
   const serviceKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
 
   const raw = Buffer.from(await req.arrayBuffer());
-  const signature = req.headers.get('x-hub-signature-256');
+
+  // Meta puede enviar sha256 o sha1 según configuración/version
+  const sig256 = req.headers.get('x-hub-signature-256');
+  const sig1 = req.headers.get('x-hub-signature');
 
   const supabaseAdmin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-  const sigOk = verifyMetaSignature({ appSecret, rawBody: raw, header: signature });
-  if (!sigOk) {
+  const verified = verifyMetaSignature({ appSecret, rawBody: raw, headerSha256: sig256, headerSha1: sig1 });
+
+  if (!verified.ok) {
     try {
       await logWebhookEvent({
         admin: supabaseAdmin,
@@ -323,7 +333,8 @@ export async function POST(req: Request): Promise<NextResponse> {
         eventType: 'invalid_signature',
         objectId: null,
         payload: {
-          has_signature_header: Boolean(signature),
+          has_signature_256: Boolean(sig256),
+          has_signature_sha1: Boolean(sig1),
           body_bytes: raw.length,
           body_sha256: crypto.createHash('sha256').update(raw).digest('hex'),
         },
@@ -344,6 +355,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const payload = body as MetaWebhook;
   const graphVersion = (process.env.META_GRAPH_VERSION?.trim() || 'v20.0').replace(/^v/i, 'v');
 
+  // Auditoría (ya con firma OK)
   try {
     await logWebhookEvent({
       admin: supabaseAdmin,
@@ -352,7 +364,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       integrationId: null,
       eventType: 'raw',
       objectId: payload.object ?? null,
-      payload: body,
+      payload: { ...((isRecord(body) ? body : {}) as Json), _sig_algo: verified.algo },
     });
   } catch {
     // no-op
@@ -388,9 +400,10 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      const mapping = await resolveSubscriptionMapping({ admin: supabaseAdmin, pageId, formId });
+      // ✅ Matching real: solo page_id + subscribed=true (tu tabla)
+      const sub = await resolveSubscriptionByPage({ admin: supabaseAdmin, pageId });
 
-      if (!mapping?.workspace_id || !mapping?.integration_id) {
+      if (!sub?.workspace_id || !sub?.integration_id) {
         try {
           await logWebhookEvent({
             admin: supabaseAdmin,
@@ -407,8 +420,8 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      const workspaceId = String(mapping.workspace_id);
-      const integrationId = String(mapping.integration_id);
+      const workspaceId = String(sub.workspace_id);
+      const integrationId = String(sub.integration_id);
 
       try {
         await logWebhookEvent({
@@ -424,6 +437,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         // no-op
       }
 
+      // token del usuario (cifrado) de esta integración
       const { data: tok, error: tokErr } = await supabaseAdmin
         .from('integration_oauth_tokens')
         .select('access_token_ciphertext')
@@ -470,6 +484,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
+      // page access token
       let pageAccessToken = '';
       let pageName: string | null = null;
 
@@ -495,6 +510,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
+      // fetch lead
       try {
         if (!leadgenId) continue;
 
@@ -509,18 +525,13 @@ export async function POST(req: Request): Promise<NextResponse> {
             integrationId,
             eventType: 'lead_fetched',
             objectId: leadgenId,
-            payload: {
-              leadgen_id: leadgenId,
-              page_id: pageId,
-              page_name: pageName,
-              form_id: formId,
-              extracted,
-              raw: metaLead,
-            },
+            payload: { leadgen_id: leadgenId, page_id: pageId, page_name: pageName, form_id: formId, extracted },
           });
         } catch {
           // no-op
         }
+
+        // Aquí ya insertaremos el lead en tu tabla final cuando dejemos “Fase leads” lista.
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'lead_process_failed';
         try {
