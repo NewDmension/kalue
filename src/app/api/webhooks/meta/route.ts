@@ -263,7 +263,8 @@ type MappingRow = {
   workspace_id: string;
   integration_id: string;
   page_id: string;
-  activo: boolean | null;
+  status: string | null;
+  webhook_subscribed: boolean | null;
 };
 
 async function resolveMappingByPage(args: {
@@ -271,12 +272,12 @@ async function resolveMappingByPage(args: {
   pageId: string;
 }): Promise<MappingRow | null> {
   const { data, error } = await args.admin
-    .from('integration_meta_mappings')
-    .select('workspace_id, integration_id, page_id, activo')
-    .eq('page_id', args.pageId)
-    .eq('activo', true)
-    .limit(1)
-    .maybeSingle();
+  .from('integration_meta_mappings')
+  .select('workspace_id, integration_id, page_id, status, webhook_subscribed')
+  .eq('page_id', args.pageId)
+  .eq('status', 'active')
+  .limit(1)
+  .maybeSingle();
 
   if (error) return null;
   return data ? (data as MappingRow) : null;
