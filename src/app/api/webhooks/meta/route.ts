@@ -2,7 +2,6 @@
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
-
 import { decryptToken } from '@/server/crypto/tokenCrypto';
 
 export const runtime = 'nodejs';
@@ -143,12 +142,12 @@ async function safeGraphJson<T extends Record<string, unknown>>(
   return { raw, parsed };
 }
 
-async function graphGet<T extends Record<string, unknown>>(url: string, userAccessToken: string) {
+async function graphGet<T extends Record<string, unknown>>(url: string, accessToken: string) {
   const res = await fetch(url, {
     method: 'GET',
     headers: {
       accept: 'application/json',
-      authorization: `Bearer ${userAccessToken}`,
+      authorization: `Bearer ${accessToken}`,
     },
     cache: 'no-store',
   });
@@ -255,32 +254,53 @@ async function logWebhookEvent(args: {
 }
 
 /**
- * ✅ Tabla válida para match:
- * integration_meta_mappings
- * Campos clave: workspace_id, integration_id, page_id, activo
+ * ✅ MATCH REAL (NO usar integration_meta_webhook_subscriptions)
+ * Tabla: integration_meta_mappings
  */
 type MappingRow = {
   workspace_id: string;
   integration_id: string;
   page_id: string;
+  form_id: string | null;
   status: string | null;
   webhook_subscribed: boolean | null;
 };
 
-async function resolveMappingByPage(args: {
+async function resolveMapping(args: {
   admin: SupabaseClient;
   pageId: string;
+  formId: string | null;
 }): Promise<MappingRow | null> {
-  const { data, error } = await args.admin
-  .from('integration_meta_mappings')
-  .select('workspace_id, integration_id, page_id, status, webhook_subscribed')
-  .eq('page_id', args.pageId)
-  .eq('status', 'active')
-  .limit(1)
-  .maybeSingle();
+  // 1) Exacto por page + form (si tienes 2 forms en la misma page)
+  if (args.formId) {
+    const { data, error } = await args.admin
+      .from('integration_meta_mappings')
+      .select('workspace_id, integration_id, page_id, form_id, status, webhook_subscribed')
+      .eq('provider', 'meta')
+      .eq('page_id', args.pageId)
+      .eq('form_id', args.formId)
+      .eq('status', 'active')
+      .eq('webhook_subscribed', true)
+      .limit(1)
+      .maybeSingle();
 
-  if (error) return null;
-  return data ? (data as MappingRow) : null;
+    if (!error && data) return data as MappingRow;
+  }
+
+  // 2) Fallback por page_id (por si meta no manda form_id o aún no lo guardaste)
+  const { data: byPage, error: byPageErr } = await args.admin
+    .from('integration_meta_mappings')
+    .select('workspace_id, integration_id, page_id, form_id, status, webhook_subscribed')
+    .eq('provider', 'meta')
+    .eq('page_id', args.pageId)
+    .eq('status', 'active')
+    .eq('webhook_subscribed', true)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (byPageErr) return null;
+  return byPage ? (byPage as MappingRow) : null;
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -314,7 +334,6 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const raw = Buffer.from(await req.arrayBuffer());
 
-  // Meta puede enviar sha256 o sha1 según configuración/version
   const sig256 = req.headers.get('x-hub-signature-256');
   const sig1 = req.headers.get('x-hub-signature');
 
@@ -354,7 +373,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   const payload = body as MetaWebhook;
   const graphVersion = (process.env.META_GRAPH_VERSION?.trim() || 'v20.0').replace(/^v/i, 'v');
 
-  // Auditoría (ya con firma OK)
+  // Auditoría (firma OK)
   try {
     await logWebhookEvent({
       admin: supabaseAdmin,
@@ -390,7 +409,7 @@ export async function POST(req: Request): Promise<NextResponse> {
             workspaceId: null,
             integrationId: null,
             eventType: 'leadgen_missing_page_id',
-            objectId: leadgenId,
+            objectId: typeof leadgenId === 'string' ? leadgenId : null,
             payload: { entry: e, change: c },
           });
         } catch {
@@ -399,12 +418,10 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      // ✅ Matching real: solo page_id + subscribed=true (tu tabla)
-     const mapping = await resolveMappingByPage({ admin: supabaseAdmin, pageId });
+      // ✅ MATCH: integration_meta_mappings (tu tabla real)
+      const mapping = await resolveMapping({ admin: supabaseAdmin, pageId, formId });
 
-
-     if (!mapping?.workspace_id || !mapping?.integration_id) {
-
+      if (!mapping?.workspace_id || !mapping?.integration_id) {
         try {
           await logWebhookEvent({
             admin: supabaseAdmin,
@@ -412,7 +429,7 @@ export async function POST(req: Request): Promise<NextResponse> {
             workspaceId: null,
             integrationId: null,
             eventType: 'webhook_unmatched',
-            objectId: leadgenId,
+            objectId: typeof leadgenId === 'string' ? leadgenId : null,
             payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenId },
           });
         } catch {
@@ -422,8 +439,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       }
 
       const workspaceId = String(mapping.workspace_id);
-const integrationId = String(mapping.integration_id);
-
+      const integrationId = String(mapping.integration_id);
 
       try {
         await logWebhookEvent({
@@ -432,7 +448,7 @@ const integrationId = String(mapping.integration_id);
           workspaceId,
           integrationId,
           eventType: 'leadgen',
-          objectId: leadgenId,
+          objectId: typeof leadgenId === 'string' ? leadgenId : null,
           payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenId },
         });
       } catch {
@@ -456,7 +472,7 @@ const integrationId = String(mapping.integration_id);
             workspaceId,
             integrationId,
             eventType: 'error',
-            objectId: leadgenId,
+            objectId: typeof leadgenId === 'string' ? leadgenId : null,
             payload: { reason: 'oauth_token_not_found', page_id: pageId, form_id: formId },
           });
         } catch {
@@ -477,7 +493,7 @@ const integrationId = String(mapping.integration_id);
             workspaceId,
             integrationId,
             eventType: 'error',
-            objectId: leadgenId,
+            objectId: typeof leadgenId === 'string' ? leadgenId : null,
             payload: { reason: 'decrypt_failed', message: msg },
           });
         } catch {
@@ -503,7 +519,7 @@ const integrationId = String(mapping.integration_id);
             workspaceId,
             integrationId,
             eventType: 'error',
-            objectId: leadgenId,
+            objectId: typeof leadgenId === 'string' ? leadgenId : null,
             payload: { reason: 'page_token_fetch_failed', page_id: pageId, form_id: formId, message: msg },
           });
         } catch {
@@ -512,7 +528,7 @@ const integrationId = String(mapping.integration_id);
         continue;
       }
 
-      // fetch lead
+      // fetch lead + insert
       try {
         if (!leadgenId) continue;
 
@@ -533,60 +549,49 @@ const integrationId = String(mapping.integration_id);
           // no-op
         }
 
-        // Aquí ya insertaremos el lead en tu tabla final cuando dejemos “Fase leads” lista.
-        // === INSERT LEAD EN TU TABLA leads (modo seguro) ===
-try {
-  const leadgenIdStr = typeof leadgenId === 'string' ? leadgenId : null;
+        /**
+         * ✅ INSERT MINIMAL (sin asumir columnas meta_* que quizá no existen)
+         * Si luego quieres guardar meta_leadgen_id/meta_payload, primero vemos tu schema de leads.
+         */
+        const insertPayload = {
+          workspace_id: workspaceId,
+          source: 'meta',
+          full_name: extracted.full_name,
+          email: extracted.email,
+          phone: extracted.phone,
+        };
 
-  const insertPayload: Record<string, unknown> = {
-    workspace_id: workspaceId,
-    source: 'meta',
-    full_name: extracted.full_name,
-    email: extracted.email,
-    phone: extracted.phone,
-    // Metadatos (si tu schema los tiene)
-    meta_leadgen_id: leadgenIdStr,
-    meta_page_id: pageId,
-    meta_form_id: formId,
-    meta_payload: metaLead,
-  };
+        const { error: insErr } = await supabaseAdmin.from('leads').insert(insertPayload);
 
-  const { error: insErr } = await supabaseAdmin.from('leads').insert(insertPayload);
-
-  if (insErr) {
-    await logWebhookEvent({
-      admin: supabaseAdmin,
-      provider: 'meta',
-      workspaceId,
-      integrationId,
-      eventType: 'error',
-      objectId: leadgenIdStr,
-      payload: { reason: 'lead_insert_failed', message: insErr.message, insertPayload },
-    });
-  } else {
-    await logWebhookEvent({
-      admin: supabaseAdmin,
-      provider: 'meta',
-      workspaceId,
-      integrationId,
-      eventType: 'lead_inserted',
-      objectId: leadgenIdStr,
-      payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenIdStr },
-    });
-  }
-} catch (err: unknown) {
-  const msg = err instanceof Error ? err.message : 'lead_insert_exception';
-  await logWebhookEvent({
-    admin: supabaseAdmin,
-    provider: 'meta',
-    workspaceId,
-    integrationId,
-    eventType: 'error',
-    objectId: typeof leadgenId === 'string' ? leadgenId : null,
-    payload: { reason: 'lead_insert_exception', message: msg },
-  });
-}
-
+        if (insErr) {
+          try {
+            await logWebhookEvent({
+              admin: supabaseAdmin,
+              provider: 'meta',
+              workspaceId,
+              integrationId,
+              eventType: 'error',
+              objectId: leadgenId,
+              payload: { reason: 'lead_insert_failed', message: insErr.message, insertPayload },
+            });
+          } catch {
+            // no-op
+          }
+        } else {
+          try {
+            await logWebhookEvent({
+              admin: supabaseAdmin,
+              provider: 'meta',
+              workspaceId,
+              integrationId,
+              eventType: 'lead_inserted',
+              objectId: leadgenId,
+              payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenId },
+            });
+          } catch {
+            // no-op
+          }
+        }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'lead_process_failed';
         try {
@@ -596,7 +601,7 @@ try {
             workspaceId,
             integrationId,
             eventType: 'error',
-            objectId: leadgenId,
+            objectId: typeof leadgenId === 'string' ? leadgenId : null,
             payload: { reason: 'lead_process_failed', leadgen_id: leadgenId, message: msg },
           });
         } catch {
