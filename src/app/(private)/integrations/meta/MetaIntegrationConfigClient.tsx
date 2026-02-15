@@ -60,10 +60,6 @@ type MetaSubscriptionRow = {
   created_at?: string | null;
 };
 
-type ListSubsResponse =
-  | { ok: true; subscriptions: MetaSubscriptionRow[] }
-  | { ok: false; error: string; detail?: unknown };
-
 type ToggleSubsResponse =
   | { ok: true }
   | { ok: false; error: string; detail?: unknown };
@@ -1118,7 +1114,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
               )}
             </div>
 
-            {/* CARD 2: WIZARD */}
+            {/* CARD 2: WIZARD + CONEXIONES ACTIVAS (sin duplicado verde arriba) */}
             <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -1144,55 +1140,6 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                   {pagesError}
                 </div>
               ) : null}
-{/* ✅ BLOQUE PERSISTENTE: si hay conexiones operativas, muéstralo siempre */}
-{subsActive.length > 0 ? (
-  <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-500/10 p-4 text-xs text-emerald-200">
-    <p className="font-semibold">✅ Integración activada</p>
-
-    <div className="mt-2 space-y-2">
-      {subsActive.map((s) => {
-        const pageLabel = s.page_name ? s.page_name : `Page ${s.page_id}`;
-        const formLabel = s.form_name ? s.form_name : s.form_id ? `Form ${s.form_id}` : 'Form (todos)';
-
-        return (
-          <div key={s.id} className="rounded-xl border border-emerald-400/20 bg-black/20 p-3">
-            <div className="text-emerald-100 font-semibold truncate">{pageLabel}</div>
-            <div className="mt-1 text-[11px] text-emerald-100/70">{formLabel}</div>
-            <div className="mt-2 font-mono text-[10px] text-emerald-100/50">
-              page_id: {s.page_id} {s.form_id ? `· form_id: ${s.form_id}` : ''}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-
-    <div className="mt-3 flex flex-wrap gap-2">
-      <button
-        type="button"
-        onClick={() => resetWizard()}
-        className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10"
-      >
-        Configurar otra Page/Form
-      </button>
-
-      <button
-        type="button"
-        onClick={() => void loadSubscriptions()}
-        disabled={!isConnected || subsLoading}
-        className={cx(
-          'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10',
-          !isConnected || subsLoading ? 'opacity-60 cursor-not-allowed' : ''
-        )}
-      >
-        {subsLoading ? 'Cargando…' : 'Refrescar estado'}
-      </button>
-    </div>
-
-    <p className="mt-3 text-[11px] text-emerald-100/70">
-      Esto se carga desde la base de datos. Si lo ves aquí, la conexión está realmente guardada y operativa.
-    </p>
-  </div>
-) : null}
 
               {pages.length > 0 ? (
                 <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/75">
@@ -1446,7 +1393,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                 </div>
               ) : null}
 
-              {/* ✅ NUEVA CARD: CONEXIONES ACTIVAS */}
+              {/* ✅ CARD: CONEXIONES ACTIVAS (mantenida) — pero sin botones “Añadir conexión” y “Refrescar” */}
               <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/70">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -1455,28 +1402,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                       Esto indica qué Page/Form están operativos para recibir leads en este workspace.
                     </p>
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => resetWizard()}
-                      className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-3 py-2 text-[11px] text-indigo-200 hover:bg-indigo-500/15"
-                    >
-                      Añadir conexión
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => void loadSubscriptions()}
-                      disabled={!isConnected || subsLoading}
-                      className={cx(
-                        'rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10',
-                        !isConnected || subsLoading ? 'opacity-60 cursor-not-allowed' : ''
-                      )}
-                    >
-                      {subsLoading ? 'Cargando…' : 'Refrescar'}
-                    </button>
-                  </div>
+                  {/* ✅ botones quitados a propósito */}
                 </div>
 
                 {subsError ? (
@@ -1501,10 +1427,7 @@ export default function MetaIntegrationConfigClient({ integrationId }: { integra
                         const busy = subsBusyId === s.id;
 
                         return (
-                          <li
-                            key={s.id}
-                            className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-3"
-                          >
+                          <li key={s.id} className="rounded-xl border border-emerald-400/20 bg-emerald-500/10 p-3">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0">
                                 <div className="truncate text-emerald-100 font-semibold">{title}</div>
