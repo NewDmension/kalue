@@ -1327,11 +1327,15 @@ export default function LeadsPage() {
                         <span className="text-white/60">Email:</span> {l.email ?? '—'}
                       </p>
                       <p>
-                        <span className="text-white/60">Profesión:</span> {derived.profession ?? '—'}
-                      </p>
-                      <p>
-                        <span className="text-white/60">Pain:</span> {derived.biggest_pain ?? '—'}
-                      </p>
+  <span className="text-white/60">Profesión:</span>{' '}
+  {derived.profession ?? <span className="text-white/45 italic">(ver respuestas)</span>}
+</p>
+
+<p>
+  <span className="text-white/60">Pain:</span>{' '}
+  {derived.biggest_pain ?? <span className="text-white/45 italic">(ver respuestas)</span>}
+</p>
+
                     </div>
 
                     {answerEntries.length > 0 ? (
