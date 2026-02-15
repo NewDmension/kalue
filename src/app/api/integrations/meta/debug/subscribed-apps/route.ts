@@ -1,3 +1,4 @@
+// src/app/api/integrations/meta/debug/subscribed-apps/route.ts
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { decryptToken } from '@/server/crypto/tokenCrypto';
@@ -18,12 +19,6 @@ function getEnv(name: string): string {
   return v;
 }
 
-function getBearer(req: Request): string | null {
-  const h = req.headers.get('authorization') ?? '';
-  const m = /^Bearer\s+(.+)$/i.exec(h);
-  return m ? m[1] : null;
-}
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
@@ -42,24 +37,6 @@ function pickString(v: unknown, key: string): string {
   if (!isRecord(v)) return '';
   const x = v[key];
   return typeof x === 'string' ? x.trim() : '';
-}
-
-async function getAuthedUserId(supabase: SupabaseClient): Promise<string | null> {
-  const { data, error } = await supabase.auth.getUser();
-  if (error) return null;
-  return data.user?.id ?? null;
-}
-
-async function isWorkspaceMember(args: { admin: SupabaseClient; workspaceId: string; userId: string }): Promise<boolean> {
-  const { data, error } = await args.admin
-    .from('workspace_members')
-    .select('user_id')
-    .eq('workspace_id', args.workspaceId)
-    .eq('user_id', args.userId)
-    .limit(1);
-
-  if (error) return false;
-  return Array.isArray(data) && data.length > 0;
 }
 
 type AccountsItem = { id?: unknown; access_token?: unknown; name?: unknown };
@@ -131,14 +108,15 @@ async function getPageAccessToken(args: {
 export async function POST(req: Request): Promise<NextResponse> {
   try {
     const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL');
-    const anonKey = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY');
     const serviceKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
 
-    const token = getBearer(req);
-    if (!token) return json(401, { error: 'login_required' });
+    // ✅ Admin client (service role) — este endpoint es DEBUG temporal
+    const admin = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
 
-    const workspaceId = (req.headers.get('x-workspace-id') ?? '').trim();
-    if (!workspaceId) return json(400, { error: 'missing_workspace_id' });
+    // DEBUG MODE (temporal): workspace fijo
+    const workspaceId = '5eada9d7-5f18-4baa-a3b1-797bff9897f2';
 
     const body = await safeJson(req);
     const integrationId = pickString(body, 'integrationId');
@@ -147,25 +125,15 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (!integrationId) return json(400, { error: 'missing_integrationId' });
     if (!pageId) return json(400, { error: 'missing_pageId' });
 
-    const userClient = createClient(supabaseUrl, anonKey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-
-    const userId = await getAuthedUserId(userClient);
-    if (!userId) return json(401, { error: 'login_required' });
-
-    const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
-
-    const ok = await isWorkspaceMember({ admin, workspaceId, userId });
-    if (!ok) return json(403, { error: 'not_member' });
-
     const graphVersion = (process.env.META_GRAPH_VERSION?.trim() || 'v20.0').replace(/^v/i, 'v');
 
+    // OJO: este token es el USER access token (guardado en integration_oauth_tokens)
     const userAccessToken = await getUserAccessToken({ admin, workspaceId, integrationId });
+
+    // Para consultar subscribed_apps usamos PAGE access token
     const { pageToken } = await getPageAccessToken({ graphVersion, userAccessToken, pageId });
 
-    // 🔎 Este es el check clave:
+    // 🔎 Check clave: apps suscritas a la Page + subscribed_fields
     const url = new URL(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(pageId)}/subscribed_apps`);
     url.searchParams.set('fields', 'id,name,subscribed_fields');
 
@@ -175,8 +143,8 @@ export async function POST(req: Request): Promise<NextResponse> {
       ok: true,
       pageId,
       graphVersion,
-      result: r.raw,
       httpStatus: r.status,
+      result: r.raw,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
