@@ -11,9 +11,10 @@ import {
   type LeadLabel,
   isLeadLabel,
   normalizeLabel,
-  LEAD_STATUSES,
   type LeadStatus,
 } from '@/lib/leadhub/leadConstants';
+
+type FormAnswers = Record<string, string | string[]>;
 
 type Lead = {
   id: string;
@@ -27,6 +28,8 @@ type Lead = {
   status: string;
   labels?: string[] | null;
   notes?: string | null;
+  // 👇 NUEVO (cuando el backend lo devuelva)
+  form_answers?: FormAnswers | null;
 };
 
 type LeadsListResponse = { ok: true; leads: Lead[] } | { ok: false; error: string };
@@ -59,6 +62,25 @@ async function getAccessToken(): Promise<string | null> {
   const { data, error } = await supabase.auth.getSession();
   if (error) return null;
   return data.session?.access_token ?? null;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
+function isFormAnswers(v: unknown): v is FormAnswers {
+  if (!isRecord(v)) return false;
+  for (const val of Object.values(v)) {
+    if (typeof val === 'string') continue;
+    if (Array.isArray(val) && val.every((x) => typeof x === 'string')) continue;
+    return false;
+  }
+  return true;
+}
+
+function safeAnswers(lead: Lead): FormAnswers | null {
+  const v = lead.form_answers;
+  return isFormAnswers(v) ? v : null;
 }
 
 /* =======================
@@ -380,58 +402,40 @@ export default function LeadsPage() {
 
   const unreadCount = unreadLeadIds.size;
 
+  // ✅ LOAD SIN DEBUG (pero manteniendo metaImportMsg para resultados de import manual)
   const load = useCallback(async () => {
     setLoading(true);
-    setMetaImportMsg('');
-
-    const token = await getAccessToken();
-    if (!token) {
-      setItems([]);
-      setUnreadLeadIds(new Set());
-      setUnreadNotificationByLead(new Map());
-      setMetaImportMsg('DEBUG: no session token (supabase.auth.getSession).');
-      setLoading(false);
-      return;
-    }
-
-    const workspaceId = (getActiveWorkspaceId() ?? '').trim();
-    if (!workspaceId) {
-      setItems([]);
-      setUnreadLeadIds(new Set());
-      setUnreadNotificationByLead(new Map());
-      setMetaImportMsg('DEBUG: missing workspaceId (localStorage).');
-      setLoading(false);
-      return;
-    }
-
-    const headers: HeadersInit = {
-      authorization: `Bearer ${token}`,
-      'x-workspace-id': workspaceId,
-    };
 
     try {
+      const token = await getAccessToken();
+      if (!token) {
+        setItems([]);
+        setUnreadLeadIds(new Set());
+        setUnreadNotificationByLead(new Map());
+        return;
+      }
+
+      const workspaceId = (getActiveWorkspaceId() ?? '').trim();
+      if (!workspaceId) {
+        setItems([]);
+        setUnreadLeadIds(new Set());
+        setUnreadNotificationByLead(new Map());
+        return;
+      }
+
+      const headers: HeadersInit = {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': workspaceId,
+      };
+
       const [leadsRes, unreadRes] = await Promise.all([
         fetch('/api/marketing/leads/list', { method: 'GET', cache: 'no-store', headers }),
         fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', { method: 'GET', cache: 'no-store', headers }),
       ]);
 
-      // --- Leads (con debug de body) ---
-      const leadsText = await leadsRes.text();
-      let parsedLeads: unknown = null;
-      try {
-        parsedLeads = leadsText ? (JSON.parse(leadsText) as unknown) : null;
-      } catch {
-        parsedLeads = null;
-      }
-
-      setMetaImportMsg(
-        `DEBUG leads/list → ws=${workspaceId} · HTTP ${leadsRes.status} · body: ${
-          leadsText.length > 400 ? `${leadsText.slice(0, 400)}…` : leadsText
-        }`
-      );
-
-      const leadsJson = parsedLeads as LeadsListResponse | null;
-      if (leadsRes.ok && leadsJson && typeof leadsJson === 'object' && 'ok' in leadsJson) {
+      // --- Leads (sin debug) ---
+      if (leadsRes.ok) {
+        const leadsJson = (await leadsRes.json()) as LeadsListResponse;
         if (leadsJson.ok && Array.isArray(leadsJson.leads)) setItems(leadsJson.leads);
         else setItems([]);
       } else {
@@ -599,9 +603,6 @@ export default function LeadsPage() {
     const start = (page - 1) * PAGE_SIZE;
     return filtered.slice(start, start + PAGE_SIZE);
   }, [filtered, page]);
-
-  const canPrev = page > 1;
-  const canNext = page < totalPages;
 
   const pageNumbers = useMemo(() => {
     const last = totalPages;
@@ -1032,8 +1033,7 @@ export default function LeadsPage() {
         <h1 className="text-2xl font-semibold">Leads</h1>
 
         <p className="max-w-2xl text-sm text-white/70">
-          Bandeja de leads recibidos desde integraciones (Meta, etc.).{' '}
-          <span className="text-white/60">Pendientes:</span>{' '}
+          Bandeja de leads recibidos desde integraciones (Meta, etc.). <span className="text-white/60">Pendientes:</span>{' '}
           <span className="font-medium text-white/85">{unreadCount}</span>
         </p>
 
@@ -1076,6 +1076,7 @@ export default function LeadsPage() {
           </div>
         </div>
 
+        {/* ✅ Ya NO mostramos debug de leads/list. MetaImportMsg se queda solo para import manual. */}
         {metaImportMsg ? (
           <div className="mt-3 text-xs text-white/70">
             <span className="inline-block rounded-xl border border-white/10 bg-white/5 px-3 py-2">{metaImportMsg}</span>
@@ -1114,6 +1115,10 @@ export default function LeadsPage() {
               const isUnread = unreadLeadIds.has(l.id);
               const selected = selectedLeadIds.has(l.id);
               const labels = Array.isArray(l.labels) ? l.labels : [];
+
+              // ✅ NUEVO: mini resumen de respuestas (si el backend manda form_answers)
+              const answers = safeAnswers(l);
+              const answerEntries = answers ? Object.entries(answers).slice(0, 2) : [];
 
               return (
                 <div
@@ -1213,6 +1218,18 @@ export default function LeadsPage() {
                         <span className="text-white/60">Pain:</span> {l.biggest_pain ?? '—'}
                       </p>
                     </div>
+
+                    {/* ✅ NUEVO: mini resumen de preguntas (2 primeras) */}
+                    {answerEntries.length > 0 ? (
+                      <div className="mt-2 space-y-1 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/80">
+                        {answerEntries.map(([k, v]) => (
+                          <div key={`${l.id}-${k}`} className="flex gap-2">
+                            <span className="shrink-0 text-white/50">{k}:</span>
+                            <span className="truncate">{Array.isArray(v) ? v.join(', ') : v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
 
                     {labels.length > 0 ? (
                       <div className="mt-2 flex flex-wrap gap-2">

@@ -6,6 +6,8 @@ import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { supabaseBrowser } from '@/lib/supabase/client';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
+type FormAnswers = Record<string, string | string[]>;
+
 type Lead = {
   id: string;
   created_at: string;
@@ -18,12 +20,24 @@ type Lead = {
   status: string;
   labels?: string[] | null;
   notes?: string | null;
+  // 👇 NUEVO (cuando el backend lo devuelva)
+  form_answers?: FormAnswers | null;
 };
 
 type LeadGetResponse = { ok: true; lead: Lead } | { ok: false; error: string };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
+}
+
+function isFormAnswers(v: unknown): v is FormAnswers {
+  if (!isRecord(v)) return false;
+  for (const val of Object.values(v)) {
+    if (typeof val === 'string') continue;
+    if (Array.isArray(val) && val.every((x) => typeof x === 'string')) continue;
+    return false;
+  }
+  return true;
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -52,10 +66,6 @@ export default function LeadDetailPage() {
   const [lead, setLead] = useState<Lead | null>(null);
   const [error, setError] = useState<string>('');
 
-  // Si quieres debug visible solo cuando pones ?debug=1
-  const debugEnabled = useMemo(() => searchParams.get('debug') === '1', [searchParams]);
-  const [debugMsg, setDebugMsg] = useState<string>('');
-
   // 1) Load lead
   useEffect(() => {
     let alive = true;
@@ -65,7 +75,6 @@ export default function LeadDetailPage() {
 
       setLoading(true);
       setError('');
-      if (debugEnabled) setDebugMsg('');
 
       const token = await getAccessToken();
       if (!token) {
@@ -92,41 +101,19 @@ export default function LeadDetailPage() {
         },
       });
 
-      // Leemos como texto para poder debuggear sin romper si algo no es JSON
-      const rawText = await res.text();
-
-      if (debugEnabled && alive) {
-        setDebugMsg(
-          `DEBUG lead/get → ws=${workspaceId} · HTTP ${res.status} · body: ${
-            rawText.length > 500 ? `${rawText.slice(0, 500)}…` : rawText
-          }`
-        );
-      }
-
-      let parsed: unknown = null;
-      try {
-        parsed = rawText ? (JSON.parse(rawText) as unknown) : null;
-      } catch {
-        parsed = null;
-      }
+      const json = (await res.json()) as LeadGetResponse;
 
       if (!alive) return;
 
-      const json = parsed as LeadGetResponse | null;
-
-      if (!res.ok || !json || !isRecord(json) || !('ok' in json) || (json as { ok?: unknown }).ok !== true) {
-        const msg =
-          json && isRecord(json) && (json as { error?: unknown }).error && typeof (json as { error?: unknown }).error === 'string'
-            ? (json as { error: string }).error
-            : `HTTP ${res.status}`;
+      if (!res.ok || !json || !('ok' in json) || json.ok !== true) {
+        const msg = isRecord(json) && typeof (json as { error?: unknown }).error === 'string' ? (json as { error: string }).error : `HTTP ${res.status}`;
         setError(msg);
         setLead(null);
         setLoading(false);
         return;
       }
 
-      const leadObj = (json as { lead?: unknown }).lead;
-      setLead(isRecord(leadObj) ? (leadObj as Lead) : null);
+      setLead(json.lead);
       setLoading(false);
     }
 
@@ -134,7 +121,7 @@ export default function LeadDetailPage() {
     return () => {
       alive = false;
     };
-  }, [leadId, debugEnabled]);
+  }, [leadId]);
 
   // 2) Mark read when entering detail (idempotente)
   useEffect(() => {
@@ -163,119 +150,189 @@ export default function LeadDetailPage() {
   }, [leadId]);
 
   if (loading) {
-    return <div className="text-white/70">Cargando lead…</div>;
+    return <div className="container-default py-8 text-white/70">Cargando lead…</div>;
   }
 
   if (error || !lead) {
     return (
-      <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
-        <div className="flex items-center justify-between gap-3">
-          <h1 className="text-xl font-semibold">Lead</h1>
-          <Link
-            href={backHref}
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10"
-          >
-            ← Volver
-          </Link>
-        </div>
-
-        <p className="mt-3 text-sm text-red-200">No se pudo cargar el lead. {error ? `(${error})` : ''}</p>
-
-        {debugEnabled && debugMsg ? (
-          <div className="mt-3 text-xs text-white/70">
-            <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 inline-block">{debugMsg}</span>
+      <div className="container-default py-8">
+        <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-xl font-semibold">Lead</h1>
+            <Link
+              href={backHref}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10"
+            >
+              ← Volver
+            </Link>
           </div>
-        ) : null}
 
-        <button
-          type="button"
-          onClick={() => router.refresh()}
-          className="mt-4 rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
-        >
-          Reintentar
-        </button>
+          <p className="mt-3 text-sm text-red-200">No se pudo cargar el lead. {error ? `(${error})` : ''}</p>
+
+          <button
+            type="button"
+            onClick={() => router.refresh()}
+            className="mt-4 rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
+          >
+            Reintentar
+          </button>
+        </div>
       </div>
     );
   }
 
   const labels = Array.isArray(lead.labels) ? lead.labels : [];
+  const answers = isFormAnswers(lead.form_answers) ? lead.form_answers : null;
+  const answerEntries = answers ? Object.entries(answers) : [];
 
   return (
-    <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold truncate">{lead.full_name ?? 'Sin nombre'}</h1>
-          <p className="mt-1 text-sm text-white/60">
-            {new Date(lead.created_at).toLocaleString()} · <span className="text-white/75">{lead.source}</span>
-          </p>
-        </div>
+    <div className="container-default py-8 text-white">
+      {/* Header */}
+      <div className="card-glass border border-white/10 rounded-2xl p-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-semibold truncate">{lead.full_name ?? 'Sin nombre'}</h1>
+              <span className="shrink-0 rounded-full bg-indigo-500/20 px-3 py-1 text-xs font-medium text-indigo-200">
+                {lead.source}
+              </span>
+              <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
+                Status: {lead.status}
+              </span>
+            </div>
 
-        <Link
-          href={backHref}
-          className="self-start rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10"
-        >
-          ← Volver
-        </Link>
+            <p className="mt-1 text-sm text-white/60">{new Date(lead.created_at).toLocaleString()}</p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Link
+              href={backHref}
+              className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10"
+            >
+              ← Volver
+            </Link>
+
+            <button
+              type="button"
+              onClick={() => router.refresh()}
+              className="rounded-xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2 text-sm text-indigo-200 hover:bg-indigo-500/15"
+            >
+              Refrescar
+            </button>
+          </div>
+        </div>
       </div>
 
-      {debugEnabled && debugMsg ? (
-        <div className="mt-4 text-xs text-white/70">
-          <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 inline-block">{debugMsg}</span>
-        </div>
-      ) : null}
+      {/* Body layout (preparado para acciones futuras) */}
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Left: info principal */}
+        <div className="lg:col-span-2 space-y-6">
+          <div className="card-glass border border-white/10 rounded-2xl p-6">
+            <p className="text-xs text-white/60">Contacto</p>
+            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-xs text-white/60">Teléfono</p>
+                <p className="mt-1 text-sm text-white/85">{lead.phone ?? '—'}</p>
+              </div>
 
-      <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <p className="text-xs text-white/60">Contacto</p>
-          <div className="mt-2 space-y-1 text-sm text-white/85">
-            <p>
-              <span className="text-white/60">Tel:</span> {lead.phone ?? '—'}
-            </p>
-            <p>
-              <span className="text-white/60">Email:</span> {lead.email ?? '—'}
-            </p>
-          </div>
-        </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-xs text-white/60">Email</p>
+                <p className="mt-1 text-sm text-white/85 break-words">{lead.email ?? '—'}</p>
+              </div>
 
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-          <p className="text-xs text-white/60">Profesional</p>
-          <div className="mt-2 space-y-1 text-sm text-white/85">
-            <p>
-              <span className="text-white/60">Profesión:</span> {lead.profession ?? '—'}
-            </p>
-            <p>
-              <span className="text-white/60">Status:</span> {lead.status}
-            </p>
-          </div>
-        </div>
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-xs text-white/60">Profesión</p>
+                <p className="mt-1 text-sm text-white/85">{lead.profession ?? '—'}</p>
+              </div>
 
-        <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-4">
-          <p className="text-xs text-white/60">Pain</p>
-          <p className="mt-2 text-sm text-white/85">{lead.biggest_pain ?? '—'}</p>
-        </div>
-
-        {labels.length > 0 ? (
-          <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-4">
-            <p className="text-xs text-white/60">Etiquetas</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {labels.map((lab) => (
-                <span
-                  key={`${lead.id}-${lab}`}
-                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-white/75"
-                >
-                  {lab}
-                </span>
-              ))}
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-xs text-white/60">Pain</p>
+                <p className="mt-1 text-sm text-white/85">{lead.biggest_pain ?? '—'}</p>
+              </div>
             </div>
           </div>
-        ) : null}
 
-        {lead.notes ? (
-          <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-4">
-            <p className="text-xs text-white/60">Notas</p>
-            <p className="mt-2 text-sm text-white/85 whitespace-pre-wrap">{lead.notes}</p>
+          {/* Respuestas del formulario */}
+          {answerEntries.length > 0 ? (
+            <div className="card-glass border border-white/10 rounded-2xl p-6">
+              <p className="text-xs text-white/60">Respuestas del formulario</p>
+              <div className="mt-3 space-y-3">
+                {answerEntries.map(([k, v]) => (
+                  <div key={`${lead.id}-${k}`} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <p className="text-xs text-white/60">{k}</p>
+                    <p className="mt-1 text-sm text-white/85 whitespace-pre-wrap">
+                      {Array.isArray(v) ? v.join(', ') : v}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {/* Notas */}
+          {lead.notes ? (
+            <div className="card-glass border border-white/10 rounded-2xl p-6">
+              <p className="text-xs text-white/60">Notas</p>
+              <p className="mt-3 text-sm text-white/85 whitespace-pre-wrap">{lead.notes}</p>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Right: zona “acciones futuras” */}
+        <div className="space-y-6">
+          <div className="card-glass border border-white/10 rounded-2xl p-6">
+            <p className="text-xs text-white/60">Acciones</p>
+            <p className="mt-2 text-sm text-white/70">
+              Aquí añadiremos más funciones (p.ej. cambiar status, asignar owner, tareas, WhatsApp, email, pipeline, etc.).
+            </p>
+
+            <div className="mt-4 grid grid-cols-1 gap-2">
+              <button
+                type="button"
+                disabled
+                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/40 cursor-not-allowed"
+                title="Próximamente"
+              >
+                Crear tarea (próximamente)
+              </button>
+
+              <button
+                type="button"
+                disabled
+                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/40 cursor-not-allowed"
+                title="Próximamente"
+              >
+                Enviar WhatsApp (próximamente)
+              </button>
+
+              <button
+                type="button"
+                disabled
+                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/40 cursor-not-allowed"
+                title="Próximamente"
+              >
+                Cambiar status (próximamente)
+              </button>
+            </div>
           </div>
-        ) : null}
+
+          {/* Etiquetas */}
+          {labels.length > 0 ? (
+            <div className="card-glass border border-white/10 rounded-2xl p-6">
+              <p className="text-xs text-white/60">Etiquetas</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {labels.map((lab) => (
+                  <span
+                    key={`${lead.id}-${lab}`}
+                    className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-white/75"
+                  >
+                    {lab}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
     </div>
   );
