@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { supabaseBrowser } from '@/lib/supabas/client';
+import { supabaseBrowser } from '@/lib/supabase/client';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
 
