@@ -419,12 +419,40 @@ const headers: HeadersInit = {
         fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', { method: 'GET', cache: 'no-store', headers }),
       ]);
 
-      if (leadsRes.ok) {
-        const json = (await leadsRes.json()) as LeadsListResponse;
-        setItems(json.ok && Array.isArray(json.leads) ? json.leads : []);
-      } else {
-        setItems([]);
-      }
+      let leadsDebug = '';
+try {
+  const rawText = await leadsRes.text();
+  leadsDebug = rawText;
+
+  // Intentamos parsear, pero si no es JSON válido no rompemos
+  let parsed: unknown = null;
+  try {
+    parsed = rawText ? (JSON.parse(rawText) as unknown) : null;
+  } catch {
+    parsed = null;
+  }
+
+  // ✅ Esto lo verás arriba en la página (ya tienes metaImportMsg renderizado)
+  setMetaImportMsg(
+    `DEBUG /api/marketing/leads/list → HTTP ${leadsRes.status} · body: ${
+      rawText.length > 400 ? `${rawText.slice(0, 400)}…` : rawText
+    }`
+  );
+
+  const json = parsed as LeadsListResponse | null;
+
+  if (leadsRes.ok && json && typeof json === 'object' && 'ok' in json) {
+    const ok = (json as { ok: unknown }).ok === true;
+    const leads = (json as { leads?: unknown }).leads;
+    setItems(ok && Array.isArray(leads) ? (leads as Lead[]) : []);
+  } else {
+    setItems([]);
+  }
+} catch {
+  setMetaImportMsg(`DEBUG /api/marketing/leads/list → HTTP ${leadsRes.status} · (no body)`);
+  setItems([]);
+}
+
 
       if (unreadRes.ok) {
         const json = (await unreadRes.json()) as LeadNotificationsResponse;
