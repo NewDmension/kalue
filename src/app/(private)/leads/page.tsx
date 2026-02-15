@@ -260,7 +260,6 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
     biggest_pain: (lead.biggest_pain ?? '').trim() ? (lead.biggest_pain ?? '').trim() : null,
   };
 
-  // si ya tenemos ambos, ok
   if (fromCols.profession && fromCols.biggest_pain) return fromCols;
 
   const answers = safeAnswers(lead);
@@ -268,7 +267,7 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
 
   const entries = Object.entries(answers);
 
-  function pickValueByKeys(keys: string[]): string | null {
+  function pickValueByExactKeys(keys: string[]): string | null {
     const keySet = new Set(keys.map(normKey));
     for (const [k, v] of entries) {
       if (keySet.has(normKey(k))) {
@@ -279,41 +278,56 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
     return null;
   }
 
+  function pickValueByKeyKeywords(keywords: string[]): string | null {
+    const kws = keywords.map((x) => x.toLowerCase());
+    for (const [k, v] of entries) {
+      const nk = normKey(k);
+      if (kws.some((kw) => nk.includes(kw))) {
+        const txt = asText(v).trim();
+        if (txt) return txt;
+      }
+    }
+    return null;
+  }
+
   const inferredProfession =
     fromCols.profession ??
-    pickValueByKeys([
+    pickValueByExactKeys([
       'profession',
       'profesion',
       'ocupacion',
       'ocupación',
       'a_que_te_dedicas',
-      'a_que_te_dedicas_',
       'a_qué_te_dedicas',
       '¿a_qué_te_dedicas?',
       'job_title',
       'role',
-    ]);
+    ]) ??
+    // ✅ fallback por keywords (para preguntas libres)
+    pickValueByKeyKeywords(['profes', 'ocup', 'dedic', 'trabaj', 'rol', 'puesto']);
 
   const inferredPain =
     fromCols.biggest_pain ??
-    pickValueByKeys([
+    pickValueByExactKeys([
       'biggest_pain',
       'pain',
       'dolor',
       'problema',
       'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
-      'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta_',
       '¿que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta?',
       'qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
       'main_pain',
       'primary_challenge',
-    ]);
+    ]) ??
+    // ✅ fallback por keywords
+    pickValueByKeyKeywords(['pain', 'dolor', 'proble', 'cuest', 'reto', 'bloque', 'frena', 'dific']);
 
   return {
     profession: inferredProfession ?? null,
     biggest_pain: inferredPain ?? null,
   };
 }
+
 
 /** Para el mini-resumen: quitamos claves que ya “mapeamos” a columnas */
 function shouldHideAnswerKey(rawKey: string): boolean {
