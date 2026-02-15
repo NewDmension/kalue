@@ -22,8 +22,7 @@ type Lead = {
   status: string;
   labels?: string[] | null;
   notes?: string | null;
-  // OJO: en list puede venir como jsonb, string JSON o shapes distintos => lo tratamos como unknown
-  form_answers?: unknown | null;
+  form_answers?: FormAnswers | null;
 };
 
 type LeadsListResponse = { ok: true; leads: Lead[] } | { ok: false; error: string };
@@ -47,6 +46,9 @@ type StatusFilter = 'all' | LeadStatus;
 
 type MetaImportResponse = { ok: true; imported: number; skipped?: number } | { ok: false; error: string };
 
+/** ✅ mismo shape que usa tu ficha */
+type LeadGetResponse = { ok: true; lead: Lead } | { ok: false; error: string };
+
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
@@ -62,18 +64,6 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function asText(v: string | string[]): string {
-  return Array.isArray(v) ? v.join(', ') : v;
-}
-
-/** Convierte valores típicos a string (evita que safeAnswers falle si viene number/bool/null) */
-function toStr(v: unknown): string | null {
-  if (typeof v === 'string') return v;
-  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
-  if (typeof v === 'boolean') return v ? 'true' : 'false';
-  return null;
-}
-
 function isFormAnswers(v: unknown): v is FormAnswers {
   if (!isRecord(v)) return false;
   for (const val of Object.values(v)) {
@@ -84,142 +74,9 @@ function isFormAnswers(v: unknown): v is FormAnswers {
   return true;
 }
 
-/**
- * Normaliza distintos shapes posibles de form_answers:
- * - Record<string, string|string[]>
- * - string JSON serializado
- * - Array<{ name: string; value: string | string[] | ... }>
- * - Record<string, { value: ... }> (algunos sistemas guardan así)
- */
 function safeAnswers(lead: Lead): FormAnswers | null {
-  const raw = lead.form_answers;
-
-  if (!raw) return null;
-
-  // 1) Ya es el shape bueno
-  if (isFormAnswers(raw)) return raw;
-
-  // 2) Puede venir como string JSON
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (isFormAnswers(parsed)) return parsed;
-
-      // si parsed es array tipo [{name,value}]
-      if (Array.isArray(parsed)) {
-        const rec = arrayAnswersToRecord(parsed);
-        return rec;
-      }
-
-      // si parsed es record con {value}
-      const rec2 = unwrapValueObjects(parsed);
-      return rec2;
-    } catch {
-      return null;
-    }
-  }
-
-  // 3) Puede venir como array [{name,value}]
-  if (Array.isArray(raw)) {
-    return arrayAnswersToRecord(raw);
-  }
-
-  // 4) Puede venir como record con {value: ...}
-  return unwrapValueObjects(raw);
-}
-
-function arrayAnswersToRecord(arr: unknown[]): FormAnswers | null {
-  const out: Record<string, string | string[]> = {};
-  let hasAny = false;
-
-  for (const item of arr) {
-    if (!isRecord(item)) continue;
-    const name = typeof item.name === 'string' ? item.name : null;
-    const value = item.value;
-
-    if (!name) continue;
-
-    if (typeof value === 'string') {
-      if (value.trim()) {
-        out[name] = value;
-        hasAny = true;
-      }
-      continue;
-    }
-
-    if (Array.isArray(value)) {
-      const vals = value.map((x) => toStr(x)).filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
-      if (vals.length > 0) {
-        out[name] = vals;
-        hasAny = true;
-      }
-      continue;
-    }
-
-    const s = toStr(value);
-    if (s && s.trim()) {
-      out[name] = s;
-      hasAny = true;
-    }
-  }
-
-  return hasAny ? out : null;
-}
-
-function unwrapValueObjects(v: unknown): FormAnswers | null {
-  if (!isRecord(v)) return null;
-
-  const out: Record<string, string | string[]> = {};
-  let hasAny = false;
-
-  for (const [k, val] of Object.entries(v)) {
-    // si val ya es string|string[] directo
-    if (typeof val === 'string') {
-      if (val.trim()) {
-        out[k] = val;
-        hasAny = true;
-      }
-      continue;
-    }
-
-    if (Array.isArray(val)) {
-      const vals = val.map((x) => toStr(x)).filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
-      if (vals.length > 0) {
-        out[k] = vals;
-        hasAny = true;
-      }
-      continue;
-    }
-
-    // si val es { value: ... }
-    if (isRecord(val) && 'value' in val) {
-      const inner = (val as Record<string, unknown>).value;
-      if (typeof inner === 'string') {
-        if (inner.trim()) {
-          out[k] = inner;
-          hasAny = true;
-        }
-        continue;
-      }
-      if (Array.isArray(inner)) {
-        const vals = inner.map((x) => toStr(x)).filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
-        if (vals.length > 0) {
-          out[k] = vals;
-          hasAny = true;
-        }
-        continue;
-      }
-      const s = toStr(inner);
-      if (s && s.trim()) {
-        out[k] = s;
-        hasAny = true;
-      }
-    }
-  }
-
-  return hasAny ? out : null;
+  const v = lead.form_answers;
+  return isFormAnswers(v) ? v : null;
 }
 
 /** Normaliza claves (quita acentos/puntuación) para poder mapear preguntas tipo "¿a_qué_te_dedicas?" */
@@ -236,6 +93,10 @@ function normKey(raw: string): string {
   return s;
 }
 
+function asText(v: string | string[]): string {
+  return Array.isArray(v) ? v.join(', ') : v;
+}
+
 function prettifyLabel(rawKey: string): string {
   const s = rawKey
     .trim()
@@ -245,6 +106,8 @@ function prettifyLabel(rawKey: string): string {
     .trim();
 
   if (!s) return 'Campo';
+
+  // Capitaliza primera letra, respeta el resto
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
@@ -252,7 +115,7 @@ type DerivedLeadFields = { profession: string | null; biggest_pain: string | nul
 
 /**
  * 1) Si columnas profession/biggest_pain vienen, se usan.
- * 2) Si no, se intentan inferir desde form_answers (aunque venga string JSON o shape raro).
+ * 2) Si no, se intentan inferir desde form_answers con varias keys posibles.
  */
 function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
   const fromCols: DerivedLeadFields = {
@@ -267,7 +130,7 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
 
   const entries = Object.entries(answers);
 
-  function pickValueByExactKeys(keys: string[]): string | null {
+  function pickValueByKeys(keys: string[]): string | null {
     const keySet = new Set(keys.map(normKey));
     for (const [k, v] of entries) {
       if (keySet.has(normKey(k))) {
@@ -278,37 +141,21 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
     return null;
   }
 
-  function pickValueByKeyKeywords(keywords: string[]): string | null {
-    const kws = keywords.map((x) => x.toLowerCase());
-    for (const [k, v] of entries) {
-      const nk = normKey(k);
-      if (kws.some((kw) => nk.includes(kw))) {
-        const txt = asText(v).trim();
-        if (txt) return txt;
-      }
-    }
-    return null;
-  }
-
   const inferredProfession =
     fromCols.profession ??
-    pickValueByExactKeys([
+    pickValueByKeys([
       'profession',
       'profesion',
       'ocupacion',
       'ocupación',
       'a_que_te_dedicas',
-      'a_qué_te_dedicas',
       '¿a_qué_te_dedicas?',
-      'job_title',
-      'role',
-    ]) ??
-    // ✅ fallback por keywords (para preguntas libres)
-    pickValueByKeyKeywords(['profes', 'ocup', 'dedic', 'trabaj', 'rol', 'puesto']);
+      'a_qué_te_dedicas',
+    ]);
 
   const inferredPain =
     fromCols.biggest_pain ??
-    pickValueByExactKeys([
+    pickValueByKeys([
       'biggest_pain',
       'pain',
       'dolor',
@@ -316,18 +163,13 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
       'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
       '¿que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta?',
       'qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
-      'main_pain',
-      'primary_challenge',
-    ]) ??
-    // ✅ fallback por keywords
-    pickValueByKeyKeywords(['pain', 'dolor', 'proble', 'cuest', 'reto', 'bloque', 'frena', 'dific']);
+    ]);
 
   return {
     profession: inferredProfession ?? null,
     biggest_pain: inferredPain ?? null,
   };
 }
-
 
 /** Para el mini-resumen: quitamos claves que ya “mapeamos” a columnas */
 function shouldHideAnswerKey(rawKey: string): boolean {
@@ -623,7 +465,6 @@ export default function LeadsPage() {
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
-  // (los de labelsOpen/selectedLabels están, aunque labelsOpen aún no se use en UI)
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState<Set<string>>(new Set());
 
@@ -665,6 +506,10 @@ export default function LeadsPage() {
   const [metaImportOpen, setMetaImportOpen] = useState(false);
   const [metaImportLoading, setMetaImportLoading] = useState(false);
   const [metaImportMsg, setMetaImportMsg] = useState<string>('');
+
+  /** ✅ cache local: campos derivados traídos desde el endpoint de detalle */
+  const [derivedByLeadId, setDerivedByLeadId] = useState<Record<string, DerivedLeadFields>>({});
+  const [detailsLoadingIds, setDetailsLoadingIds] = useState<Set<string>>(new Set());
 
   const unreadCount = unreadLeadIds.size;
 
@@ -866,6 +711,93 @@ export default function LeadsPage() {
     const start = (page - 1) * PAGE_SIZE;
     return filtered.slice(start, start + PAGE_SIZE);
   }, [filtered, page]);
+
+  /** ✅ Aquí hacemos "lo mismo que en la ficha": traer detalle SOLO para los que lo necesitan */
+  useEffect(() => {
+    let alive = true;
+
+    async function run() {
+      if (loading) return;
+
+      const token = await getAccessToken();
+      if (!token) return;
+
+      const workspaceId = (getActiveWorkspaceId() ?? '').trim();
+      if (!workspaceId) return;
+
+      // solo leads visibles y solo los que no tienen profession/pain derivados aún
+      const toFetch: string[] = [];
+      for (const l of pagedItems) {
+        const already = derivedByLeadId[l.id];
+        if (already?.profession || already?.biggest_pain) continue;
+
+        const derivedLocal = deriveFieldsFromAnswers(l);
+        if (derivedLocal.profession || derivedLocal.biggest_pain) {
+          // si ya se puede derivar con lo que tenemos, lo cacheamos y listo
+          toFetch.push(); // noop
+          continue;
+        }
+
+        // evitar re-fetch si ya está en loading
+        if (detailsLoadingIds.has(l.id)) continue;
+
+        toFetch.push(l.id);
+      }
+
+      if (toFetch.length === 0) return;
+
+      // marcamos loading ids
+      setDetailsLoadingIds((prev) => {
+        const next = new Set(prev);
+        for (const id of toFetch) next.add(id);
+        return next;
+      });
+
+      try {
+        // fetch en paralelo, pero solo para pocos (los visibles)
+        const results = await Promise.all(
+          toFetch.map(async (leadId) => {
+            const res = await fetch(`/api/marketing/leads/${encodeURIComponent(leadId)}`, {
+              method: 'GET',
+              cache: 'no-store',
+              headers: {
+                authorization: `Bearer ${token}`,
+                'x-workspace-id': workspaceId,
+              },
+            });
+
+            const json = (await res.json()) as LeadGetResponse;
+            if (!res.ok || !json.ok) return { id: leadId, derived: null };
+
+            const derived = deriveFieldsFromAnswers(json.lead);
+            return { id: leadId, derived };
+          })
+        );
+
+        if (!alive) return;
+
+        setDerivedByLeadId((prev) => {
+          const next: Record<string, DerivedLeadFields> = { ...prev };
+          for (const r of results) {
+            if (r.derived) next[r.id] = r.derived;
+          }
+          return next;
+        });
+      } finally {
+        if (!alive) return;
+        setDetailsLoadingIds((prev) => {
+          const next = new Set(prev);
+          for (const id of toFetch) next.delete(id);
+          return next;
+        });
+      }
+    }
+
+    void run();
+    return () => {
+      alive = false;
+    };
+  }, [pagedItems, loading, derivedByLeadId, detailsLoadingIds]);
 
   const pageNumbers = useMemo(() => {
     const last = totalPages;
@@ -1088,7 +1020,9 @@ export default function LeadsPage() {
   async function openEditModal(lead: Lead) {
     setEditLeadId(lead.id);
 
-    const derived = deriveFieldsFromAnswers(lead);
+    // 👇 si tenemos cache, úsalo; si no, derivamos con lo que haya
+    const cached = derivedByLeadId[lead.id] ?? null;
+    const derived = cached ?? deriveFieldsFromAnswers(lead);
 
     setEditInitial({
       full_name: lead.full_name ?? '',
@@ -1122,6 +1056,12 @@ export default function LeadsPage() {
 
       const data = (await res.json()) as { ok: true; lead: Lead } | { ok: false; error: string };
       if (!res.ok || !data.ok) return;
+
+      // actualiza cache local también
+      setDerivedByLeadId((prev) => ({
+        ...prev,
+        [editLeadId]: { profession: next.profession.trim() || null, biggest_pain: next.biggest_pain.trim() || null },
+      }));
 
       await load();
       setEditOpen(false);
@@ -1157,6 +1097,13 @@ export default function LeadsPage() {
       setDeleteOpen(false);
       setDeleteLeadId(null);
       clearSelection();
+
+      // limpia cache
+      setDerivedByLeadId((prev) => {
+        const next = { ...prev };
+        delete next[deleteLeadId];
+        return next;
+      });
     } finally {
       setDeleteLoading(false);
     }
@@ -1381,8 +1328,17 @@ export default function LeadsPage() {
               const selected = selectedLeadIds.has(l.id);
               const labels = Array.isArray(l.labels) ? l.labels : [];
 
-              const derived = deriveFieldsFromAnswers(l);
+              // ✅ 1) intentamos con lo que venga en el list
+              const derivedLocal = deriveFieldsFromAnswers(l);
+              // ✅ 2) si no hay, usamos lo traído por el endpoint de detalle (como la ficha)
+              const derivedCached = derivedByLeadId[l.id] ?? null;
 
+              const professionValue = derivedLocal.profession ?? derivedCached?.profession ?? null;
+              const painValue = derivedLocal.biggest_pain ?? derivedCached?.biggest_pain ?? null;
+
+              const isFetchingDetails = detailsLoadingIds.has(l.id);
+
+              // mini resumen (si el list no trae answers, esto normalmente quedará vacío — ok)
               const answers = safeAnswers(l);
               const answerEntries = answers
                 ? Object.entries(answers)
@@ -1424,10 +1380,7 @@ export default function LeadsPage() {
 
                     router.push(`/leads/${l.id}?page=${page}`);
                   }}
-                  className={cx(
-                    'group h-full cursor-pointer rounded-2xl text-left',
-                    selected ? 'ring-2 ring-indigo-400/35' : ''
-                  )}
+                  className={cx('group h-full cursor-pointer rounded-2xl text-left', selected ? 'ring-2 ring-indigo-400/35' : '')}
                 >
                   <div className="card-glass flex h-full flex-col gap-2 p-5 transition-transform duration-150 hover:-translate-y-1">
                     <div className="flex items-start justify-between gap-3">
@@ -1483,16 +1436,18 @@ export default function LeadsPage() {
 
                     <div className="space-y-1 text-sm text-white/80">
                       <p>
-                        <span className="text-white/60">Tel:</span> {(l.phone ?? '').trim() ? l.phone : '—'}
+                        <span className="text-white/60">Tel:</span> {l.phone ?? '—'}
                       </p>
                       <p>
-                        <span className="text-white/60">Email:</span> {(l.email ?? '').trim() ? l.email : '—'}
+                        <span className="text-white/60">Email:</span> {l.email ?? '—'}
                       </p>
 
                       <p>
                         <span className="text-white/60">Profesión:</span>{' '}
-                        {derived.profession ? (
-                          derived.profession
+                        {professionValue ? (
+                          professionValue
+                        ) : isFetchingDetails ? (
+                          <span className="text-white/45 italic">(cargando…)</span>
                         ) : (
                           <span className="text-white/45 italic">(ver respuestas)</span>
                         )}
@@ -1500,8 +1455,10 @@ export default function LeadsPage() {
 
                       <p>
                         <span className="text-white/60">Pain:</span>{' '}
-                        {derived.biggest_pain ? (
-                          derived.biggest_pain
+                        {painValue ? (
+                          painValue
+                        ) : isFetchingDetails ? (
+                          <span className="text-white/45 italic">(cargando…)</span>
                         ) : (
                           <span className="text-white/45 italic">(ver respuestas)</span>
                         )}
@@ -1593,9 +1550,7 @@ export default function LeadsPage() {
             title="Asignar etiqueta"
             description={
               bulkLabel
-                ? `Se añadirá la etiqueta "${bulkLabel}" a ${selectedLeadIds.size} lead(s)${
-                    onlyWithEmail ? ` (solo aplicará a los que tengan email)` : ''
-                  }. ¿Continuar?`
+                ? `Se añadirá la etiqueta "${bulkLabel}" a ${selectedLeadIds.size} lead(s)${onlyWithEmail ? ` (solo aplicará a los que tengan email)` : ''}. ¿Continuar?`
                 : 'Elige una etiqueta primero.'
             }
             confirmText="Sí, aplicar"
