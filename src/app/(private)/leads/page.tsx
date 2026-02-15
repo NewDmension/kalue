@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
 import {
   LEAD_LABELS,
@@ -397,7 +398,20 @@ export default function LeadsPage() {
       return;
     }
 
-    const headers: HeadersInit = { authorization: `Bearer ${token}` };
+    const workspaceId = await getActiveWorkspaceId();
+if (!workspaceId) {
+  setItems([]);
+  setUnreadLeadIds(new Set());
+  setUnreadNotificationByLead(new Map());
+  setLoading(false);
+  return;
+}
+
+const headers: HeadersInit = {
+  authorization: `Bearer ${token}`,
+  'x-workspace-id': workspaceId,
+};
+
 
     try {
       const [leadsRes, unreadRes] = await Promise.all([
