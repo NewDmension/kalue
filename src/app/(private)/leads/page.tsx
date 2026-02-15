@@ -6,13 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabaseBrowser } from '@/lib/supabase/client';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
-import {
-  LEAD_LABELS,
-  type LeadLabel,
-  isLeadLabel,
-  normalizeLabel,
-  type LeadStatus,
-} from '@/lib/leadhub/leadConstants';
+import { LEAD_LABELS, type LeadLabel, isLeadLabel, normalizeLabel, type LeadStatus } from '@/lib/leadhub/leadConstants';
 
 type FormAnswers = Record<string, string | string[]>;
 
@@ -28,8 +22,7 @@ type Lead = {
   status: string;
   labels?: string[] | null;
   notes?: string | null;
-  // 👇 IMPORTANTE: puede venir con shapes distintos
-  form_answers?: unknown;
+  form_answers?: FormAnswers | null;
 };
 
 type LeadsListResponse = { ok: true; leads: Lead[] } | { ok: false; error: string };
@@ -64,85 +57,136 @@ async function getAccessToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
-/* =======================
-FormAnswers normalizer (robusto, sin any)
-======================= */
-
-type MetaFieldDataItem = {
-  name: string;
-  values: string[];
-};
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function isMetaFieldDataArray(v: unknown): v is MetaFieldDataItem[] {
-  return (
-    Array.isArray(v) &&
-    v.every(
-      (it) =>
-        isRecord(it) &&
-        typeof it.name === 'string' &&
-        Array.isArray(it.values) &&
-        it.values.every((x) => typeof x === 'string')
-    )
-  );
-}
-
-function normalizeFormAnswers(raw: unknown): FormAnswers | null {
-  // 1) string JSON
-  if (typeof raw === 'string') {
-    const s = raw.trim();
-    if (!s) return null;
-    try {
-      const parsed: unknown = JSON.parse(s);
-      return normalizeFormAnswers(parsed);
-    } catch {
-      return null;
-    }
+function isFormAnswers(v: unknown): v is FormAnswers {
+  if (!isRecord(v)) return false;
+  for (const val of Object.values(v)) {
+    if (typeof val === 'string') continue;
+    if (Array.isArray(val) && val.every((x) => typeof x === 'string')) continue;
+    return false;
   }
-
-  // 2) Meta field_data array
-  if (isMetaFieldDataArray(raw)) {
-    const out: FormAnswers = {};
-    for (const it of raw) {
-      out[it.name] = it.values.length <= 1 ? (it.values[0] ?? '') : it.values;
-    }
-    return Object.keys(out).length > 0 ? out : null;
-  }
-
-  // 3) record plain
-  if (isRecord(raw)) {
-    const out: FormAnswers = {};
-
-    for (const [k, v] of Object.entries(raw)) {
-      if (typeof v === 'string') {
-        out[k] = v;
-        continue;
-      }
-
-      if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
-        out[k] = v;
-        continue;
-      }
-
-      // 4) record with { values: string[] }
-      if (isRecord(v) && Array.isArray(v.values) && v.values.every((x) => typeof x === 'string')) {
-        const vals = v.values as string[];
-        out[k] = vals.length <= 1 ? (vals[0] ?? '') : vals;
-        continue;
-      }
-    }
-
-    return Object.keys(out).length > 0 ? out : null;
-  }
-
-  return null;
+  return true;
 }
 
 function safeAnswers(lead: Lead): FormAnswers | null {
-  return normalizeFormAnswers(lead.form_answers);
+  const v = lead.form_answers;
+  return isFormAnswers(v) ? v : null;
+}
+
+/** Normaliza claves (quita acentos/puntuación) para poder mapear preguntas tipo "¿a_qué_te_dedicas?" */
+function normKey(raw: string): string {
+  const s = raw
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // diacríticos
+    .replace(/[¿?¡!]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return s;
+}
+
+function asText(v: string | string[]): string {
+  return Array.isArray(v) ? v.join(', ') : v;
+}
+
+function prettifyLabel(rawKey: string): string {
+  const s = rawKey
+    .trim()
+    .replace(/[¿?¡!]/g, '')
+    .replace(/_+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!s) return 'Campo';
+
+  // Capitaliza primera letra, respeta el resto
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type DerivedLeadFields = { profession: string | null; biggest_pain: string | null };
+
+/**
+ * 1) Si columnas profession/biggest_pain vienen, se usan.
+ * 2) Si no, se intentan inferir desde form_answers con varias keys posibles.
+ */
+function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
+  const fromCols: DerivedLeadFields = {
+    profession: (lead.profession ?? '').trim() ? (lead.profession ?? '').trim() : null,
+    biggest_pain: (lead.biggest_pain ?? '').trim() ? (lead.biggest_pain ?? '').trim() : null,
+  };
+
+  if (fromCols.profession && fromCols.biggest_pain) return fromCols;
+
+  const answers = safeAnswers(lead);
+  if (!answers) return fromCols;
+
+  const entries = Object.entries(answers);
+
+  function pickValueByKeys(keys: string[]): string | null {
+    const keySet = new Set(keys.map(normKey));
+    for (const [k, v] of entries) {
+      if (keySet.has(normKey(k))) {
+        const txt = asText(v).trim();
+        if (txt) return txt;
+      }
+    }
+    return null;
+  }
+
+  const inferredProfession =
+    fromCols.profession ??
+    pickValueByKeys([
+      'profession',
+      'profesion',
+      'ocupacion',
+      'ocupación',
+      'a_que_te_dedicas',
+      '¿a_qué_te_dedicas?',
+      'a_qué_te_dedicas',
+      'a_que_te_dedicas?',
+      'a_que_te_dedicas_',
+    ]);
+
+  const inferredPain =
+    fromCols.biggest_pain ??
+    pickValueByKeys([
+      'biggest_pain',
+      'pain',
+      'dolor',
+      'problema',
+      'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
+      '¿que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta?',
+      'qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
+    ]);
+
+  return {
+    profession: inferredProfession ?? null,
+    biggest_pain: inferredPain ?? null,
+  };
+}
+
+/** Para el mini-resumen: quitamos claves que ya “mapeamos” a columnas */
+function shouldHideAnswerKey(rawKey: string): boolean {
+  const k = normKey(rawKey);
+  const hidden = new Set<string>([
+    'email',
+    'full_name',
+    'phone_number',
+    'phone',
+    'profession',
+    'profesion',
+    'ocupacion',
+    'a_que_te_dedicas',
+    'biggest_pain',
+    'pain',
+    'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
+  ]);
+  return hidden.has(k);
 }
 
 /* =======================
@@ -464,7 +508,6 @@ export default function LeadsPage() {
 
   const unreadCount = unreadLeadIds.size;
 
-  // ✅ LOAD SIN DEBUG
   const load = useCallback(async () => {
     setLoading(true);
 
@@ -495,7 +538,6 @@ export default function LeadsPage() {
         fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', { method: 'GET', cache: 'no-store', headers }),
       ]);
 
-      // --- Leads ---
       if (leadsRes.ok) {
         const leadsJson = (await leadsRes.json()) as LeadsListResponse;
         if (leadsJson.ok && Array.isArray(leadsJson.leads)) setItems(leadsJson.leads);
@@ -504,7 +546,6 @@ export default function LeadsPage() {
         setItems([]);
       }
 
-      // --- Unread notifications ---
       if (unreadRes.ok) {
         const json = (await unreadRes.json()) as LeadNotificationsResponse;
         if (json.ok && Array.isArray(json.items)) {
@@ -886,12 +927,15 @@ export default function LeadsPage() {
 
   async function openEditModal(lead: Lead) {
     setEditLeadId(lead.id);
+
+    const derived = deriveFieldsFromAnswers(lead);
+
     setEditInitial({
       full_name: lead.full_name ?? '',
       phone: lead.phone ?? '',
       email: lead.email ?? '',
-      profession: lead.profession ?? '',
-      biggest_pain: lead.biggest_pain ?? '',
+      profession: derived.profession ?? '',
+      biggest_pain: derived.biggest_pain ?? '',
     });
     setEditOpen(true);
   }
@@ -1177,9 +1221,19 @@ export default function LeadsPage() {
               const selected = selectedLeadIds.has(l.id);
               const labels = Array.isArray(l.labels) ? l.labels : [];
 
-              // ✅ NUEVO: mini resumen de respuestas (2 primeras)
+              const derived = deriveFieldsFromAnswers(l);
+
+              // ✅ mini resumen: solo respuestas “no repetidas”
               const answers = safeAnswers(l);
-              const answerEntries = answers ? Object.entries(answers).slice(0, 2) : [];
+              const answerEntries = answers
+                ? Object.entries(answers)
+                    .filter(([k, v]) => {
+                      if (shouldHideAnswerKey(k)) return false;
+                      const txt = asText(v).trim();
+                      return txt.length > 0;
+                    })
+                    .slice(0, 2)
+                : [];
 
               return (
                 <div
@@ -1273,20 +1327,19 @@ export default function LeadsPage() {
                         <span className="text-white/60">Email:</span> {l.email ?? '—'}
                       </p>
                       <p>
-                        <span className="text-white/60">Profesión:</span> {l.profession ?? '—'}
+                        <span className="text-white/60">Profesión:</span> {derived.profession ?? '—'}
                       </p>
                       <p>
-                        <span className="text-white/60">Pain:</span> {l.biggest_pain ?? '—'}
+                        <span className="text-white/60">Pain:</span> {derived.biggest_pain ?? '—'}
                       </p>
                     </div>
 
-                    {/* ✅ NUEVO: mini resumen */}
                     {answerEntries.length > 0 ? (
                       <div className="mt-2 space-y-1 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/80">
                         {answerEntries.map(([k, v]) => (
                           <div key={`${l.id}-${k}`} className="flex gap-2">
-                            <span className="shrink-0 text-white/50">{k}:</span>
-                            <span className="truncate">{Array.isArray(v) ? v.join(', ') : v}</span>
+                            <span className="shrink-0 text-white/50">{prettifyLabel(k)}:</span>
+                            <span className="truncate">{asText(v)}</span>
                           </div>
                         ))}
                       </div>

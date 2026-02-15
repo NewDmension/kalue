@@ -20,87 +20,23 @@ type Lead = {
   status: string;
   labels?: string[] | null;
   notes?: string | null;
-  // 👇 IMPORTANTE: puede venir con shapes distintos
-  form_answers?: unknown;
+  form_answers?: FormAnswers | null;
 };
 
 type LeadGetResponse = { ok: true; lead: Lead } | { ok: false; error: string };
-
-/* =======================
-FormAnswers normalizer (robusto, sin any)
-======================= */
-
-type MetaFieldDataItem = {
-  name: string;
-  values: string[];
-};
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function isMetaFieldDataArray(v: unknown): v is MetaFieldDataItem[] {
-  return (
-    Array.isArray(v) &&
-    v.every(
-      (it) =>
-        isRecord(it) &&
-        typeof it.name === 'string' &&
-        Array.isArray(it.values) &&
-        it.values.every((x) => typeof x === 'string')
-    )
-  );
-}
-
-function normalizeFormAnswers(raw: unknown): FormAnswers | null {
-  // 1) string JSON
-  if (typeof raw === 'string') {
-    const s = raw.trim();
-    if (!s) return null;
-    try {
-      const parsed: unknown = JSON.parse(s);
-      return normalizeFormAnswers(parsed);
-    } catch {
-      return null;
-    }
+function isFormAnswers(v: unknown): v is FormAnswers {
+  if (!isRecord(v)) return false;
+  for (const val of Object.values(v)) {
+    if (typeof val === 'string') continue;
+    if (Array.isArray(val) && val.every((x) => typeof x === 'string')) continue;
+    return false;
   }
-
-  // 2) Meta field_data array
-  if (isMetaFieldDataArray(raw)) {
-    const out: FormAnswers = {};
-    for (const it of raw) {
-      out[it.name] = it.values.length <= 1 ? (it.values[0] ?? '') : it.values;
-    }
-    return Object.keys(out).length > 0 ? out : null;
-  }
-
-  // 3) record plain
-  if (isRecord(raw)) {
-    const out: FormAnswers = {};
-
-    for (const [k, v] of Object.entries(raw)) {
-      if (typeof v === 'string') {
-        out[k] = v;
-        continue;
-      }
-
-      if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
-        out[k] = v;
-        continue;
-      }
-
-      // 4) record with { values: string[] }
-      if (isRecord(v) && Array.isArray(v.values) && v.values.every((x) => typeof x === 'string')) {
-        const vals = v.values as string[];
-        out[k] = vals.length <= 1 ? (vals[0] ?? '') : vals;
-        continue;
-      }
-    }
-
-    return Object.keys(out).length > 0 ? out : null;
-  }
-
-  return null;
+  return true;
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -108,6 +44,98 @@ async function getAccessToken(): Promise<string | null> {
   const { data, error } = await supabase.auth.getSession();
   if (error) return null;
   return data.session?.access_token ?? null;
+}
+
+function asText(v: string | string[]): string {
+  return Array.isArray(v) ? v.join(', ') : v;
+}
+
+function normKey(raw: string): string {
+  const s = raw
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[¿?¡!]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return s;
+}
+
+function prettifyLabel(rawKey: string): string {
+  const s = rawKey
+    .trim()
+    .replace(/[¿?¡!]/g, '')
+    .replace(/_+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!s) return 'Campo';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type DerivedLeadFields = { profession: string | null; biggest_pain: string | null };
+
+function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
+  const fromCols: DerivedLeadFields = {
+    profession: (lead.profession ?? '').trim() ? (lead.profession ?? '').trim() : null,
+    biggest_pain: (lead.biggest_pain ?? '').trim() ? (lead.biggest_pain ?? '').trim() : null,
+  };
+
+  if (fromCols.profession && fromCols.biggest_pain) return fromCols;
+
+  const answers = isFormAnswers(lead.form_answers) ? lead.form_answers : null;
+  if (!answers) return fromCols;
+
+  const entries = Object.entries(answers);
+
+  function pickValueByKeys(keys: string[]): string | null {
+    const keySet = new Set(keys.map(normKey));
+    for (const [k, v] of entries) {
+      if (keySet.has(normKey(k))) {
+        const txt = asText(v).trim();
+        if (txt) return txt;
+      }
+    }
+    return null;
+  }
+
+  const inferredProfession =
+    fromCols.profession ??
+    pickValueByKeys(['profession', 'profesion', 'ocupacion', 'ocupación', 'a_que_te_dedicas', '¿a_qué_te_dedicas?']);
+
+  const inferredPain =
+    fromCols.biggest_pain ??
+    pickValueByKeys([
+      'biggest_pain',
+      'pain',
+      'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
+      '¿qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
+    ]);
+
+  return {
+    profession: inferredProfession ?? null,
+    biggest_pain: inferredPain ?? null,
+  };
+}
+
+function shouldHideAnswerKey(rawKey: string): boolean {
+  const k = normKey(rawKey);
+  const hidden = new Set<string>([
+    'email',
+    'full_name',
+    'phone_number',
+    'phone',
+    'profession',
+    'profesion',
+    'ocupacion',
+    'a_que_te_dedicas',
+    'biggest_pain',
+    'pain',
+    'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
+  ]);
+  return hidden.has(k);
 }
 
 export default function LeadDetailPage() {
@@ -247,9 +275,20 @@ export default function LeadDetailPage() {
     );
   }
 
+  const derived = deriveFieldsFromAnswers(lead);
+
+  const answersRaw = isFormAnswers(lead.form_answers) ? lead.form_answers : null;
+  const answerEntries = answersRaw
+    ? Object.entries(answersRaw)
+        .filter(([k, v]) => {
+          if (shouldHideAnswerKey(k)) return false;
+          const txt = asText(v).trim();
+          return txt.length > 0;
+        })
+        .map(([k, v]) => ({ key: k, label: prettifyLabel(k), value: asText(v) }))
+    : [];
+
   const labels = Array.isArray(lead.labels) ? lead.labels : [];
-  const answers = normalizeFormAnswers(lead.form_answers);
-  const answerEntries = answers ? Object.entries(answers) : [];
 
   return (
     <div className="container-default py-8 text-white">
@@ -257,11 +296,13 @@ export default function LeadDetailPage() {
       <div className="card-glass border border-white/10 rounded-2xl p-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-semibold truncate">{lead.full_name ?? 'Sin nombre'}</h1>
+
               <span className="shrink-0 rounded-full bg-indigo-500/20 px-3 py-1 text-xs font-medium text-indigo-200">
                 {lead.source}
               </span>
+
               <span className="shrink-0 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/70">
                 Status: {lead.status}
               </span>
@@ -289,116 +330,69 @@ export default function LeadDetailPage() {
         </div>
       </div>
 
-      {/* Body layout */}
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Left */}
-        <div className="lg:col-span-2 space-y-6">
-          <div className="card-glass border border-white/10 rounded-2xl p-6">
-            <p className="text-xs text-white/60">Contacto</p>
-            <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs text-white/60">Teléfono</p>
-                <p className="mt-1 text-sm text-white/85">{lead.phone ?? '—'}</p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs text-white/60">Email</p>
-                <p className="mt-1 text-sm text-white/85 break-words">{lead.email ?? '—'}</p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs text-white/60">Profesión</p>
-                <p className="mt-1 text-sm text-white/85">{lead.profession ?? '—'}</p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs text-white/60">Pain</p>
-                <p className="mt-1 text-sm text-white/85">{lead.biggest_pain ?? '—'}</p>
-              </div>
-            </div>
+      {/* ✅ UNA sola card: datos + respuestas + notas (sin duplicar) */}
+      <div className="mt-6 card-glass border border-white/10 rounded-2xl p-6">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <p className="text-xs text-white/60">Teléfono</p>
+            <p className="mt-1 text-sm text-white/85">{lead.phone ?? '—'}</p>
           </div>
 
-          {/* Respuestas */}
-          {answerEntries.length > 0 ? (
-            <div className="card-glass border border-white/10 rounded-2xl p-6">
-              <p className="text-xs text-white/60">Respuestas del formulario</p>
-              <div className="mt-3 space-y-3">
-                {answerEntries.map(([k, v]) => (
-                  <div key={`${lead.id}-${k}`} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <p className="text-xs text-white/60">{k}</p>
-                    <p className="mt-1 text-sm text-white/85 whitespace-pre-wrap">
-                      {Array.isArray(v) ? v.join(', ') : v}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {/* Notas */}
-          {lead.notes ? (
-            <div className="card-glass border border-white/10 rounded-2xl p-6">
-              <p className="text-xs text-white/60">Notas</p>
-              <p className="mt-3 text-sm text-white/85 whitespace-pre-wrap">{lead.notes}</p>
-            </div>
-          ) : null}
-        </div>
-
-        {/* Right */}
-        <div className="space-y-6">
-          <div className="card-glass border border-white/10 rounded-2xl p-6">
-            <p className="text-xs text-white/60">Acciones</p>
-            <p className="mt-2 text-sm text-white/70">
-              Aquí añadiremos más funciones (p.ej. cambiar status, asignar owner, tareas, WhatsApp, email, pipeline, etc.).
-            </p>
-
-            <div className="mt-4 grid grid-cols-1 gap-2">
-              <button
-                type="button"
-                disabled
-                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/40 cursor-not-allowed"
-                title="Próximamente"
-              >
-                Crear tarea (próximamente)
-              </button>
-
-              <button
-                type="button"
-                disabled
-                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/40 cursor-not-allowed"
-                title="Próximamente"
-              >
-                Enviar WhatsApp (próximamente)
-              </button>
-
-              <button
-                type="button"
-                disabled
-                className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-white/40 cursor-not-allowed"
-                title="Próximamente"
-              >
-                Cambiar status (próximamente)
-              </button>
-            </div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <p className="text-xs text-white/60">Email</p>
+            <p className="mt-1 text-sm text-white/85 break-words">{lead.email ?? '—'}</p>
           </div>
 
-          {/* Etiquetas */}
-          {labels.length > 0 ? (
-            <div className="card-glass border border-white/10 rounded-2xl p-6">
-              <p className="text-xs text-white/60">Etiquetas</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {labels.map((lab) => (
-                  <span
-                    key={`${lead.id}-${lab}`}
-                    className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-white/75"
-                  >
-                    {lab}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <p className="text-xs text-white/60">Profesión</p>
+            <p className="mt-1 text-sm text-white/85">{derived.profession ?? '—'}</p>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <p className="text-xs text-white/60">Pain</p>
+            <p className="mt-1 text-sm text-white/85">{derived.biggest_pain ?? '—'}</p>
+          </div>
         </div>
+
+        {answerEntries.length > 0 ? (
+          <div className="mt-6">
+            <p className="text-xs text-white/60">Respuestas del formulario</p>
+
+            <div className="mt-3 space-y-3">
+              {answerEntries.map((it) => (
+                <div key={`${lead.id}-${it.key}`} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <p className="text-xs text-white/60">{it.label}</p>
+                  <p className="mt-1 text-sm text-white/85 whitespace-pre-wrap">{it.value}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {lead.notes ? (
+          <div className="mt-6">
+            <p className="text-xs text-white/60">Notas</p>
+            <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+              <p className="text-sm text-white/85 whitespace-pre-wrap">{lead.notes}</p>
+            </div>
+          </div>
+        ) : null}
+
+        {labels.length > 0 ? (
+          <div className="mt-6">
+            <p className="text-xs text-white/60">Etiquetas</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {labels.map((lab) => (
+                <span
+                  key={`${lead.id}-${lab}`}
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-white/75"
+                >
+                  {lab}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
