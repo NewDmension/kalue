@@ -20,24 +20,87 @@ type Lead = {
   status: string;
   labels?: string[] | null;
   notes?: string | null;
-  // 👇 NUEVO (cuando el backend lo devuelva)
-  form_answers?: FormAnswers | null;
+  // 👇 IMPORTANTE: puede venir con shapes distintos
+  form_answers?: unknown;
 };
 
 type LeadGetResponse = { ok: true; lead: Lead } | { ok: false; error: string };
+
+/* =======================
+FormAnswers normalizer (robusto, sin any)
+======================= */
+
+type MetaFieldDataItem = {
+  name: string;
+  values: string[];
+};
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function isFormAnswers(v: unknown): v is FormAnswers {
-  if (!isRecord(v)) return false;
-  for (const val of Object.values(v)) {
-    if (typeof val === 'string') continue;
-    if (Array.isArray(val) && val.every((x) => typeof x === 'string')) continue;
-    return false;
+function isMetaFieldDataArray(v: unknown): v is MetaFieldDataItem[] {
+  return (
+    Array.isArray(v) &&
+    v.every(
+      (it) =>
+        isRecord(it) &&
+        typeof it.name === 'string' &&
+        Array.isArray(it.values) &&
+        it.values.every((x) => typeof x === 'string')
+    )
+  );
+}
+
+function normalizeFormAnswers(raw: unknown): FormAnswers | null {
+  // 1) string JSON
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return null;
+    try {
+      const parsed: unknown = JSON.parse(s);
+      return normalizeFormAnswers(parsed);
+    } catch {
+      return null;
+    }
   }
-  return true;
+
+  // 2) Meta field_data array
+  if (isMetaFieldDataArray(raw)) {
+    const out: FormAnswers = {};
+    for (const it of raw) {
+      out[it.name] = it.values.length <= 1 ? (it.values[0] ?? '') : it.values;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
+  // 3) record plain
+  if (isRecord(raw)) {
+    const out: FormAnswers = {};
+
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === 'string') {
+        out[k] = v;
+        continue;
+      }
+
+      if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+        out[k] = v;
+        continue;
+      }
+
+      // 4) record with { values: string[] }
+      if (isRecord(v) && Array.isArray(v.values) && v.values.every((x) => typeof x === 'string')) {
+        const vals = v.values as string[];
+        out[k] = vals.length <= 1 ? (vals[0] ?? '') : vals;
+        continue;
+      }
+    }
+
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
+  return null;
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -106,7 +169,10 @@ export default function LeadDetailPage() {
       if (!alive) return;
 
       if (!res.ok || !json || !('ok' in json) || json.ok !== true) {
-        const msg = isRecord(json) && typeof (json as { error?: unknown }).error === 'string' ? (json as { error: string }).error : `HTTP ${res.status}`;
+        const msg =
+          isRecord(json) && typeof (json as { error?: unknown }).error === 'string'
+            ? (json as { error: string }).error
+            : `HTTP ${res.status}`;
         setError(msg);
         setLead(null);
         setLoading(false);
@@ -182,7 +248,7 @@ export default function LeadDetailPage() {
   }
 
   const labels = Array.isArray(lead.labels) ? lead.labels : [];
-  const answers = isFormAnswers(lead.form_answers) ? lead.form_answers : null;
+  const answers = normalizeFormAnswers(lead.form_answers);
   const answerEntries = answers ? Object.entries(answers) : [];
 
   return (
@@ -223,9 +289,9 @@ export default function LeadDetailPage() {
         </div>
       </div>
 
-      {/* Body layout (preparado para acciones futuras) */}
+      {/* Body layout */}
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Left: info principal */}
+        {/* Left */}
         <div className="lg:col-span-2 space-y-6">
           <div className="card-glass border border-white/10 rounded-2xl p-6">
             <p className="text-xs text-white/60">Contacto</p>
@@ -252,7 +318,7 @@ export default function LeadDetailPage() {
             </div>
           </div>
 
-          {/* Respuestas del formulario */}
+          {/* Respuestas */}
           {answerEntries.length > 0 ? (
             <div className="card-glass border border-white/10 rounded-2xl p-6">
               <p className="text-xs text-white/60">Respuestas del formulario</p>
@@ -278,7 +344,7 @@ export default function LeadDetailPage() {
           ) : null}
         </div>
 
-        {/* Right: zona “acciones futuras” */}
+        {/* Right */}
         <div className="space-y-6">
           <div className="card-glass border border-white/10 rounded-2xl p-6">
             <p className="text-xs text-white/60">Acciones</p>

@@ -28,8 +28,8 @@ type Lead = {
   status: string;
   labels?: string[] | null;
   notes?: string | null;
-  // 👇 NUEVO (cuando el backend lo devuelva)
-  form_answers?: FormAnswers | null;
+  // 👇 IMPORTANTE: puede venir con shapes distintos
+  form_answers?: unknown;
 };
 
 type LeadsListResponse = { ok: true; leads: Lead[] } | { ok: false; error: string };
@@ -64,23 +64,85 @@ async function getAccessToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
+/* =======================
+FormAnswers normalizer (robusto, sin any)
+======================= */
+
+type MetaFieldDataItem = {
+  name: string;
+  values: string[];
+};
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function isFormAnswers(v: unknown): v is FormAnswers {
-  if (!isRecord(v)) return false;
-  for (const val of Object.values(v)) {
-    if (typeof val === 'string') continue;
-    if (Array.isArray(val) && val.every((x) => typeof x === 'string')) continue;
-    return false;
+function isMetaFieldDataArray(v: unknown): v is MetaFieldDataItem[] {
+  return (
+    Array.isArray(v) &&
+    v.every(
+      (it) =>
+        isRecord(it) &&
+        typeof it.name === 'string' &&
+        Array.isArray(it.values) &&
+        it.values.every((x) => typeof x === 'string')
+    )
+  );
+}
+
+function normalizeFormAnswers(raw: unknown): FormAnswers | null {
+  // 1) string JSON
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return null;
+    try {
+      const parsed: unknown = JSON.parse(s);
+      return normalizeFormAnswers(parsed);
+    } catch {
+      return null;
+    }
   }
-  return true;
+
+  // 2) Meta field_data array
+  if (isMetaFieldDataArray(raw)) {
+    const out: FormAnswers = {};
+    for (const it of raw) {
+      out[it.name] = it.values.length <= 1 ? (it.values[0] ?? '') : it.values;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
+  // 3) record plain
+  if (isRecord(raw)) {
+    const out: FormAnswers = {};
+
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === 'string') {
+        out[k] = v;
+        continue;
+      }
+
+      if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+        out[k] = v;
+        continue;
+      }
+
+      // 4) record with { values: string[] }
+      if (isRecord(v) && Array.isArray(v.values) && v.values.every((x) => typeof x === 'string')) {
+        const vals = v.values as string[];
+        out[k] = vals.length <= 1 ? (vals[0] ?? '') : vals;
+        continue;
+      }
+    }
+
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
+  return null;
 }
 
 function safeAnswers(lead: Lead): FormAnswers | null {
-  const v = lead.form_answers;
-  return isFormAnswers(v) ? v : null;
+  return normalizeFormAnswers(lead.form_answers);
 }
 
 /* =======================
@@ -402,7 +464,7 @@ export default function LeadsPage() {
 
   const unreadCount = unreadLeadIds.size;
 
-  // ✅ LOAD SIN DEBUG (pero manteniendo metaImportMsg para resultados de import manual)
+  // ✅ LOAD SIN DEBUG
   const load = useCallback(async () => {
     setLoading(true);
 
@@ -433,7 +495,7 @@ export default function LeadsPage() {
         fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', { method: 'GET', cache: 'no-store', headers }),
       ]);
 
-      // --- Leads (sin debug) ---
+      // --- Leads ---
       if (leadsRes.ok) {
         const leadsJson = (await leadsRes.json()) as LeadsListResponse;
         if (leadsJson.ok && Array.isArray(leadsJson.leads)) setItems(leadsJson.leads);
@@ -1076,7 +1138,6 @@ export default function LeadsPage() {
           </div>
         </div>
 
-        {/* ✅ Ya NO mostramos debug de leads/list. MetaImportMsg se queda solo para import manual. */}
         {metaImportMsg ? (
           <div className="mt-3 text-xs text-white/70">
             <span className="inline-block rounded-xl border border-white/10 bg-white/5 px-3 py-2">{metaImportMsg}</span>
@@ -1116,7 +1177,7 @@ export default function LeadsPage() {
               const selected = selectedLeadIds.has(l.id);
               const labels = Array.isArray(l.labels) ? l.labels : [];
 
-              // ✅ NUEVO: mini resumen de respuestas (si el backend manda form_answers)
+              // ✅ NUEVO: mini resumen de respuestas (2 primeras)
               const answers = safeAnswers(l);
               const answerEntries = answers ? Object.entries(answers).slice(0, 2) : [];
 
@@ -1219,7 +1280,7 @@ export default function LeadsPage() {
                       </p>
                     </div>
 
-                    {/* ✅ NUEVO: mini resumen de preguntas (2 primeras) */}
+                    {/* ✅ NUEVO: mini resumen */}
                     {answerEntries.length > 0 ? (
                       <div className="mt-2 space-y-1 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-white/80">
                         {answerEntries.map(([k, v]) => (
