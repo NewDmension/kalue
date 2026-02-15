@@ -22,7 +22,8 @@ type Lead = {
   status: string;
   labels?: string[] | null;
   notes?: string | null;
-  form_answers?: FormAnswers | null;
+  // OJO: en list puede venir como jsonb, string JSON o shapes distintos => lo tratamos como unknown
+  form_answers?: unknown | null;
 };
 
 type LeadsListResponse = { ok: true; leads: Lead[] } | { ok: false; error: string };
@@ -61,6 +62,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
+function asText(v: string | string[]): string {
+  return Array.isArray(v) ? v.join(', ') : v;
+}
+
+/** Convierte valores típicos a string (evita que safeAnswers falle si viene number/bool/null) */
+function toStr(v: unknown): string | null {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return null;
+}
+
 function isFormAnswers(v: unknown): v is FormAnswers {
   if (!isRecord(v)) return false;
   for (const val of Object.values(v)) {
@@ -71,9 +84,142 @@ function isFormAnswers(v: unknown): v is FormAnswers {
   return true;
 }
 
+/**
+ * Normaliza distintos shapes posibles de form_answers:
+ * - Record<string, string|string[]>
+ * - string JSON serializado
+ * - Array<{ name: string; value: string | string[] | ... }>
+ * - Record<string, { value: ... }> (algunos sistemas guardan así)
+ */
 function safeAnswers(lead: Lead): FormAnswers | null {
-  const v = lead.form_answers;
-  return isFormAnswers(v) ? v : null;
+  const raw = lead.form_answers;
+
+  if (!raw) return null;
+
+  // 1) Ya es el shape bueno
+  if (isFormAnswers(raw)) return raw;
+
+  // 2) Puede venir como string JSON
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (isFormAnswers(parsed)) return parsed;
+
+      // si parsed es array tipo [{name,value}]
+      if (Array.isArray(parsed)) {
+        const rec = arrayAnswersToRecord(parsed);
+        return rec;
+      }
+
+      // si parsed es record con {value}
+      const rec2 = unwrapValueObjects(parsed);
+      return rec2;
+    } catch {
+      return null;
+    }
+  }
+
+  // 3) Puede venir como array [{name,value}]
+  if (Array.isArray(raw)) {
+    return arrayAnswersToRecord(raw);
+  }
+
+  // 4) Puede venir como record con {value: ...}
+  return unwrapValueObjects(raw);
+}
+
+function arrayAnswersToRecord(arr: unknown[]): FormAnswers | null {
+  const out: Record<string, string | string[]> = {};
+  let hasAny = false;
+
+  for (const item of arr) {
+    if (!isRecord(item)) continue;
+    const name = typeof item.name === 'string' ? item.name : null;
+    const value = item.value;
+
+    if (!name) continue;
+
+    if (typeof value === 'string') {
+      if (value.trim()) {
+        out[name] = value;
+        hasAny = true;
+      }
+      continue;
+    }
+
+    if (Array.isArray(value)) {
+      const vals = value.map((x) => toStr(x)).filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+      if (vals.length > 0) {
+        out[name] = vals;
+        hasAny = true;
+      }
+      continue;
+    }
+
+    const s = toStr(value);
+    if (s && s.trim()) {
+      out[name] = s;
+      hasAny = true;
+    }
+  }
+
+  return hasAny ? out : null;
+}
+
+function unwrapValueObjects(v: unknown): FormAnswers | null {
+  if (!isRecord(v)) return null;
+
+  const out: Record<string, string | string[]> = {};
+  let hasAny = false;
+
+  for (const [k, val] of Object.entries(v)) {
+    // si val ya es string|string[] directo
+    if (typeof val === 'string') {
+      if (val.trim()) {
+        out[k] = val;
+        hasAny = true;
+      }
+      continue;
+    }
+
+    if (Array.isArray(val)) {
+      const vals = val.map((x) => toStr(x)).filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+      if (vals.length > 0) {
+        out[k] = vals;
+        hasAny = true;
+      }
+      continue;
+    }
+
+    // si val es { value: ... }
+    if (isRecord(val) && 'value' in val) {
+      const inner = (val as Record<string, unknown>).value;
+      if (typeof inner === 'string') {
+        if (inner.trim()) {
+          out[k] = inner;
+          hasAny = true;
+        }
+        continue;
+      }
+      if (Array.isArray(inner)) {
+        const vals = inner.map((x) => toStr(x)).filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+        if (vals.length > 0) {
+          out[k] = vals;
+          hasAny = true;
+        }
+        continue;
+      }
+      const s = toStr(inner);
+      if (s && s.trim()) {
+        out[k] = s;
+        hasAny = true;
+      }
+    }
+  }
+
+  return hasAny ? out : null;
 }
 
 /** Normaliza claves (quita acentos/puntuación) para poder mapear preguntas tipo "¿a_qué_te_dedicas?" */
@@ -90,10 +236,6 @@ function normKey(raw: string): string {
   return s;
 }
 
-function asText(v: string | string[]): string {
-  return Array.isArray(v) ? v.join(', ') : v;
-}
-
 function prettifyLabel(rawKey: string): string {
   const s = rawKey
     .trim()
@@ -103,7 +245,6 @@ function prettifyLabel(rawKey: string): string {
     .trim();
 
   if (!s) return 'Campo';
-
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
@@ -111,13 +252,16 @@ type DerivedLeadFields = { profession: string | null; biggest_pain: string | nul
 
 /**
  * 1) Si columnas profession/biggest_pain vienen, se usan.
- * 2) Si no, se intentan inferir desde form_answers con varias keys posibles.
+ * 2) Si no, se intentan inferir desde form_answers (aunque venga string JSON o shape raro).
  */
 function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
   const fromCols: DerivedLeadFields = {
     profession: (lead.profession ?? '').trim() ? (lead.profession ?? '').trim() : null,
     biggest_pain: (lead.biggest_pain ?? '').trim() ? (lead.biggest_pain ?? '').trim() : null,
   };
+
+  // si ya tenemos ambos, ok
+  if (fromCols.profession && fromCols.biggest_pain) return fromCols;
 
   const answers = safeAnswers(lead);
   if (!answers) return fromCols;
@@ -135,52 +279,39 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
     return null;
   }
 
-  // 👇 IMPORTANTE: antes tenías `fromCols.profession ?? pick...`
-  // pero `fromCols.profession` puede ser null, y `??` funciona, OK,
-  // el problema real suele ser que la key del form llega como "¿a_qué_te_dedicas?" (o variantes)
-  // y hay que cubrir más variantes normalizadas.
   const inferredProfession =
-    fromCols.profession ||
+    fromCols.profession ??
     pickValueByKeys([
       'profession',
       'profesion',
       'ocupacion',
       'ocupación',
       'a_que_te_dedicas',
-      'a_que_te_dedicas?',
       'a_que_te_dedicas_',
       'a_qué_te_dedicas',
-      'a_qué_te_dedicas?',
       '¿a_qué_te_dedicas?',
-      '¿a_que_te_dedicas?',
-      // tu form real (según screenshot) suele venir así:
-      '¿a_qué_te_dedicas?',
-      'a_que_te_dedicas',
-    ]) ||
-    null;
+      'job_title',
+      'role',
+    ]);
 
   const inferredPain =
-    fromCols.biggest_pain ||
+    fromCols.biggest_pain ??
     pickValueByKeys([
       'biggest_pain',
       'pain',
       'dolor',
       'problema',
       'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
-      'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta?',
-      'qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta',
-      'qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
-      '¿qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
+      'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta_',
       '¿que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta?',
-      // tu form real (según screenshot) suele venir así:
-      '¿qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
-      'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
-    ]) ||
-    null;
+      'qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
+      'main_pain',
+      'primary_challenge',
+    ]);
 
   return {
-    profession: inferredProfession,
-    biggest_pain: inferredPain,
+    profession: inferredProfession ?? null,
+    biggest_pain: inferredPain ?? null,
   };
 }
 
@@ -478,6 +609,7 @@ export default function LeadsPage() {
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
+  // (los de labelsOpen/selectedLabels están, aunque labelsOpen aún no se use en UI)
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState<Set<string>>(new Set());
 
@@ -1248,9 +1380,6 @@ export default function LeadsPage() {
                     .slice(0, 2)
                 : [];
 
-              const professionText = (derived.profession ?? '').trim();
-              const painText = (derived.biggest_pain ?? '').trim();
-
               return (
                 <div
                   key={l.id}
@@ -1340,25 +1469,28 @@ export default function LeadsPage() {
 
                     <div className="space-y-1 text-sm text-white/80">
                       <p>
-                        <span className="text-white/60">Tel:</span> {l.phone ?? '—'}
+                        <span className="text-white/60">Tel:</span> {(l.phone ?? '').trim() ? l.phone : '—'}
                       </p>
                       <p>
-                        <span className="text-white/60">Email:</span> {l.email ?? '—'}
+                        <span className="text-white/60">Email:</span> {(l.email ?? '').trim() ? l.email : '—'}
                       </p>
 
-                      {/* ✅ aquí está el cambio: si existe en form_answers se muestra SIEMPRE; si no, guion */}
                       <p>
                         <span className="text-white/60">Profesión:</span>{' '}
-                        {professionText ? (
-                          <span className="text-white/85">{professionText}</span>
+                        {derived.profession ? (
+                          derived.profession
                         ) : (
-                          <span className="text-white/45 italic">—</span>
+                          <span className="text-white/45 italic">(ver respuestas)</span>
                         )}
                       </p>
 
                       <p>
                         <span className="text-white/60">Pain:</span>{' '}
-                        {painText ? <span className="text-white/85">{painText}</span> : <span className="text-white/45 italic">—</span>}
+                        {derived.biggest_pain ? (
+                          derived.biggest_pain
+                        ) : (
+                          <span className="text-white/45 italic">(ver respuestas)</span>
+                        )}
                       </p>
                     </div>
 
@@ -1447,7 +1579,9 @@ export default function LeadsPage() {
             title="Asignar etiqueta"
             description={
               bulkLabel
-                ? `Se añadirá la etiqueta "${bulkLabel}" a ${selectedLeadIds.size} lead(s)${onlyWithEmail ? ` (solo aplicará a los que tengan email)` : ''}. ¿Continuar?`
+                ? `Se añadirá la etiqueta "${bulkLabel}" a ${selectedLeadIds.size} lead(s)${
+                    onlyWithEmail ? ` (solo aplicará a los que tengan email)` : ''
+                  }. ¿Continuar?`
                 : 'Elige una etiqueta primero.'
             }
             confirmText="Sí, aplicar"
