@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+import { supabaseBrowser } from '@/lib/supabas/client';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
+
 
 import {
   LEAD_LABELS,
@@ -57,10 +58,12 @@ function cx(...parts: Array<string | false | null | undefined>): string {
 }
 
 async function getAccessToken(): Promise<string | null> {
-  const { data, error } = await supabase.auth.getSession();
+  const sb = supabaseBrowser();
+  const { data, error } = await sb.auth.getSession();
   if (error) return null;
   return data.session?.access_token ?? null;
 }
+
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
