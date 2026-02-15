@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+import { supabaseBrowser } from '@/lib/supabase/client';
+import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
 type Lead = {
   id: string;
@@ -21,7 +22,12 @@ type Lead = {
 
 type LeadGetResponse = { ok: true; lead: Lead } | { ok: false; error: string };
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
 async function getAccessToken(): Promise<string | null> {
+  const supabase = supabaseBrowser();
   const { data, error } = await supabase.auth.getSession();
   if (error) return null;
   return data.session?.access_token ?? null;
@@ -36,7 +42,7 @@ export default function LeadDetailPage() {
 
   const page = useMemo(() => {
     const raw = searchParams.get('page');
-    const n = raw ? Number.parseInt(raw, 10) : NaN;
+    const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
     return Number.isFinite(n) && n > 0 ? n : 1;
   }, [searchParams]);
 
@@ -45,6 +51,10 @@ export default function LeadDetailPage() {
   const [loading, setLoading] = useState(true);
   const [lead, setLead] = useState<Lead | null>(null);
   const [error, setError] = useState<string>('');
+
+  // Si quieres debug visible solo cuando pones ?debug=1
+  const debugEnabled = useMemo(() => searchParams.get('debug') === '1', [searchParams]);
+  const [debugMsg, setDebugMsg] = useState<string>('');
 
   // 1) Load lead
   useEffect(() => {
@@ -55,6 +65,7 @@ export default function LeadDetailPage() {
 
       setLoading(true);
       setError('');
+      if (debugEnabled) setDebugMsg('');
 
       const token = await getAccessToken();
       if (!token) {
@@ -64,24 +75,58 @@ export default function LeadDetailPage() {
         return;
       }
 
-      const res = await fetch(`/api/marketing/leads/${leadId}`, {
+      const workspaceId = (getActiveWorkspaceId() ?? '').trim();
+      if (!workspaceId) {
+        if (!alive) return;
+        setError('No hay workspace activo.');
+        setLoading(false);
+        return;
+      }
+
+      const res = await fetch(`/api/marketing/leads/${encodeURIComponent(leadId)}`, {
         method: 'GET',
         cache: 'no-store',
-        headers: { authorization: `Bearer ${token}` },
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-workspace-id': workspaceId,
+        },
       });
 
-      const json = (await res.json()) as LeadGetResponse;
+      // Leemos como texto para poder debuggear sin romper si algo no es JSON
+      const rawText = await res.text();
+
+      if (debugEnabled && alive) {
+        setDebugMsg(
+          `DEBUG lead/get → ws=${workspaceId} · HTTP ${res.status} · body: ${
+            rawText.length > 500 ? `${rawText.slice(0, 500)}…` : rawText
+          }`
+        );
+      }
+
+      let parsed: unknown = null;
+      try {
+        parsed = rawText ? (JSON.parse(rawText) as unknown) : null;
+      } catch {
+        parsed = null;
+      }
 
       if (!alive) return;
 
-      if (!res.ok || !json.ok) {
-        setError(json.ok ? '' : json.error);
+      const json = parsed as LeadGetResponse | null;
+
+      if (!res.ok || !json || !isRecord(json) || !('ok' in json) || (json as { ok?: unknown }).ok !== true) {
+        const msg =
+          json && isRecord(json) && (json as { error?: unknown }).error && typeof (json as { error?: unknown }).error === 'string'
+            ? (json as { error: string }).error
+            : `HTTP ${res.status}`;
+        setError(msg);
         setLead(null);
         setLoading(false);
         return;
       }
 
-      setLead(json.lead);
+      const leadObj = (json as { lead?: unknown }).lead;
+      setLead(isRecord(leadObj) ? (leadObj as Lead) : null);
       setLoading(false);
     }
 
@@ -89,7 +134,7 @@ export default function LeadDetailPage() {
     return () => {
       alive = false;
     };
-  }, [leadId]);
+  }, [leadId, debugEnabled]);
 
   // 2) Mark read when entering detail (idempotente)
   useEffect(() => {
@@ -101,7 +146,6 @@ export default function LeadDetailPage() {
       const token = await getAccessToken();
       if (!token) return;
 
-      // Si tu endpoint mark-read-by-lead es idempotente, perfecto.
       await fetch('/api/admin/leadhub/lead-notifications/mark-read-by-lead', {
         method: 'POST',
         keepalive: true,
@@ -137,6 +181,12 @@ export default function LeadDetailPage() {
 
         <p className="mt-3 text-sm text-red-200">No se pudo cargar el lead. {error ? `(${error})` : ''}</p>
 
+        {debugEnabled && debugMsg ? (
+          <div className="mt-3 text-xs text-white/70">
+            <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 inline-block">{debugMsg}</span>
+          </div>
+        ) : null}
+
         <button
           type="button"
           onClick={() => router.refresh()}
@@ -167,6 +217,12 @@ export default function LeadDetailPage() {
           ← Volver
         </Link>
       </div>
+
+      {debugEnabled && debugMsg ? (
+        <div className="mt-4 text-xs text-white/70">
+          <span className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 inline-block">{debugMsg}</span>
+        </div>
+      ) : null}
 
       <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -203,7 +259,10 @@ export default function LeadDetailPage() {
             <p className="text-xs text-white/60">Etiquetas</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {labels.map((lab) => (
-                <span key={lab} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-white/75">
+                <span
+                  key={`${lead.id}-${lab}`}
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] text-white/75"
+                >
                   {lab}
                 </span>
               ))}
