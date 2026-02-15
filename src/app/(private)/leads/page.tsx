@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabaseBrowser } from '@/lib/supabase/client';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 
-
 import {
   LEAD_LABELS,
   type LeadLabel,
@@ -49,41 +48,17 @@ type FilterMode = 'all' | 'unread' | 'read';
 type SortMode = 'recent' | 'oldest' | 'az' | 'za';
 type StatusFilter = 'all' | LeadStatus;
 
-type MetaImportResponse =
-  | { ok: true; imported: number; skipped?: number }
-  | { ok: false; error: string };
+type MetaImportResponse = { ok: true; imported: number; skipped?: number } | { ok: false; error: string };
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
 
 async function getAccessToken(): Promise<string | null> {
-  const sb = supabaseBrowser();
-  const { data, error } = await sb.auth.getSession();
+  const supabase = supabaseBrowser();
+  const { data, error } = await supabase.auth.getSession();
   if (error) return null;
   return data.session?.access_token ?? null;
-}
-
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null;
-}
-
-function safeParseJson(text: string): unknown {
-  try {
-    return text ? (JSON.parse(text) as unknown) : null;
-  } catch {
-    return null;
-  }
-}
-
-function buildHeaders(args: { token: string; workspaceId: string; json?: boolean }): HeadersInit {
-  const h: Record<string, string> = {
-    authorization: `Bearer ${args.token}`,
-    'x-workspace-id': args.workspaceId,
-  };
-  if (args.json) h['content-type'] = 'application/json';
-  return h;
 }
 
 /* =======================
@@ -306,10 +281,8 @@ Labels helpers
 
 function leadMatchesSelectedLabelsAny(lead: Lead, selected: Set<string>): boolean {
   if (selected.size === 0) return true;
-
   const arr = Array.isArray(lead.labels) ? lead.labels : [];
   if (arr.length === 0) return false;
-
   for (const raw of arr) {
     const k = normalizeLabel(raw);
     if (!k) continue;
@@ -401,83 +374,77 @@ export default function LeadsPage() {
   const [deleteLeadId, setDeleteLeadId] = useState<string | null>(null);
   const [deleteLeadName, setDeleteLeadName] = useState<string>('este lead');
 
-  // ✅ Meta import (solo UI)
   const [metaImportOpen, setMetaImportOpen] = useState(false);
   const [metaImportLoading, setMetaImportLoading] = useState(false);
   const [metaImportMsg, setMetaImportMsg] = useState<string>('');
-
-  // ✅ Debug siempre visible
-  const [debugMsg, setDebugMsg] = useState<string>('');
 
   const unreadCount = unreadLeadIds.size;
 
   const load = useCallback(async () => {
     setLoading(true);
+    setMetaImportMsg('');
+
+    const token = await getAccessToken();
+    if (!token) {
+      setItems([]);
+      setUnreadLeadIds(new Set());
+      setUnreadNotificationByLead(new Map());
+      setMetaImportMsg('DEBUG: no session token (supabase.auth.getSession).');
+      setLoading(false);
+      return;
+    }
+
+    const workspaceId = (getActiveWorkspaceId() ?? '').trim();
+    if (!workspaceId) {
+      setItems([]);
+      setUnreadLeadIds(new Set());
+      setUnreadNotificationByLead(new Map());
+      setMetaImportMsg('DEBUG: missing workspaceId (localStorage).');
+      setLoading(false);
+      return;
+    }
+
+    const headers: HeadersInit = {
+      authorization: `Bearer ${token}`,
+      'x-workspace-id': workspaceId,
+    };
 
     try {
-      const token = await getAccessToken();
-      if (!token) {
-        setItems([]);
-        setUnreadLeadIds(new Set());
-        setUnreadNotificationByLead(new Map());
-        setDebugMsg('DEBUG: no session token (supabase.auth.getSession).');
-        return;
-      }
-
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!workspaceId) {
-        setItems([]);
-        setUnreadLeadIds(new Set());
-        setUnreadNotificationByLead(new Map());
-        setDebugMsg('DEBUG: missing workspaceId (getActiveWorkspaceId devolvió vacío).');
-        return;
-      }
-
-      const headers = buildHeaders({ token, workspaceId });
-
       const [leadsRes, unreadRes] = await Promise.all([
         fetch('/api/marketing/leads/list', { method: 'GET', cache: 'no-store', headers }),
-        fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', {
-          method: 'GET',
-          cache: 'no-store',
-          headers,
-        }),
+        fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', { method: 'GET', cache: 'no-store', headers }),
       ]);
 
+      // --- Leads (con debug de body) ---
       const leadsText = await leadsRes.text();
-      const unreadText = await unreadRes.text();
+      let parsedLeads: unknown = null;
+      try {
+        parsedLeads = leadsText ? (JSON.parse(leadsText) as unknown) : null;
+      } catch {
+        parsedLeads = null;
+      }
 
-      const leadsParsed = safeParseJson(leadsText);
-      const unreadParsed = safeParseJson(unreadText);
-
-      // DEBUG panel (lo verás sí o sí)
-      setDebugMsg(
-        `workspace=${workspaceId}\n` +
-          `/api/marketing/leads/list → ${leadsRes.status}\n` +
-          `${leadsText ? (leadsText.length > 900 ? `${leadsText.slice(0, 900)}…` : leadsText) : '(empty body)'}\n\n` +
-          `/api/admin/leadhub/lead-notifications → ${unreadRes.status}\n` +
-          `${unreadText ? (unreadText.length > 900 ? `${unreadText.slice(0, 900)}…` : unreadText) : '(empty body)'}`
+      setMetaImportMsg(
+        `DEBUG leads/list → ws=${workspaceId} · HTTP ${leadsRes.status} · body: ${
+          leadsText.length > 400 ? `${leadsText.slice(0, 400)}…` : leadsText
+        }`
       );
 
-      // Leads
-      if (leadsRes.ok && isRecord(leadsParsed) && typeof leadsParsed.ok === 'boolean') {
-        const ok = leadsParsed.ok === true;
-        const leadsAny = leadsParsed.leads;
-        setItems(ok && Array.isArray(leadsAny) ? (leadsAny as Lead[]) : []);
+      const leadsJson = parsedLeads as LeadsListResponse | null;
+      if (leadsRes.ok && leadsJson && typeof leadsJson === 'object' && 'ok' in leadsJson) {
+        if (leadsJson.ok && Array.isArray(leadsJson.leads)) setItems(leadsJson.leads);
+        else setItems([]);
       } else {
         setItems([]);
       }
 
-      // Unread notifications
-      if (unreadRes.ok && isRecord(unreadParsed) && typeof unreadParsed.ok === 'boolean') {
-        const ok = unreadParsed.ok === true;
-        const itemsAny = unreadParsed.items;
-
-        if (ok && Array.isArray(itemsAny)) {
+      // --- Unread notifications ---
+      if (unreadRes.ok) {
+        const json = (await unreadRes.json()) as LeadNotificationsResponse;
+        if (json.ok && Array.isArray(json.items)) {
           const byLead = new Map<string, string>();
-          for (const it of itemsAny) {
-            const rec = it as Partial<LeadNotificationItem>;
-            if (rec.lead_id && rec.id && !byLead.has(rec.lead_id)) byLead.set(rec.lead_id, rec.id);
+          for (const it of json.items) {
+            if (it.lead_id && !byLead.has(it.lead_id)) byLead.set(it.lead_id, it.id);
           }
           setUnreadNotificationByLead(byLead);
           setUnreadLeadIds(new Set(byLead.keys()));
@@ -517,7 +484,6 @@ export default function LeadsPage() {
   function toggleLabel(label: LeadLabel) {
     const k = normalizeLabel(label);
     if (!k) return;
-
     setSelectedLabels((prev) => {
       const next = new Set(prev);
       next.has(k) ? next.delete(k) : next.add(k);
@@ -710,23 +676,22 @@ export default function LeadsPage() {
       if (!notificationId) return;
 
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       await fetch('/api/admin/leadhub/lead-notifications/mark-read', {
         method: 'POST',
         keepalive: true,
-        headers: buildHeaders({ token, workspaceId, json: true }),
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify({ id: notificationId }),
       });
     },
     [unreadNotificationByLead]
   );
 
-  async function markLeadUnreadByLeadId(leadId: string, token: string, workspaceId: string) {
+  async function markLeadUnreadByLeadId(leadId: string, token: string) {
     await fetch('/api/admin/leadhub/lead-notifications/mark-unread', {
       method: 'POST',
-      headers: buildHeaders({ token, workspaceId, json: true }),
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ lead_id: leadId }),
     });
 
@@ -737,10 +702,10 @@ export default function LeadsPage() {
     });
   }
 
-  async function markLeadReadByLeadId(leadId: string, token: string, workspaceId: string) {
+  async function markLeadReadByLeadId(leadId: string, token: string) {
     await fetch('/api/admin/leadhub/lead-notifications/mark-read-by-lead', {
       method: 'POST',
-      headers: buildHeaders({ token, workspaceId, json: true }),
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ lead_id: leadId }),
     });
 
@@ -763,11 +728,10 @@ export default function LeadsPage() {
     setBulkLoading(true);
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       for (const leadId of selectedLeadIds) {
-        if (unreadLeadIds.has(leadId)) await markLeadReadByLeadId(leadId, token, workspaceId);
+        if (unreadLeadIds.has(leadId)) await markLeadReadByLeadId(leadId, token);
       }
 
       clearSelection();
@@ -783,11 +747,10 @@ export default function LeadsPage() {
     setBulkLoading(true);
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       for (const leadId of selectedLeadIds) {
-        if (!unreadLeadIds.has(leadId)) await markLeadUnreadByLeadId(leadId, token, workspaceId);
+        if (!unreadLeadIds.has(leadId)) await markLeadUnreadByLeadId(leadId, token);
       }
 
       clearSelection();
@@ -803,11 +766,10 @@ export default function LeadsPage() {
     setBulkLoading(true);
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       for (const l of filtered) {
-        if (unreadLeadIds.has(l.id)) await markLeadReadByLeadId(l.id, token, workspaceId);
+        if (unreadLeadIds.has(l.id)) await markLeadReadByLeadId(l.id, token);
       }
 
       clearSelection();
@@ -823,11 +785,10 @@ export default function LeadsPage() {
     setBulkLoading(true);
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       for (const l of filtered) {
-        if (!unreadLeadIds.has(l.id)) await markLeadUnreadByLeadId(l.id, token, workspaceId);
+        if (!unreadLeadIds.has(l.id)) await markLeadUnreadByLeadId(l.id, token);
       }
 
       clearSelection();
@@ -843,16 +804,15 @@ export default function LeadsPage() {
     setMarkAllBellLoading(true);
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       const res = await fetch('/api/admin/leadhub/lead-notifications/mark-all-read', {
         method: 'POST',
-        headers: buildHeaders({ token, workspaceId }),
+        headers: { authorization: `Bearer ${token}` },
       });
 
-      const data = (safeParseJson(await res.text()) ?? null) as unknown;
-      if (!res.ok || !isRecord(data) || data.ok !== true) return;
+      const data = (await res.json()) as { ok: true } | { ok: false; error: string };
+      if (!res.ok || !data.ok) return;
 
       setMarkAllBellOpen(false);
       await load();
@@ -879,12 +839,11 @@ export default function LeadsPage() {
     setEditSaving(true);
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       const res = await fetch(`/api/admin/leadhub/leads/${editLeadId}/update`, {
         method: 'POST',
-        headers: buildHeaders({ token, workspaceId, json: true }),
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify({
           full_name: next.full_name.trim() || null,
           phone: next.phone.trim() || null,
@@ -894,8 +853,8 @@ export default function LeadsPage() {
         }),
       });
 
-      const data = safeParseJson(await res.text());
-      if (!res.ok || !isRecord(data) || data.ok !== true) return;
+      const data = (await res.json()) as { ok: true; lead: Lead } | { ok: false; error: string };
+      if (!res.ok || !data.ok) return;
 
       await load();
       setEditOpen(false);
@@ -917,16 +876,15 @@ export default function LeadsPage() {
     setDeleteLoading(true);
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       const res = await fetch(`/api/admin/leadhub/leads/${deleteLeadId}/delete`, {
         method: 'POST',
-        headers: buildHeaders({ token, workspaceId }),
+        headers: { authorization: `Bearer ${token}` },
       });
 
-      const data = safeParseJson(await res.text());
-      if (!res.ok || !isRecord(data) || data.ok !== true) return;
+      const data = (await res.json()) as { ok: true } | { ok: false; error: string };
+      if (!res.ok || !data.ok) return;
 
       await load();
       setDeleteOpen(false);
@@ -943,8 +901,7 @@ export default function LeadsPage() {
     setBulkLoading(true);
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) return;
+      if (!token) return;
 
       const selectedIds = Array.from(selectedLeadIds);
       for (const leadId of selectedIds) {
@@ -956,12 +913,12 @@ export default function LeadsPage() {
 
         const res = await fetch(`/api/admin/leadhub/leads/${leadId}/update`, {
           method: 'POST',
-          headers: buildHeaders({ token, workspaceId, json: true }),
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
           body: JSON.stringify({ labels: nextLabels }),
         });
 
-        const data = safeParseJson(await res.text());
-        if (!res.ok || !isRecord(data) || data.ok !== true) continue;
+        const data = (await res.json()) as { ok: true; lead: Lead } | { ok: false; error: string };
+        if (!res.ok || !data.ok) continue;
       }
 
       setBulkLabelConfirmOpen(false);
@@ -974,7 +931,6 @@ export default function LeadsPage() {
     }
   }
 
-  // ✅ Importar desde Meta (si existe endpoint)
   async function importFromMeta() {
     if (metaImportLoading) return;
 
@@ -982,23 +938,21 @@ export default function LeadsPage() {
     setMetaImportMsg('');
     try {
       const token = await getAccessToken();
-      const workspaceId = (await getActiveWorkspaceId())?.trim() ?? '';
-      if (!token || !workspaceId) {
-        setMetaImportMsg('No hay sesión o workspace activo.');
+      if (!token) {
+        setMetaImportMsg('No hay sesión activa.');
         return;
       }
 
       const res = await fetch('/api/integrations/meta/leads/import', {
         method: 'POST',
-        headers: buildHeaders({ token, workspaceId, json: true }),
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify({}),
       });
 
-      const data = safeParseJson(await res.text()) as MetaImportResponse | null;
+      const data = (await res.json()) as MetaImportResponse;
 
-      if (!res.ok || !data || !('ok' in data) || data.ok !== true) {
-        const err = data && 'error' in data ? String(data.error) : `HTTP ${res.status}`;
-        setMetaImportMsg(err);
+      if (!res.ok || !data.ok) {
+        setMetaImportMsg(data.ok ? 'Error al importar.' : data.error);
         return;
       }
 
@@ -1076,11 +1030,6 @@ export default function LeadsPage() {
     <div className="container-default py-8 text-white">
       <div className="mb-6 flex flex-col gap-2">
         <h1 className="text-2xl font-semibold">Leads</h1>
-
-        {/* ✅ DEBUG SIEMPRE VISIBLE */}
-        <pre className="mt-2 whitespace-pre-wrap rounded-2xl border border-white/10 bg-white/5 p-3 text-[11px] text-white/80">
-          {debugMsg || 'DEBUG: (vacío)'}
-        </pre>
 
         <p className="max-w-2xl text-sm text-white/70">
           Bandeja de leads recibidos desde integraciones (Meta, etc.).{' '}
@@ -1173,22 +1122,27 @@ export default function LeadsPage() {
                   tabIndex={0}
                   onClick={async () => {
                     if (isUnread) await markLeadRead(l.id);
+
                     try {
                       sessionStorage.setItem(PAGE_STORAGE_KEY, String(page));
                     } catch {
                       // ignore
                     }
+
                     router.push(`/leads/${l.id}?page=${page}`);
                   }}
                   onKeyDown={async (e) => {
                     if (e.key !== 'Enter' && e.key !== ' ') return;
                     e.preventDefault();
+
                     if (isUnread) await markLeadRead(l.id);
+
                     try {
                       sessionStorage.setItem(PAGE_STORAGE_KEY, String(page));
                     } catch {
                       // ignore
                     }
+
                     router.push(`/leads/${l.id}?page=${page}`);
                   }}
                   className={cx('group h-full cursor-pointer rounded-2xl text-left', selected ? 'ring-2 ring-indigo-400/35' : '')}
@@ -1347,7 +1301,7 @@ export default function LeadsPage() {
           <ConfirmModal
             open={metaImportOpen}
             title="Importar leads desde Meta"
-            description="Esto pedirá a tu backend importar leads desde Meta Lead Ads."
+            description="Esto pedirá a tu backend importar leads desde Meta Lead Ads. Requiere que exista /api/integrations/meta/leads/import y permisos leads_retrieval."
             confirmText={metaImportLoading ? 'Procesando…' : 'Sí, importar'}
             cancelText="Cancelar"
             loading={metaImportLoading}
