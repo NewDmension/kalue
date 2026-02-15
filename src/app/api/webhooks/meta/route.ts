@@ -118,6 +118,7 @@ type GraphAccountsResp = {
 type GraphLeadResp = {
   id?: unknown;
   created_time?: unknown;
+  form_id?: unknown;
   field_data?: unknown;
   error?: GraphError;
 };
@@ -127,6 +128,8 @@ type MetaPageToken = {
   page_name: string | null;
   page_access_token: string;
 };
+
+type FormAnswers = Record<string, string | string[]>;
 
 async function safeGraphJson<T extends Record<string, unknown>>(
   res: Response
@@ -191,7 +194,8 @@ async function fetchLeadDetails(args: {
   leadgenId: string;
   pageAccessToken: string;
 }): Promise<unknown> {
-  const fields = ['created_time', 'field_data'].join(',');
+  // ✅ añadimos form_id para poder guardarlo (no rompe nada)
+  const fields = ['id', 'created_time', 'form_id', 'field_data'].join(',');
 
   const url = new URL(`https://graph.facebook.com/${args.graphVersion}/${encodeURIComponent(args.leadgenId)}`);
   url.searchParams.set('access_token', args.pageAccessToken);
@@ -228,6 +232,72 @@ function extractLeadFields(metaLead: unknown): { full_name: string | null; email
     email: pick(['email']),
     phone: pick(['phone_number', 'phone']),
   };
+}
+
+/**
+ * ✅ NUEVO: convierte field_data[] -> form_answers JSON (y también puede inferir name/email/phone por heurística suave)
+ * No rompe tu extractLeadFields: lo mantenemos y luego enriquecemos.
+ */
+function extractFormAnswers(metaLead: unknown): { form_answers: FormAnswers; inferred: { full_name: string | null; email: string | null; phone: string | null } } {
+  const empty = { form_answers: {}, inferred: { full_name: null, email: null, phone: null } };
+
+  if (!isRecord(metaLead)) return empty;
+
+  const fieldData = metaLead['field_data'];
+  if (!Array.isArray(fieldData)) return empty;
+
+  const form_answers: FormAnswers = {};
+  let full_name: string | null = null;
+  let email: string | null = null;
+  let phone: string | null = null;
+
+  for (const item of fieldData) {
+    if (!isRecord(item)) continue;
+
+    const rawName = getString(item, 'name');
+    if (!rawName) continue;
+    const name = rawName.trim();
+    if (!name) continue;
+
+    const valuesRaw = item['values'];
+    const values: string[] = Array.isArray(valuesRaw)
+      ? valuesRaw.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter((v) => v.length > 0)
+      : [];
+
+    if (values.length === 0) continue;
+
+    form_answers[name] = values.length === 1 ? values[0] : values;
+
+    const key = name.toLowerCase();
+
+    const first = values[0] ?? null;
+
+    // estándar + heurística suave (no agresiva)
+    if (!full_name && (key === 'full_name' || key === 'name' || key === 'nombre')) full_name = first;
+    if (!email && (key === 'email' || key.includes('mail') || key === 'correo' || key === 'e-mail')) email = first;
+
+    if (
+      !phone &&
+      (key === 'phone_number' ||
+        key === 'phone' ||
+        key.includes('tel') ||
+        key.includes('phone') ||
+        key === 'teléfono' ||
+        key === 'telefono' ||
+        key === 'móvil' ||
+        key === 'movil')
+    ) {
+      phone = first;
+    }
+  }
+
+  return { form_answers, inferred: { full_name, email, phone } };
+}
+
+function extractFormId(metaLead: unknown): string | null {
+  if (!isRecord(metaLead)) return null;
+  const v = metaLead['form_id'];
+  return typeof v === 'string' ? v : null;
 }
 
 function buildVerifyToken(): string {
@@ -301,6 +371,72 @@ async function resolveMapping(args: {
 
   if (byPageErr) return null;
   return byPage ? (byPage as MappingRow) : null;
+}
+
+/**
+ * ✅ NUEVO: upsert seguro sin depender de constraint
+ * Busca por (workspace_id + meta_leadgen_id). Si existe -> update, si no -> insert.
+ * Si tus columnas meta_* o form_answers no existieran, esto fallaría: en ese caso, hay que crear las columnas.
+ */
+async function upsertLeadWithAnswers(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  leadgenId: string;
+  metaFormId: string | null;
+  fullName: string | null;
+  email: string | null;
+  phone: string | null;
+  formAnswers: FormAnswers;
+}): Promise<'inserted' | 'updated'> {
+  const { admin, workspaceId, leadgenId, metaFormId, fullName, email, phone, formAnswers } = args;
+
+  // 1) ¿ya existe?
+  const { data: existing, error: findErr } = await admin
+    .from('leads')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .eq('meta_leadgen_id', leadgenId)
+    .maybeSingle();
+
+  if (findErr) throw new Error(`lead_find_failed:${findErr.message}`);
+
+  if (existing?.id) {
+    const updatePayload: Record<string, unknown> = {
+      meta_form_id: metaFormId,
+      form_answers: formAnswers,
+      updated_at: new Date().toISOString(),
+    };
+
+    // no pisar con null si ya había valores
+    if (fullName) updatePayload.full_name = fullName;
+    if (email) updatePayload.email = email;
+    if (phone) updatePayload.phone = phone;
+
+    const { error: updErr } = await admin
+      .from('leads')
+      .update(updatePayload)
+      .eq('id', existing.id)
+      .eq('workspace_id', workspaceId);
+
+    if (updErr) throw new Error(`lead_update_failed:${updErr.message}`);
+    return 'updated';
+  }
+
+  const insertPayload: Record<string, unknown> = {
+    workspace_id: workspaceId,
+    source: 'meta',
+    full_name: fullName,
+    email,
+    phone,
+    meta_leadgen_id: leadgenId,
+    meta_form_id: metaFormId,
+    form_answers: formAnswers,
+  };
+
+  const { error: insErr } = await admin.from('leads').insert(insertPayload);
+  if (insErr) throw new Error(`lead_insert_failed:${insErr.message}`);
+
+  return 'inserted';
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -528,12 +664,24 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      // fetch lead + insert
+      // fetch lead + insert/update (ahora con form_answers)
       try {
         if (!leadgenId) continue;
 
         const metaLead = await fetchLeadDetails({ graphVersion, leadgenId, pageAccessToken });
+
+        // tu extracción estándar (la mantenemos)
         const extracted = extractLeadFields(metaLead);
+
+        // ✅ nuevo: form_answers + inferencias suaves
+        const answers = extractFormAnswers(metaLead);
+        const metaFormIdFromLead = extractFormId(metaLead);
+        const effectiveMetaFormId = metaFormIdFromLead ?? (typeof formId === 'string' ? formId : null);
+
+        // “mejor de ambos mundos”: si extracted no trae algo, usamos inferido
+        const fullName = extracted.full_name ?? answers.inferred.full_name;
+        const email = extracted.email ?? answers.inferred.email;
+        const phone = extracted.phone ?? answers.inferred.phone;
 
         try {
           await logWebhookEvent({
@@ -543,54 +691,43 @@ export async function POST(req: Request): Promise<NextResponse> {
             integrationId,
             eventType: 'lead_fetched',
             objectId: leadgenId,
-            payload: { leadgen_id: leadgenId, page_id: pageId, page_name: pageName, form_id: formId, extracted },
+            payload: {
+              leadgen_id: leadgenId,
+              page_id: pageId,
+              page_name: pageName,
+              form_id: effectiveMetaFormId,
+              extracted: { full_name: fullName, email, phone },
+              answers_keys: Object.keys(answers.form_answers),
+            },
           });
         } catch {
           // no-op
         }
 
-        /**
-         * ✅ INSERT MINIMAL (sin asumir columnas meta_* que quizá no existen)
-         * Si luego quieres guardar meta_leadgen_id/meta_payload, primero vemos tu schema de leads.
-         */
-        const insertPayload = {
-          workspace_id: workspaceId,
-          source: 'meta',
-          full_name: extracted.full_name,
-          email: extracted.email,
-          phone: extracted.phone,
-        };
+        // ✅ aquí es el cambio clave: persistimos meta ids + form_answers
+        const result = await upsertLeadWithAnswers({
+          admin: supabaseAdmin,
+          workspaceId,
+          leadgenId,
+          metaFormId: effectiveMetaFormId,
+          fullName,
+          email,
+          phone,
+          formAnswers: answers.form_answers,
+        });
 
-        const { error: insErr } = await supabaseAdmin.from('leads').insert(insertPayload);
-
-        if (insErr) {
-          try {
-            await logWebhookEvent({
-              admin: supabaseAdmin,
-              provider: 'meta',
-              workspaceId,
-              integrationId,
-              eventType: 'error',
-              objectId: leadgenId,
-              payload: { reason: 'lead_insert_failed', message: insErr.message, insertPayload },
-            });
-          } catch {
-            // no-op
-          }
-        } else {
-          try {
-            await logWebhookEvent({
-              admin: supabaseAdmin,
-              provider: 'meta',
-              workspaceId,
-              integrationId,
-              eventType: 'lead_inserted',
-              objectId: leadgenId,
-              payload: { page_id: pageId, form_id: formId, leadgen_id: leadgenId },
-            });
-          } catch {
-            // no-op
-          }
+        try {
+          await logWebhookEvent({
+            admin: supabaseAdmin,
+            provider: 'meta',
+            workspaceId,
+            integrationId,
+            eventType: result === 'inserted' ? 'lead_inserted' : 'lead_updated',
+            objectId: leadgenId,
+            payload: { page_id: pageId, form_id: effectiveMetaFormId, leadgen_id: leadgenId },
+          });
+        } catch {
+          // no-op
         }
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'lead_process_failed';
