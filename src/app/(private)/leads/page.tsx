@@ -104,7 +104,6 @@ function prettifyLabel(rawKey: string): string {
 
   if (!s) return 'Campo';
 
-  // Capitaliza primera letra, respeta el resto
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
@@ -119,8 +118,6 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
     profession: (lead.profession ?? '').trim() ? (lead.profession ?? '').trim() : null,
     biggest_pain: (lead.biggest_pain ?? '').trim() ? (lead.biggest_pain ?? '').trim() : null,
   };
-
-  if (fromCols.profession && fromCols.biggest_pain) return fromCols;
 
   const answers = safeAnswers(lead);
   if (!answers) return fromCols;
@@ -138,35 +135,52 @@ function deriveFieldsFromAnswers(lead: Lead): DerivedLeadFields {
     return null;
   }
 
+  // 👇 IMPORTANTE: antes tenías `fromCols.profession ?? pick...`
+  // pero `fromCols.profession` puede ser null, y `??` funciona, OK,
+  // el problema real suele ser que la key del form llega como "¿a_qué_te_dedicas?" (o variantes)
+  // y hay que cubrir más variantes normalizadas.
   const inferredProfession =
-    fromCols.profession ??
+    fromCols.profession ||
     pickValueByKeys([
       'profession',
       'profesion',
       'ocupacion',
       'ocupación',
       'a_que_te_dedicas',
-      '¿a_qué_te_dedicas?',
-      'a_qué_te_dedicas',
       'a_que_te_dedicas?',
       'a_que_te_dedicas_',
-    ]);
+      'a_qué_te_dedicas',
+      'a_qué_te_dedicas?',
+      '¿a_qué_te_dedicas?',
+      '¿a_que_te_dedicas?',
+      // tu form real (según screenshot) suele venir así:
+      '¿a_qué_te_dedicas?',
+      'a_que_te_dedicas',
+    ]) ||
+    null;
 
   const inferredPain =
-    fromCols.biggest_pain ??
+    fromCols.biggest_pain ||
     pickValueByKeys([
       'biggest_pain',
       'pain',
       'dolor',
       'problema',
       'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
-      '¿que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta?',
+      'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta?',
+      'qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta',
       'qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
-    ]);
+      '¿qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
+      '¿que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta?',
+      // tu form real (según screenshot) suele venir así:
+      '¿qué_es_lo_que_más_te_cuesta_ahora_mismo_en_tu_consulta?',
+      'que_es_lo_que_mas_te_cuesta_ahora_mismo_en_tu_consulta',
+    ]) ||
+    null;
 
   return {
-    profession: inferredProfession ?? null,
-    biggest_pain: inferredPain ?? null,
+    profession: inferredProfession,
+    biggest_pain: inferredPain,
   };
 }
 
@@ -1223,7 +1237,6 @@ export default function LeadsPage() {
 
               const derived = deriveFieldsFromAnswers(l);
 
-              // ✅ mini resumen: solo respuestas “no repetidas”
               const answers = safeAnswers(l);
               const answerEntries = answers
                 ? Object.entries(answers)
@@ -1234,6 +1247,9 @@ export default function LeadsPage() {
                     })
                     .slice(0, 2)
                 : [];
+
+              const professionText = (derived.profession ?? '').trim();
+              const painText = (derived.biggest_pain ?? '').trim();
 
               return (
                 <div
@@ -1265,7 +1281,10 @@ export default function LeadsPage() {
 
                     router.push(`/leads/${l.id}?page=${page}`);
                   }}
-                  className={cx('group h-full cursor-pointer rounded-2xl text-left', selected ? 'ring-2 ring-indigo-400/35' : '')}
+                  className={cx(
+                    'group h-full cursor-pointer rounded-2xl text-left',
+                    selected ? 'ring-2 ring-indigo-400/35' : ''
+                  )}
                 >
                   <div className="card-glass flex h-full flex-col gap-2 p-5 transition-transform duration-150 hover:-translate-y-1">
                     <div className="flex items-start justify-between gap-3">
@@ -1326,16 +1345,21 @@ export default function LeadsPage() {
                       <p>
                         <span className="text-white/60">Email:</span> {l.email ?? '—'}
                       </p>
+
+                      {/* ✅ aquí está el cambio: si existe en form_answers se muestra SIEMPRE; si no, guion */}
                       <p>
-  <span className="text-white/60">Profesión:</span>{' '}
-  {derived.profession ?? <span className="text-white/45 italic">(ver respuestas)</span>}
-</p>
+                        <span className="text-white/60">Profesión:</span>{' '}
+                        {professionText ? (
+                          <span className="text-white/85">{professionText}</span>
+                        ) : (
+                          <span className="text-white/45 italic">—</span>
+                        )}
+                      </p>
 
-<p>
-  <span className="text-white/60">Pain:</span>{' '}
-  {derived.biggest_pain ?? <span className="text-white/45 italic">(ver respuestas)</span>}
-</p>
-
+                      <p>
+                        <span className="text-white/60">Pain:</span>{' '}
+                        {painText ? <span className="text-white/85">{painText}</span> : <span className="text-white/45 italic">—</span>}
+                      </p>
                     </div>
 
                     {answerEntries.length > 0 ? (
