@@ -576,6 +576,24 @@ export default function LeadsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+useEffect(() => {
+    function onFocus() {
+      void load();
+    }
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [load]);
+
+    useEffect(() => {
+    if (loading) return;
+
+    const EVERY_MS = 25_000;
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load();
+    }, EVERY_MS);
+
+    return () => window.clearInterval(id);
+  }, [load, loading]);
 
   const labelOptions = useMemo(() => {
     const counts = new Map<LeadLabel, number>();
