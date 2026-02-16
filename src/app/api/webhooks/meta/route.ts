@@ -341,36 +341,53 @@ async function resolveMapping(args: {
   pageId: string;
   formId: string | null;
 }): Promise<MappingRow | null> {
-  // 1) Exacto por page + form (si tienes 2 forms en la misma page)
-  if (args.formId) {
-    const { data, error } = await args.admin
+  // Helper: intenta query con provider; si la columna no existe, reintenta sin provider
+  async function tryQuery(withProvider: boolean, exactForm: boolean) {
+    let q = args.admin
       .from('integration_meta_mappings')
       .select('workspace_id, integration_id, page_id, form_id, status, webhook_subscribed')
-      .eq('provider', 'meta')
       .eq('page_id', args.pageId)
-      .eq('form_id', args.formId)
       .eq('status', 'active')
-      .eq('webhook_subscribed', true)
-      .limit(1)
-      .maybeSingle();
+      .eq('webhook_subscribed', true);
 
-    if (!error && data) return data as MappingRow;
+    if (withProvider) q = q.eq('provider', 'meta');
+
+    if (exactForm && args.formId) q = q.eq('form_id', args.formId);
+
+    // NO uses updated_at si no estás 100% seguro que existe
+    // created_at suele existir; si tampoco existiera, simplemente quita el order.
+    q = q.order('created_at', { ascending: false }).limit(1);
+
+    return q.maybeSingle();
   }
 
-  // 2) Fallback por page_id (por si meta no manda form_id o aún no lo guardaste)
-  const { data: byPage, error: byPageErr } = await args.admin
-    .from('integration_meta_mappings')
-    .select('workspace_id, integration_id, page_id, form_id, status, webhook_subscribed')
-    .eq('provider', 'meta')
-    .eq('page_id', args.pageId)
-    .eq('status', 'active')
-    .eq('webhook_subscribed', true)
-    .order('updated_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // 1) Intento exacto por (page + form)
+  if (args.formId) {
+    // A) con provider
+    {
+      const { data, error } = await tryQuery(true, true);
+      if (!error && data) return data as MappingRow;
 
-  if (byPageErr) return null;
-  return byPage ? (byPage as MappingRow) : null;
+      // B) si error por columna provider inexistente, reintenta sin provider
+      if (error && /column .*provider.* does not exist/i.test(error.message)) {
+        const r = await tryQuery(false, true);
+        if (!r.error && r.data) return r.data as MappingRow;
+      }
+    }
+  }
+
+  // 2) Fallback por page_id
+  {
+    const { data, error } = await tryQuery(true, false);
+    if (!error && data) return data as MappingRow;
+
+    if (error && /column .*provider.* does not exist/i.test(error.message)) {
+      const r = await tryQuery(false, false);
+      if (!r.error && r.data) return r.data as MappingRow;
+    }
+  }
+
+  return null;
 }
 
 /**
