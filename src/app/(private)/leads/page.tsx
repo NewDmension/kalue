@@ -573,10 +573,13 @@ export default function LeadsPage() {
     }
   }, []);
 
+  // ✅ Initial load
   useEffect(() => {
     void load();
   }, [load]);
-useEffect(() => {
+
+  // ✅ Refresh on tab focus (SOLO UNA VEZ)
+  useEffect(() => {
     function onFocus() {
       void load();
     }
@@ -584,16 +587,17 @@ useEffect(() => {
     return () => window.removeEventListener('focus', onFocus);
   }, [load]);
 
-    useEffect(() => {
-    if (loading) return;
-
+  // ✅ Polling suave (25s). Solo si está visible.
+  useEffect(() => {
     const EVERY_MS = 25_000;
+
     const id = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void load();
+      if (document.visibilityState !== 'visible') return;
+      void load();
     }, EVERY_MS);
 
     return () => window.clearInterval(id);
-  }, [load, loading]);
+  }, [load]);
 
   const labelOptions = useMemo(() => {
     const counts = new Map<LeadLabel, number>();
@@ -730,7 +734,7 @@ useEffect(() => {
     return filtered.slice(start, start + PAGE_SIZE);
   }, [filtered, page]);
 
-  /** ✅ Aquí hacemos "lo mismo que en la ficha": traer detalle SOLO para los que lo necesitan */
+  /** ✅ Traer detalle SOLO para los que lo necesitan */
   useEffect(() => {
     let alive = true;
 
@@ -743,28 +747,25 @@ useEffect(() => {
       const workspaceId = (getActiveWorkspaceId() ?? '').trim();
       if (!workspaceId) return;
 
-      // solo leads visibles y solo los que no tienen profession/pain derivados aún
       const toFetch: string[] = [];
+
       for (const l of pagedItems) {
         const already = derivedByLeadId[l.id];
         if (already?.profession || already?.biggest_pain) continue;
 
+        // si ya se puede derivar con lo que tenemos, cacheamos y NO pedimos detalle
         const derivedLocal = deriveFieldsFromAnswers(l);
         if (derivedLocal.profession || derivedLocal.biggest_pain) {
-          // si ya se puede derivar con lo que tenemos, lo cacheamos y listo
-          toFetch.push(); // noop
+          setDerivedByLeadId((prev) => ({ ...prev, [l.id]: derivedLocal }));
           continue;
         }
 
-        // evitar re-fetch si ya está en loading
         if (detailsLoadingIds.has(l.id)) continue;
-
         toFetch.push(l.id);
       }
 
       if (toFetch.length === 0) return;
 
-      // marcamos loading ids
       setDetailsLoadingIds((prev) => {
         const next = new Set(prev);
         for (const id of toFetch) next.add(id);
@@ -772,7 +773,6 @@ useEffect(() => {
       });
 
       try {
-        // fetch en paralelo, pero solo para pocos (los visibles)
         const results = await Promise.all(
           toFetch.map(async (leadId) => {
             const res = await fetch(`/api/marketing/leads/${encodeURIComponent(leadId)}`, {
@@ -1038,7 +1038,6 @@ useEffect(() => {
   async function openEditModal(lead: Lead) {
     setEditLeadId(lead.id);
 
-    // 👇 si tenemos cache, úsalo; si no, derivamos con lo que haya
     const cached = derivedByLeadId[lead.id] ?? null;
     const derived = cached ?? deriveFieldsFromAnswers(lead);
 
@@ -1075,7 +1074,6 @@ useEffect(() => {
       const data = (await res.json()) as { ok: true; lead: Lead } | { ok: false; error: string };
       if (!res.ok || !data.ok) return;
 
-      // actualiza cache local también
       setDerivedByLeadId((prev) => ({
         ...prev,
         [editLeadId]: { profession: next.profession.trim() || null, biggest_pain: next.biggest_pain.trim() || null },
@@ -1113,15 +1111,15 @@ useEffect(() => {
 
       await load();
       setDeleteOpen(false);
-      setDeleteLeadId(null);
       clearSelection();
 
-      // limpia cache
       setDerivedByLeadId((prev) => {
         const next = { ...prev };
         delete next[deleteLeadId];
         return next;
       });
+
+      setDeleteLeadId(null);
     } finally {
       setDeleteLoading(false);
     }
@@ -1346,9 +1344,7 @@ useEffect(() => {
               const selected = selectedLeadIds.has(l.id);
               const labels = Array.isArray(l.labels) ? l.labels : [];
 
-              // ✅ 1) intentamos con lo que venga en el list
               const derivedLocal = deriveFieldsFromAnswers(l);
-              // ✅ 2) si no hay, usamos lo traído por el endpoint de detalle (como la ficha)
               const derivedCached = derivedByLeadId[l.id] ?? null;
 
               const professionValue = derivedLocal.profession ?? derivedCached?.profession ?? null;
@@ -1356,7 +1352,6 @@ useEffect(() => {
 
               const isFetchingDetails = detailsLoadingIds.has(l.id);
 
-              // mini resumen (si el list no trae answers, esto normalmente quedará vacío — ok)
               const answers = safeAnswers(l);
               const answerEntries = answers
                 ? Object.entries(answers)
