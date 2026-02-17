@@ -61,12 +61,13 @@ async function isWorkspaceMember(args: { admin: SupabaseClient; workspaceId: str
   return Array.isArray(data) && data.length > 0;
 }
 
-type StageRow = {
-  id: string;
-  pipeline_id: string;
-  name: string;
-  sort_order: number;
-};
+type StageMinRow = { id: string; pipeline_id: string };
+
+function pgMsg(err: unknown): string {
+  if (!isRecord(err)) return '';
+  const m = err['message'];
+  return typeof m === 'string' ? m : '';
+}
 
 export async function POST(req: Request): Promise<NextResponse> {
   try {
@@ -103,74 +104,44 @@ export async function POST(req: Request): Promise<NextResponse> {
     const ok = await isWorkspaceMember({ admin, workspaceId, userId });
     if (!ok) return json(403, { ok: false, error: 'not_member' });
 
-    // Leer stage origen y destino
+    // Leer stage origen (para obtener pipeline_id)
     const { data: fromSt, error: fromErr } = await admin
       .from('pipeline_stages')
-      .select('id, pipeline_id, name, sort_order')
+      .select('id, pipeline_id')
       .eq('id', stageId)
       .maybeSingle();
 
     if (fromErr) return json(500, { ok: false, error: 'db_error', detail: fromErr.message });
     if (!fromSt) return json(404, { ok: false, error: 'stage_not_found' });
 
-    const { data: toSt, error: toErr } = await admin
-      .from('pipeline_stages')
-      .select('id, pipeline_id, name, sort_order')
-      .eq('id', toStageId)
-      .maybeSingle();
-
-    if (toErr) return json(500, { ok: false, error: 'db_error', detail: toErr.message });
-    if (!toSt) return json(404, { ok: false, error: 'to_stage_not_found' });
-
-    if (fromSt.pipeline_id !== toSt.pipeline_id) {
-      return json(400, { ok: false, error: 'stages_must_belong_to_same_pipeline' });
-    }
-
-    const pipelineId = fromSt.pipeline_id;
-
-    // Verificar pipeline pertenece al workspace
+    // Verificar que el pipeline pertenece al workspace (multi-tenant safety)
     const { data: p, error: pErr } = await admin
       .from('pipelines')
       .select('id')
-      .eq('id', pipelineId)
+      .eq('id', (fromSt as StageMinRow).pipeline_id)
       .eq('workspace_id', workspaceId)
       .maybeSingle();
 
     if (pErr) return json(500, { ok: false, error: 'db_error', detail: pErr.message });
     if (!p) return json(403, { ok: false, error: 'forbidden' });
 
-    // Mover leads de stageId -> toStageId
-    const nowIso = new Date().toISOString();
-    const { error: moveErr } = await admin
-      .from('lead_pipeline_state')
-      .update({ stage_id: toStageId, stage_changed_at: nowIso, updated_at: nowIso })
-      .eq('workspace_id', workspaceId)
-      .eq('pipeline_id', pipelineId)
-      .eq('stage_id', stageId);
+    // Ejecutar RPC atómica: mueve leads, borra stage y renormaliza sort_order
+    const { error: rpcErr } = await admin.rpc('delete_stage_and_move_leads', {
+      p_workspace_id: workspaceId,
+      p_stage_id: stageId,
+      p_to_stage_id: toStageId,
+    });
 
-    if (moveErr) return json(500, { ok: false, error: 'db_error', detail: moveErr.message });
+    if (rpcErr) {
+      const msg = pgMsg(rpcErr);
+      // Mapeo de errores de la RPC (los raise exception del SQL)
+      if (msg.includes('to_stage_id_must_be_different')) return json(400, { ok: false, error: 'toStageId_must_be_different' });
+      if (msg.includes('stage_not_found')) return json(404, { ok: false, error: 'stage_not_found' });
+      if (msg.includes('to_stage_not_found')) return json(404, { ok: false, error: 'to_stage_not_found' });
+      if (msg.includes('stages_must_belong_to_same_pipeline')) return json(400, { ok: false, error: 'stages_must_belong_to_same_pipeline' });
+      if (msg.includes('cannot_delete_last_stage')) return json(400, { ok: false, error: 'cannot_delete_last_stage' });
 
-    // Borrar stage
-    const { error: delErr } = await admin.from('pipeline_stages').delete().eq('id', stageId);
-    if (delErr) return json(500, { ok: false, error: 'db_error', detail: delErr.message });
-
-    // Re-normalizar sort_order (0..n-1)
-    const { data: remainingRaw, error: remErr } = await admin
-      .from('pipeline_stages')
-      .select('id, pipeline_id, name, sort_order')
-      .eq('pipeline_id', pipelineId)
-      .order('sort_order', { ascending: true });
-
-    if (remErr) return json(500, { ok: false, error: 'db_error', detail: remErr.message });
-
-    const remaining = (Array.isArray(remainingRaw) ? remainingRaw : []) as unknown as StageRow[];
-    for (let i = 0; i < remaining.length; i += 1) {
-      const s = remaining[i];
-      if (!s) continue;
-      if (s.sort_order !== i) {
-        const { error: upErr } = await admin.from('pipeline_stages').update({ sort_order: i }).eq('id', s.id);
-        if (upErr) return json(500, { ok: false, error: 'db_error', detail: upErr.message });
-      }
+      return json(500, { ok: false, error: 'db_error', detail: rpcErr.message });
     }
 
     return json(200, { ok: true });
