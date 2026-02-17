@@ -96,12 +96,15 @@ export default function PipelinePage() {
 
   const [error, setError] = useState<string | null>(null);
 
+  // ✅ Punto 1: lead seleccionado (highlight)
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+
   // Pipelines
   const [pipelinesLoading, setPipelinesLoading] = useState(true);
   const [pipelines, setPipelines] = useState<PipelineRow[]>([]);
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
 
-  // Create pipeline (opcional, si ya lo montaste)
+  // Create pipeline
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
 
@@ -145,8 +148,14 @@ export default function PipelinePage() {
     const parsed = raw as PipelinesListResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'failed_to_load_pipelines';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'failed_to_load_pipelines';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setPipelines([]);
       setSelectedPipelineId(null);
@@ -248,8 +257,14 @@ export default function PipelinePage() {
     const parsed = raw as BoardResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'failed_to_load_board';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'failed_to_load_board';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setStages([]);
       setLeadsByStage({});
@@ -278,7 +293,7 @@ export default function PipelinePage() {
       const moved: LeadRow = {
         ...lead,
         stage_id: args.toStageId,
-        position: 999999, // al final
+        position: 999999,
         stage_changed_at: new Date().toISOString(),
       };
 
@@ -342,6 +357,7 @@ export default function PipelinePage() {
 
   // Load board when pipeline selected
   useEffect(() => {
+    setSelectedLeadId(null); // reset selección al cambiar pipeline/workspace
     if (!selectedPipelineId) {
       setStages([]);
       setLeadsByStage({});
@@ -373,7 +389,7 @@ export default function PipelinePage() {
     if (!selectedPipelineId) return;
     if (payload.pipelineId !== selectedPipelineId) return;
 
-    if (payload.fromStageId === toStageId) return; // por ahora no reordenamos dentro misma columna
+    if (payload.fromStageId === toStageId) return;
 
     // Optimistic
     optimisticMoveLead({
@@ -390,20 +406,19 @@ export default function PipelinePage() {
       toPosition: 999999,
     });
 
-    // Si falla, recargamos board como “rollback”
     if (!ok) {
       await loadBoard(payload.pipelineId);
     }
   }
+
+  const boardHasStages = stages.length > 0;
 
   return (
     <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Pipeline</h1>
-          <p className="mt-2 text-sm text-white/70">
-            Kanban por stages. Arrastra leads entre columnas.
-          </p>
+          <p className="mt-2 text-sm text-white/70">Kanban por stages. Arrastra leads entre columnas.</p>
         </div>
 
         <div className="flex flex-col gap-2 md:items-end">
@@ -456,82 +471,115 @@ export default function PipelinePage() {
         </div>
       ) : null}
 
+      {/* ✅ BOARD con altura fija + scroll por columna */}
       <div className="mt-6">
         {boardLoading ? (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
             Cargando board…
           </div>
-        ) : stages.length === 0 ? (
+        ) : !boardHasStages ? (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
             {selectedPipeline ? 'Este pipeline no tiene stages.' : 'Selecciona un pipeline.'}
           </div>
         ) : (
-          <div className="grid gap-4 md:grid-cols-5">
-            {stages.map((st) => {
-              const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
+          <div
+            className={cx(
+              'rounded-2xl border border-white/10 bg-black/10 p-3',
+              // altura “tipo app”: ajusta si quieres (depende de tu topbar)
+              'h-[calc(100vh-320px)] min-h-[420px]'
+            )}
+          >
+            {/* Scroll horizontal si hay muchas columnas */}
+            <div className="h-full overflow-x-auto">
+              <div className="flex h-full gap-4 pr-2">
+                {stages.map((st) => {
+                  const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
 
-              return (
-                <div
-                  key={st.id}
-                  onDragOver={onDragOverColumn}
-                  onDrop={(e) => void onDropColumn(e, st.id)}
-                  className={cx(
-                    'rounded-2xl border border-white/10 bg-white/5 p-3 min-h-[220px]',
-                    'transition'
-                  )}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
-                    <span className="text-xs text-white/55">{items.length}</span>
-                  </div>
+                  return (
+                    <div
+                      key={st.id}
+                      onDragOver={onDragOverColumn}
+                      onDrop={(e) => void onDropColumn(e, st.id)}
+                      className={cx(
+                        'flex h-full w-[290px] shrink-0 flex-col rounded-2xl border border-white/10 bg-white/5 p-3',
+                        'transition'
+                      )}
+                    >
+                      {/* Header columna */}
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
+                        <span className="text-xs text-white/55">{items.length}</span>
+                      </div>
 
-                  <div className="mt-3 flex flex-col gap-2">
-                    {items.map((lead) => (
-                      <div
-                        key={lead.id}
-                        draggable
-                        onDragStart={(e) =>
-                          onDragStartLead(e, {
-                            leadId: lead.id,
-                            fromStageId: st.id,
-                            pipelineId: selectedPipelineId ?? '',
-                          })
-                        }
-                        className="cursor-grab active:cursor-grabbing rounded-xl border border-white/10 bg-black/25 p-3 hover:bg-black/30"
-                      >
-                        <p className="text-sm font-semibold text-white truncate">
-                          {lead.full_name ?? 'Sin nombre'}
-                        </p>
-                        <div className="mt-1 space-y-1">
-                          {lead.email ? (
-                            <p className="text-[12px] text-white/70 truncate">{lead.email}</p>
+                      {/* Lista con scroll */}
+                      <div className="mt-3 flex-1 overflow-y-auto pr-1">
+                        <div className="flex flex-col gap-2">
+                          {items.map((lead) => {
+                            const isSelected = selectedLeadId === lead.id;
+
+                            return (
+                              <div
+                                key={lead.id}
+                                draggable
+                                onDragStart={(e) => {
+                                  if (!selectedPipelineId) return;
+                                  onDragStartLead(e, {
+                                    leadId: lead.id,
+                                    fromStageId: st.id,
+                                    pipelineId: selectedPipelineId,
+                                  });
+                                }}
+                                onClick={() => setSelectedLeadId(lead.id)}
+                                className={cx(
+                                  'cursor-grab active:cursor-grabbing rounded-xl border bg-black/25 p-3 transition',
+                                  isSelected
+                                    ? 'border-indigo-400/60 ring-2 ring-indigo-400/30'
+                                    : 'border-white/10 hover:bg-black/30 hover:border-white/20'
+                                )}
+                                role="button"
+                                tabIndex={0}
+                              >
+                                <p className="text-sm font-semibold text-white truncate">
+                                  {lead.full_name ?? 'Sin nombre'}
+                                </p>
+
+                                <div className="mt-1 space-y-1">
+                                  {lead.email ? (
+                                    <p className="text-[12px] text-white/70 truncate">{lead.email}</p>
+                                  ) : null}
+
+                                  {lead.phone ? (
+                                    <p className="text-[12px] text-white/70 truncate">{lead.phone}</p>
+                                  ) : null}
+
+                                  <div className="flex items-center gap-2 pt-1">
+                                    {lead.source ? (
+                                      <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70">
+                                        {lead.source}
+                                      </span>
+                                    ) : null}
+
+                                    <span className="text-[11px] text-white/45">
+                                      {new Date(lead.created_at).toLocaleString()}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                          {items.length === 0 ? (
+                            <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">
+                              Suelta aquí…
+                            </div>
                           ) : null}
-                          {lead.phone ? (
-                            <p className="text-[12px] text-white/70 truncate">{lead.phone}</p>
-                          ) : null}
-                          <div className="flex items-center gap-2 pt-1">
-                            {lead.source ? (
-                              <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70">
-                                {lead.source}
-                              </span>
-                            ) : null}
-                            <span className="text-[11px] text-white/45">
-                              {new Date(lead.created_at).toLocaleString()}
-                            </span>
-                          </div>
                         </div>
                       </div>
-                    ))}
-
-                    {items.length === 0 ? (
-                      <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">
-                        Suelta aquí…
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
       </div>
