@@ -31,7 +31,7 @@ export default function HomePage() {
         <div className="card-glass flex items-center justify-between gap-3 rounded-2xl border border-white/10 px-4 py-3">
           <Link href="/" className="flex items-center gap-3">
             <div className="relative h-9 w-9 overflow-hidden rounded-xl border border-white/10 bg-white/5">
-              <Image src="/public/brand/kalue-logo.png" alt="Kalue" fill className="object-contain p-1.5" priority />
+              <Image src="/brand/kalue-logo.png" alt="Kalue" fill className="object-contain p-1.5" priority />
             </div>
             <div className="leading-tight">
               <p className="text-sm font-semibold text-white">Kalue</p>
