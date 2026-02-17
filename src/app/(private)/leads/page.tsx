@@ -540,7 +540,7 @@ export default function LeadsPage() {
 
       const [leadsRes, unreadRes] = await Promise.all([
         fetch('/api/marketing/leads/list', { method: 'GET', cache: 'no-store', headers }),
-        fetch('/api/admin/leadhub/lead-notifications?unread=1&limit=500', { method: 'GET', cache: 'no-store', headers }),
+        fetch('/api/lead-notifications?unread=1&limit=500', { method: 'GET', cache: 'no-store', headers }),
       ]);
 
       if (leadsRes.ok) {

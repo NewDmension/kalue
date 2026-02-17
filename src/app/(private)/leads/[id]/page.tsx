@@ -218,30 +218,38 @@ export default function LeadDetailPage() {
   }, [leadId]);
 
   // 2) Mark read when entering detail (idempotente)
-  useEffect(() => {
-    let alive = true;
+useEffect(() => {
+  let alive = true;
 
-    async function run() {
-      if (!leadId) return;
+  async function run() {
+    if (!leadId) return;
 
-      const token = await getAccessToken();
-      if (!token) return;
+    const token = await getAccessToken();
+    if (!token) return;
 
-      await fetch('/api/admin/leadhub/lead-notifications/mark-read-by-lead', {
-        method: 'POST',
-        keepalive: true,
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ lead_id: leadId }),
-      });
+    const workspaceId = (getActiveWorkspaceId() ?? '').trim();
+    if (!workspaceId) return;
 
-      if (!alive) return;
-    }
+    await fetch('/api/lead-notifications/mark-read-by-lead', {
+      method: 'POST',
+      keepalive: true,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': workspaceId,
+      },
+      body: JSON.stringify({ lead_id: leadId }),
+    });
 
-    void run();
-    return () => {
-      alive = false;
-    };
-  }, [leadId]);
+    if (!alive) return;
+  }
+
+  void run();
+  return () => {
+    alive = false;
+  };
+}, [leadId]);
+
 
   if (loading) {
     return <div className="container-default py-8 text-white/70">Cargando lead…</div>;
