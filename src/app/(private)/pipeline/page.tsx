@@ -1,4 +1,3 @@
-// src/app/(private)/pipeline/page.tsx
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -35,7 +34,7 @@ type LeadRow = {
   source: string | null;
   labels: string[] | null;
   notes: string | null;
-  stage_id: string; // viene enriquecido en board
+  stage_id: string;
   position: number;
   stage_changed_at: string | null;
 };
@@ -49,6 +48,18 @@ type BoardResponse =
   | { ok: false; error: string; detail?: string };
 
 type MoveLeadResponse =
+  | { ok: true }
+  | { ok: false; error: string; detail?: string };
+
+type StageCreateResponse =
+  | { ok: true; stage: StageRow }
+  | { ok: false; error: string; detail?: string };
+
+type StageRenameResponse =
+  | { ok: true; stage: StageRow }
+  | { ok: false; error: string; detail?: string };
+
+type StageDeleteResponse =
   | { ok: true }
   | { ok: false; error: string; detail?: string };
 
@@ -91,12 +102,18 @@ function safeParseDragPayload(raw: string): DragPayload | null {
   }
 }
 
+function formatLocal(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
 export default function PipelinePage() {
   const { activeWorkspaceId } = useWorkspace();
 
   const [error, setError] = useState<string | null>(null);
 
-  // ✅ Punto 1: lead seleccionado (highlight)
+  // Lead seleccionado (highlight)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
 
   // Pipelines
@@ -105,18 +122,38 @@ export default function PipelinePage() {
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
 
   // Create pipeline
-  const [newName, setNewName] = useState('');
-  const [creating, setCreating] = useState(false);
+  const [newPipelineName, setNewPipelineName] = useState('');
+  const [creatingPipeline, setCreatingPipeline] = useState(false);
 
   // Board
   const [boardLoading, setBoardLoading] = useState(false);
   const [stages, setStages] = useState<StageRow[]>([]);
   const [leadsByStage, setLeadsByStage] = useState<Record<string, LeadRow[]>>({});
 
+  // Stage CRUD UI
+  const [newStageName, setNewStageName] = useState('');
+  const [creatingStage, setCreatingStage] = useState(false);
+
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameStageId, setRenameStageId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const [renaming, setRenaming] = useState(false);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteStageId, setDeleteStageId] = useState<string | null>(null);
+  const [deleteToStageId, setDeleteToStageId] = useState<string>('');
+  const [deleting, setDeleting] = useState(false);
+
   const selectedPipeline = useMemo(() => {
     if (!selectedPipelineId) return null;
     return pipelines.find((p) => p.id === selectedPipelineId) ?? null;
   }, [pipelines, selectedPipelineId]);
+
+  const stagesById = useMemo(() => {
+    const m = new Map<string, StageRow>();
+    for (const s of stages) m.set(s.id, s);
+    return m;
+  }, [stages]);
 
   async function loadPipelines(): Promise<void> {
     if (!activeWorkspaceId) {
@@ -174,16 +211,16 @@ export default function PipelinePage() {
   async function createPipeline(): Promise<void> {
     if (!activeWorkspaceId) return;
 
-    const name = newName.trim();
+    const name = newPipelineName.trim();
     if (!name) return;
 
-    setCreating(true);
+    setCreatingPipeline(true);
     setError(null);
 
     const token = await getAccessToken();
     if (!token) {
       setError('login_required');
-      setCreating(false);
+      setCreatingPipeline(false);
       return;
     }
 
@@ -200,7 +237,7 @@ export default function PipelinePage() {
     const raw = (await res.json()) as unknown;
     if (!res.ok || typeof raw !== 'object' || raw === null) {
       setError('create_failed');
-      setCreating(false);
+      setCreatingPipeline(false);
       return;
     }
 
@@ -209,7 +246,7 @@ export default function PipelinePage() {
       const msg = typeof r.error === 'string' ? r.error : 'create_failed';
       const detail = typeof r.detail === 'string' ? r.detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
-      setCreating(false);
+      setCreatingPipeline(false);
       return;
     }
 
@@ -218,15 +255,15 @@ export default function PipelinePage() {
 
     if (!pipeline || !pipelineId) {
       setError('create_failed: bad_return');
-      setCreating(false);
+      setCreatingPipeline(false);
       return;
     }
 
-    setNewName('');
+    setNewPipelineName('');
     setPipelines((prev) => [pipeline, ...prev]);
     setSelectedPipelineId(pipelineId);
 
-    setCreating(false);
+    setCreatingPipeline(false);
   }
 
   async function loadBoard(pipelineId: string): Promise<void> {
@@ -277,7 +314,7 @@ export default function PipelinePage() {
     setBoardLoading(false);
   }
 
-  function optimisticMoveLead(args: { leadId: string; fromStageId: string; toStageId: string; pipelineId: string }): void {
+  function optimisticMoveLead(args: { leadId: string; fromStageId: string; toStageId: string }): void {
     setLeadsByStage((prev) => {
       const next: Record<string, LeadRow[]> = { ...prev };
 
@@ -349,6 +386,162 @@ export default function PipelinePage() {
     return true;
   }
 
+  async function createStage(): Promise<void> {
+    if (!activeWorkspaceId || !selectedPipelineId) return;
+
+    const name = newStageName.trim();
+    if (!name) return;
+
+    setCreatingStage(true);
+    setError(null);
+
+    const token = await getAccessToken();
+    if (!token) {
+      setError('login_required');
+      setCreatingStage(false);
+      return;
+    }
+
+    const res = await fetch('/api/pipelines/stages/create', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': activeWorkspaceId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ pipelineId: selectedPipelineId, name }),
+    });
+
+    const raw = (await res.json()) as unknown;
+    const parsed = raw as StageCreateResponse;
+
+    if (!res.ok || !parsed || parsed.ok !== true) {
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'create_stage_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      setError(detail ? `${msg}: ${detail}` : msg);
+      setCreatingStage(false);
+      return;
+    }
+
+    setNewStageName('');
+    // recargamos board para asegurar orden + columnas
+    await loadBoard(selectedPipelineId);
+    setCreatingStage(false);
+  }
+
+  function openRename(stageId: string): void {
+    const st = stagesById.get(stageId);
+    if (!st) return;
+    setRenameStageId(stageId);
+    setRenameValue(st.name);
+    setRenameOpen(true);
+  }
+
+  async function doRename(): Promise<void> {
+    if (!activeWorkspaceId || !renameStageId) return;
+
+    const name = renameValue.trim();
+    if (!name) return;
+
+    setRenaming(true);
+    setError(null);
+
+    const token = await getAccessToken();
+    if (!token) {
+      setError('login_required');
+      setRenaming(false);
+      return;
+    }
+
+    const res = await fetch('/api/pipelines/stages/rename', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': activeWorkspaceId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ stageId: renameStageId, name }),
+    });
+
+    const raw = (await res.json()) as unknown;
+    const parsed = raw as StageRenameResponse;
+
+    if (!res.ok || !parsed || parsed.ok !== true) {
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'rename_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      setError(detail ? `${msg}: ${detail}` : msg);
+      setRenaming(false);
+      return;
+    }
+
+    // update local stages
+    const updated = parsed.stage;
+    setStages((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+
+    setRenameOpen(false);
+    setRenameStageId(null);
+    setRenameValue('');
+    setRenaming(false);
+  }
+
+  function openDelete(stageId: string): void {
+    if (!selectedPipelineId) return;
+    if (stages.length <= 1) {
+      setError('No puedes borrar la única columna.');
+      return;
+    }
+
+    const alternatives = stages.filter((s) => s.id !== stageId);
+    const fallback = alternatives[0]?.id ?? '';
+    setDeleteStageId(stageId);
+    setDeleteToStageId(fallback);
+    setDeleteOpen(true);
+  }
+
+  async function doDelete(): Promise<void> {
+    if (!activeWorkspaceId || !selectedPipelineId) return;
+    if (!deleteStageId) return;
+    if (!deleteToStageId) return;
+
+    setDeleting(true);
+    setError(null);
+
+    const token = await getAccessToken();
+    if (!token) {
+      setError('login_required');
+      setDeleting(false);
+      return;
+    }
+
+    const res = await fetch('/api/pipelines/stages/delete', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': activeWorkspaceId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ stageId: deleteStageId, toStageId: deleteToStageId }),
+    });
+
+    const raw = (await res.json()) as unknown;
+    const parsed = raw as StageDeleteResponse;
+
+    if (!res.ok || !parsed || parsed.ok !== true) {
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'delete_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      setError(detail ? `${msg}: ${detail}` : msg);
+      setDeleting(false);
+      return;
+    }
+
+    setDeleteOpen(false);
+    setDeleteStageId(null);
+    setDeleteToStageId('');
+    // recargamos board para columnas + leads movidos
+    await loadBoard(selectedPipelineId);
+    setDeleting(false);
+  }
+
   // Load pipelines on workspace change
   useEffect(() => {
     void loadPipelines();
@@ -357,8 +550,8 @@ export default function PipelinePage() {
 
   // Load board when pipeline selected
   useEffect(() => {
-    setSelectedLeadId(null); // reset selección al cambiar pipeline/workspace
-    if (!selectedPipelineId) {
+    setSelectedLeadId(null);
+    if (!selectedPipelineId || !activeWorkspaceId) {
       setStages([]);
       setLeadsByStage({});
       return;
@@ -388,16 +581,9 @@ export default function PipelinePage() {
 
     if (!selectedPipelineId) return;
     if (payload.pipelineId !== selectedPipelineId) return;
-
     if (payload.fromStageId === toStageId) return;
 
-    // Optimistic
-    optimisticMoveLead({
-      leadId: payload.leadId,
-      fromStageId: payload.fromStageId,
-      toStageId,
-      pipelineId: payload.pipelineId,
-    });
+    optimisticMoveLead({ leadId: payload.leadId, fromStageId: payload.fromStageId, toStageId });
 
     const ok = await persistMoveLead({
       leadId: payload.leadId,
@@ -422,28 +608,30 @@ export default function PipelinePage() {
         </div>
 
         <div className="flex flex-col gap-2 md:items-end">
+          {/* Crear pipeline */}
           <div className="flex items-center gap-2">
             <input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
+              value={newPipelineName}
+              onChange={(e) => setNewPipelineName(e.target.value)}
               placeholder="Nuevo pipeline (ej: Ventas)"
               className="w-full md:w-[260px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-white/40 outline-none focus:border-indigo-400/30"
             />
             <button
               type="button"
               onClick={() => void createPipeline()}
-              disabled={creating || newName.trim().length === 0 || !activeWorkspaceId}
+              disabled={creatingPipeline || newPipelineName.trim().length === 0 || !activeWorkspaceId}
               className={cx(
                 'rounded-xl border px-3 py-2 text-sm',
-                creating || newName.trim().length === 0 || !activeWorkspaceId
+                creatingPipeline || newPipelineName.trim().length === 0 || !activeWorkspaceId
                   ? 'border-white/10 bg-white/5 text-white/40'
                   : 'border-indigo-400/25 bg-indigo-500/10 text-white hover:bg-indigo-500/15'
               )}
             >
-              {creating ? 'Creando…' : 'Crear'}
+              {creatingPipeline ? 'Creando…' : 'Crear'}
             </button>
           </div>
 
+          {/* Selector pipeline */}
           <div className="flex items-center gap-2">
             <span className="text-xs text-white/55">Pipeline:</span>
             <select
@@ -462,6 +650,30 @@ export default function PipelinePage() {
               ))}
             </select>
           </div>
+
+          {/* Crear columna */}
+          <div className="flex items-center gap-2">
+            <input
+              value={newStageName}
+              onChange={(e) => setNewStageName(e.target.value)}
+              placeholder="Nueva columna (ej: Seguimiento)"
+              className="w-full md:w-[260px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-white/40 outline-none focus:border-indigo-400/30"
+              disabled={!selectedPipelineId || !activeWorkspaceId}
+            />
+            <button
+              type="button"
+              onClick={() => void createStage()}
+              disabled={creatingStage || newStageName.trim().length === 0 || !selectedPipelineId || !activeWorkspaceId}
+              className={cx(
+                'rounded-xl border px-3 py-2 text-sm',
+                creatingStage || newStageName.trim().length === 0 || !selectedPipelineId || !activeWorkspaceId
+                  ? 'border-white/10 bg-white/5 text-white/40'
+                  : 'border-emerald-400/25 bg-emerald-500/10 text-white hover:bg-emerald-500/15'
+              )}
+            >
+              {creatingStage ? 'Añadiendo…' : '+ Columna'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -471,44 +683,59 @@ export default function PipelinePage() {
         </div>
       ) : null}
 
-      {/* ✅ BOARD con altura fija + scroll por columna */}
+      {/* BOARD */}
       <div className="mt-6">
         {boardLoading ? (
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
-            Cargando board…
-          </div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">Cargando board…</div>
         ) : !boardHasStages ? (
           <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
             {selectedPipeline ? 'Este pipeline no tiene stages.' : 'Selecciona un pipeline.'}
           </div>
         ) : (
-          <div
-            className={cx(
-              'rounded-2xl border border-white/10 bg-black/10 p-3',
-              // altura “tipo app”: ajusta si quieres (depende de tu topbar)
-              'h-[calc(100vh-320px)] min-h-[420px]'
-            )}
-          >
-            {/* Scroll horizontal si hay muchas columnas */}
+          <div className={cx('rounded-2xl border border-white/10 bg-black/10 p-3', 'h-[calc(100vh-360px)] min-h-[420px]')}>
             <div className="h-full overflow-x-auto">
               <div className="flex h-full gap-4 pr-2">
                 {stages.map((st) => {
                   const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
+                  const canDelete = stages.length > 1;
 
                   return (
                     <div
                       key={st.id}
                       onDragOver={onDragOverColumn}
                       onDrop={(e) => void onDropColumn(e, st.id)}
-                      className={cx(
-                        'flex h-full w-[290px] shrink-0 flex-col rounded-2xl border border-white/10 bg-white/5 p-3',
-                        'transition'
-                      )}
+                      className={cx('flex h-full w-[290px] shrink-0 flex-col rounded-2xl border border-white/10 bg-white/5 p-3 transition')}
                     >
-                      {/* Header columna */}
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
-                        <span className="text-xs text-white/55">{items.length}</span>
+                      {/* Header columna + acciones */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
+                          <p className="mt-0.5 text-[11px] text-white/50">{items.length} leads</p>
+                        </div>
+
+                        <div className="flex shrink-0 items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openRename(st.id)}
+                            className="rounded-lg border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-white/80 hover:bg-black/30"
+                          >
+                            Renombrar
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => openDelete(st.id)}
+                            disabled={!canDelete}
+                            className={cx(
+                              'rounded-lg border px-2 py-1 text-[11px]',
+                              !canDelete
+                                ? 'border-white/10 bg-white/5 text-white/35'
+                                : 'border-red-400/20 bg-red-500/10 text-red-100 hover:bg-red-500/15'
+                            )}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
                       </div>
 
                       {/* Lista con scroll */}
@@ -539,18 +766,11 @@ export default function PipelinePage() {
                                 role="button"
                                 tabIndex={0}
                               >
-                                <p className="text-sm font-semibold text-white truncate">
-                                  {lead.full_name ?? 'Sin nombre'}
-                                </p>
+                                <p className="text-sm font-semibold text-white truncate">{lead.full_name ?? 'Sin nombre'}</p>
 
                                 <div className="mt-1 space-y-1">
-                                  {lead.email ? (
-                                    <p className="text-[12px] text-white/70 truncate">{lead.email}</p>
-                                  ) : null}
-
-                                  {lead.phone ? (
-                                    <p className="text-[12px] text-white/70 truncate">{lead.phone}</p>
-                                  ) : null}
+                                  {lead.email ? <p className="text-[12px] text-white/70 truncate">{lead.email}</p> : null}
+                                  {lead.phone ? <p className="text-[12px] text-white/70 truncate">{lead.phone}</p> : null}
 
                                   <div className="flex items-center gap-2 pt-1">
                                     {lead.source ? (
@@ -558,10 +778,7 @@ export default function PipelinePage() {
                                         {lead.source}
                                       </span>
                                     ) : null}
-
-                                    <span className="text-[11px] text-white/45">
-                                      {new Date(lead.created_at).toLocaleString()}
-                                    </span>
+                                    <span className="text-[11px] text-white/45">{formatLocal(lead.created_at)}</span>
                                   </div>
                                 </div>
                               </div>
@@ -569,9 +786,7 @@ export default function PipelinePage() {
                           })}
 
                           {items.length === 0 ? (
-                            <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">
-                              Suelta aquí…
-                            </div>
+                            <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">Suelta aquí…</div>
                           ) : null}
                         </div>
                       </div>
@@ -584,6 +799,7 @@ export default function PipelinePage() {
         )}
       </div>
 
+      {/* Estado */}
       <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4">
         <p className="text-sm font-semibold text-white/90">Estado</p>
         <p className="mt-1 text-sm text-white/60">
@@ -591,6 +807,104 @@ export default function PipelinePage() {
           <span className="text-white/85">{selectedPipeline?.name ?? '—'}</span>
         </p>
       </div>
+
+      {/* MODAL RENOMBRAR */}
+      {renameOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => (renaming ? null : setRenameOpen(false))} />
+          <div className="relative w-full max-w-[520px] rounded-2xl border border-white/10 bg-black/60 backdrop-blur-[10px] p-5">
+            <p className="text-lg font-semibold text-white">Renombrar columna</p>
+            <p className="mt-1 text-sm text-white/60">Cambia el nombre de la columna seleccionada.</p>
+
+            <input
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              className="mt-4 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/30"
+              placeholder="Nuevo nombre"
+              disabled={renaming}
+            />
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRenameOpen(false)}
+                disabled={renaming}
+                className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void doRename()}
+                disabled={renaming || renameValue.trim().length === 0}
+                className={cx(
+                  'rounded-xl border px-4 py-2 text-sm',
+                  renaming || renameValue.trim().length === 0
+                    ? 'border-white/10 bg-white/5 text-white/40'
+                    : 'border-indigo-400/25 bg-indigo-500/10 text-white hover:bg-indigo-500/15'
+                )}
+              >
+                {renaming ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* MODAL ELIMINAR */}
+      {deleteOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => (deleting ? null : setDeleteOpen(false))} />
+          <div className="relative w-full max-w-[560px] rounded-2xl border border-white/10 bg-black/60 backdrop-blur-[10px] p-5">
+            <p className="text-lg font-semibold text-white">Eliminar columna</p>
+            <p className="mt-1 text-sm text-white/60">
+              Los leads de esta columna se moverán a otra columna antes de eliminarla.
+            </p>
+
+            <div className="mt-4">
+              <p className="text-xs text-white/55">Mover leads a:</p>
+              <select
+                value={deleteToStageId}
+                onChange={(e) => setDeleteToStageId(e.target.value)}
+                className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none"
+                disabled={deleting}
+              >
+                {stages
+                  .filter((s) => s.id !== deleteStageId)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteOpen(false)}
+                disabled={deleting}
+                className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void doDelete()}
+                disabled={deleting || !deleteToStageId}
+                className={cx(
+                  'rounded-xl border px-4 py-2 text-sm',
+                  deleting || !deleteToStageId
+                    ? 'border-white/10 bg-white/5 text-white/40'
+                    : 'border-red-400/20 bg-red-500/10 text-red-100 hover:bg-red-500/15'
+                )}
+              >
+                {deleting ? 'Eliminando…' : 'Eliminar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
