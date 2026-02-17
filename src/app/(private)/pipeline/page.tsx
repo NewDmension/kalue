@@ -113,8 +113,9 @@ export default function PipelinePage() {
 
   const [error, setError] = useState<string | null>(null);
 
-  // Lead seleccionado (highlight)
+  // Selección + drag “aura”
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const [draggingLeadId, setDraggingLeadId] = useState<string | null>(null);
 
   // Pipelines
   const [pipelinesLoading, setPipelinesLoading] = useState(true);
@@ -175,10 +176,7 @@ export default function PipelinePage() {
 
     const res = await fetch('/api/pipelines/list', {
       method: 'GET',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'x-workspace-id': activeWorkspaceId,
-      },
+      headers: { authorization: `Bearer ${token}`, 'x-workspace-id': activeWorkspaceId },
     });
 
     const raw = (await res.json()) as unknown;
@@ -201,10 +199,8 @@ export default function PipelinePage() {
     }
 
     setPipelines(parsed.pipelines);
-
     const def = parsed.pipelines.find((p) => p.is_default) ?? parsed.pipelines[0] ?? null;
     setSelectedPipelineId(def?.id ?? null);
-
     setPipelinesLoading(false);
   }
 
@@ -262,7 +258,6 @@ export default function PipelinePage() {
     setNewPipelineName('');
     setPipelines((prev) => [pipeline, ...prev]);
     setSelectedPipelineId(pipelineId);
-
     setCreatingPipeline(false);
   }
 
@@ -284,10 +279,7 @@ export default function PipelinePage() {
 
     const res = await fetch(url.toString(), {
       method: 'GET',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'x-workspace-id': activeWorkspaceId,
-      },
+      headers: { authorization: `Bearer ${token}`, 'x-workspace-id': activeWorkspaceId },
     });
 
     const raw = (await res.json()) as unknown;
@@ -343,7 +335,12 @@ export default function PipelinePage() {
     });
   }
 
-  async function persistMoveLead(args: { leadId: string; toStageId: string; pipelineId: string; toPosition: number }): Promise<boolean> {
+  async function persistMoveLead(args: {
+    leadId: string;
+    toStageId: string;
+    pipelineId: string;
+    toPosition: number;
+  }): Promise<boolean> {
     if (!activeWorkspaceId) return false;
 
     const token = await getAccessToken();
@@ -416,15 +413,20 @@ export default function PipelinePage() {
     const parsed = raw as StageCreateResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'create_stage_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'create_stage_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setCreatingStage(false);
       return;
     }
 
     setNewStageName('');
-    // recargamos board para asegurar orden + columnas
     await loadBoard(selectedPipelineId);
     setCreatingStage(false);
   }
@@ -474,7 +476,6 @@ export default function PipelinePage() {
       return;
     }
 
-    // update local stages
     const updated = parsed.stage;
     setStages((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
 
@@ -537,7 +538,6 @@ export default function PipelinePage() {
     setDeleteOpen(false);
     setDeleteStageId(null);
     setDeleteToStageId('');
-    // recargamos board para columnas + leads movidos
     await loadBoard(selectedPipelineId);
     setDeleting(false);
   }
@@ -562,9 +562,14 @@ export default function PipelinePage() {
 
   // Drag handlers
   function onDragStartLead(e: React.DragEvent, payload: DragPayload): void {
+    setDraggingLeadId(payload.leadId);
     const data = safeJsonStringify(payload);
     e.dataTransfer.setData('application/json', data);
     e.dataTransfer.effectAllowed = 'move';
+  }
+
+  function onDragEndLead(): void {
+    setDraggingLeadId(null);
   }
 
   function onDragOverColumn(e: React.DragEvent): void {
@@ -574,6 +579,7 @@ export default function PipelinePage() {
 
   async function onDropColumn(e: React.DragEvent, toStageId: string): Promise<void> {
     e.preventDefault();
+    setDraggingLeadId(null);
 
     const raw = e.dataTransfer.getData('application/json');
     const payload = safeParseDragPayload(raw);
@@ -599,74 +605,83 @@ export default function PipelinePage() {
 
   const boardHasStages = stages.length > 0;
 
+  const canCreateStage = Boolean(activeWorkspaceId && selectedPipelineId);
+  const canCreatePipeline = Boolean(activeWorkspaceId);
+
   return (
     <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Pipeline</h1>
-          <p className="mt-2 text-sm text-white/70">Kanban por stages. Arrastra leads entre columnas.</p>
+      {/* HEADER */}
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold">Pipeline</h1>
+            <p className="mt-1 text-sm text-white/70">Kanban por stages. Arrastra leads entre columnas.</p>
+          </div>
+
+          {/* TOOLBAR fila 1 */}
+          <div className="flex w-full flex-col gap-2 md:w-auto md:flex-row md:items-center">
+            {/* Selector pipeline */}
+            <div className="flex w-full items-center gap-2 md:w-auto">
+              <span className="shrink-0 text-xs text-white/55">Pipeline</span>
+              <select
+                value={selectedPipelineId ?? ''}
+                onChange={(e) => setSelectedPipelineId(e.target.value || null)}
+                className="w-full md:w-[260px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/30"
+                disabled={pipelinesLoading || pipelines.length === 0}
+              >
+                <option value="" disabled>
+                  {pipelinesLoading ? 'Cargando…' : 'Selecciona'}
+                </option>
+                {pipelines.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Crear pipeline */}
+            <div className="flex w-full items-center gap-2 md:w-auto">
+              <input
+                value={newPipelineName}
+                onChange={(e) => setNewPipelineName(e.target.value)}
+                placeholder="Nuevo pipeline"
+                className="w-full md:w-[220px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-white/40 outline-none focus:border-indigo-400/30"
+              />
+              <button
+                type="button"
+                onClick={() => void createPipeline()}
+                disabled={creatingPipeline || newPipelineName.trim().length === 0 || !canCreatePipeline}
+                className={cx(
+                  'shrink-0 rounded-xl border px-4 py-2 text-sm',
+                  creatingPipeline || newPipelineName.trim().length === 0 || !canCreatePipeline
+                    ? 'border-white/10 bg-white/5 text-white/40'
+                    : 'border-indigo-400/25 bg-indigo-500/10 text-white hover:bg-indigo-500/15'
+                )}
+              >
+                {creatingPipeline ? 'Creando…' : 'Crear'}
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div className="flex flex-col gap-2 md:items-end">
-          {/* Crear pipeline */}
-          <div className="flex items-center gap-2">
-            <input
-              value={newPipelineName}
-              onChange={(e) => setNewPipelineName(e.target.value)}
-              placeholder="Nuevo pipeline (ej: Ventas)"
-              className="w-full md:w-[260px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-white/40 outline-none focus:border-indigo-400/30"
-            />
-            <button
-              type="button"
-              onClick={() => void createPipeline()}
-              disabled={creatingPipeline || newPipelineName.trim().length === 0 || !activeWorkspaceId}
-              className={cx(
-                'rounded-xl border px-3 py-2 text-sm',
-                creatingPipeline || newPipelineName.trim().length === 0 || !activeWorkspaceId
-                  ? 'border-white/10 bg-white/5 text-white/40'
-                  : 'border-indigo-400/25 bg-indigo-500/10 text-white hover:bg-indigo-500/15'
-              )}
-            >
-              {creatingPipeline ? 'Creando…' : 'Crear'}
-            </button>
-          </div>
-
-          {/* Selector pipeline */}
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-white/55">Pipeline:</span>
-            <select
-              value={selectedPipelineId ?? ''}
-              onChange={(e) => setSelectedPipelineId(e.target.value || null)}
-              className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none"
-              disabled={pipelinesLoading || pipelines.length === 0}
-            >
-              <option value="" disabled>
-                {pipelinesLoading ? 'Cargando…' : 'Selecciona'}
-              </option>
-              {pipelines.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Crear columna */}
-          <div className="flex items-center gap-2">
+        {/* TOOLBAR fila 2: crear columna */}
+        <div className="flex w-full flex-col gap-2 md:flex-row md:items-center md:justify-end">
+          <div className="flex w-full items-center gap-2 md:w-auto">
             <input
               value={newStageName}
               onChange={(e) => setNewStageName(e.target.value)}
-              placeholder="Nueva columna (ej: Seguimiento)"
-              className="w-full md:w-[260px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-white/40 outline-none focus:border-indigo-400/30"
-              disabled={!selectedPipelineId || !activeWorkspaceId}
+              placeholder="Nueva columna"
+              className="w-full md:w-[260px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-white/40 outline-none focus:border-emerald-400/30"
+              disabled={!canCreateStage}
             />
             <button
               type="button"
               onClick={() => void createStage()}
-              disabled={creatingStage || newStageName.trim().length === 0 || !selectedPipelineId || !activeWorkspaceId}
+              disabled={creatingStage || newStageName.trim().length === 0 || !canCreateStage}
               className={cx(
-                'rounded-xl border px-3 py-2 text-sm',
-                creatingStage || newStageName.trim().length === 0 || !selectedPipelineId || !activeWorkspaceId
+                'shrink-0 rounded-xl border px-4 py-2 text-sm',
+                creatingStage || newStageName.trim().length === 0 || !canCreateStage
                   ? 'border-white/10 bg-white/5 text-white/40'
                   : 'border-emerald-400/25 bg-emerald-500/10 text-white hover:bg-emerald-500/15'
               )}
@@ -692,7 +707,7 @@ export default function PipelinePage() {
             {selectedPipeline ? 'Este pipeline no tiene stages.' : 'Selecciona un pipeline.'}
           </div>
         ) : (
-          <div className={cx('rounded-2xl border border-white/10 bg-black/10 p-3', 'h-[calc(100vh-360px)] min-h-[420px]')}>
+          <div className={cx('rounded-2xl border border-white/10 bg-black/10 p-3', 'h-[calc(100vh-380px)] min-h-[440px]')}>
             <div className="h-full overflow-x-auto">
               <div className="flex h-full gap-4 pr-2">
                 {stages.map((st) => {
@@ -704,7 +719,7 @@ export default function PipelinePage() {
                       key={st.id}
                       onDragOver={onDragOverColumn}
                       onDrop={(e) => void onDropColumn(e, st.id)}
-                      className={cx('flex h-full w-[290px] shrink-0 flex-col rounded-2xl border border-white/10 bg-white/5 p-3 transition')}
+                      className="flex h-full w-[300px] shrink-0 flex-col rounded-2xl border border-white/10 bg-white/5 p-3"
                     >
                       {/* Header columna + acciones */}
                       <div className="flex items-start justify-between gap-2">
@@ -738,11 +753,21 @@ export default function PipelinePage() {
                         </div>
                       </div>
 
-                      {/* Lista con scroll */}
-                      <div className="mt-3 flex-1 overflow-y-auto pr-1">
+                      {/* Lista con scroll: NO pisa cards */}
+                      <div
+                        className="mt-3 flex-1 overflow-y-auto pr-2"
+                        style={{ scrollbarGutter: 'stable' }}
+                      >
                         <div className="flex flex-col gap-2">
                           {items.map((lead) => {
                             const isSelected = selectedLeadId === lead.id;
+                            const isDragging = draggingLeadId === lead.id;
+
+                            // Aura “verde” (como tus cards) + cuando arrastras
+                            const aura =
+                              isDragging || isSelected
+                                ? 'border-emerald-400/45 ring-2 ring-emerald-400/25 shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_0_24px_rgba(16,185,129,0.18)]'
+                                : 'border-white/10 hover:border-white/20';
 
                             return (
                               <div
@@ -750,18 +775,16 @@ export default function PipelinePage() {
                                 draggable
                                 onDragStart={(e) => {
                                   if (!selectedPipelineId) return;
-                                  onDragStartLead(e, {
-                                    leadId: lead.id,
-                                    fromStageId: st.id,
-                                    pipelineId: selectedPipelineId,
-                                  });
+                                  setSelectedLeadId(lead.id);
+                                  onDragStartLead(e, { leadId: lead.id, fromStageId: st.id, pipelineId: selectedPipelineId });
                                 }}
+                                onDragEnd={onDragEndLead}
                                 onClick={() => setSelectedLeadId(lead.id)}
                                 className={cx(
                                   'cursor-grab active:cursor-grabbing rounded-xl border bg-black/25 p-3 transition',
-                                  isSelected
-                                    ? 'border-indigo-400/60 ring-2 ring-indigo-400/30'
-                                    : 'border-white/10 hover:bg-black/30 hover:border-white/20'
+                                  aura,
+                                  isDragging ? 'opacity-95' : '',
+                                  'hover:bg-black/30'
                                 )}
                                 role="button"
                                 tabIndex={0}
@@ -857,9 +880,7 @@ export default function PipelinePage() {
           <div className="absolute inset-0 bg-black/60" onClick={() => (deleting ? null : setDeleteOpen(false))} />
           <div className="relative w-full max-w-[560px] rounded-2xl border border-white/10 bg-black/60 backdrop-blur-[10px] p-5">
             <p className="text-lg font-semibold text-white">Eliminar columna</p>
-            <p className="mt-1 text-sm text-white/60">
-              Los leads de esta columna se moverán a otra columna antes de eliminarla.
-            </p>
+            <p className="mt-1 text-sm text-white/60">Los leads se moverán a otra columna antes de eliminarla.</p>
 
             <div className="mt-4">
               <p className="text-xs text-white/55">Mover leads a:</p>
