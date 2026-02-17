@@ -22,21 +22,41 @@ type StageRow = {
   color: string | null;
   is_won: boolean;
   is_lost: boolean;
+};
+
+type LeadRow = {
+  id: string;
+  workspace_id: string;
   created_at: string;
-  updated_at: string;
+  full_name: string | null;
+  email: string | null;
+  phone: string | null;
+  status: string;
+  source: string | null;
+  labels: string[] | null;
+  notes: string | null;
+  stage_id: string; // viene enriquecido en board
+  position: number;
+  stage_changed_at: string | null;
 };
 
 type PipelinesListResponse =
   | { ok: true; pipelines: PipelineRow[] }
   | { ok: false; error: string; detail?: string };
 
-type CreatePipelineResponse =
-  | { ok: true; pipelineId: string; pipeline: PipelineRow; stages: StageRow[] }
+type BoardResponse =
+  | { ok: true; stages: StageRow[]; leadsByStage: Record<string, LeadRow[]> }
   | { ok: false; error: string; detail?: string };
 
-type StagesResponse =
-  | { ok: true; stages: StageRow[] }
+type MoveLeadResponse =
+  | { ok: true }
   | { ok: false; error: string; detail?: string };
+
+type DragPayload = {
+  leadId: string;
+  fromStageId: string;
+  pipelineId: string;
+};
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
@@ -47,20 +67,48 @@ async function getAccessToken(): Promise<string | null> {
   return data.session?.access_token ?? null;
 }
 
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
+  }
+}
+
+function safeParseDragPayload(raw: string): DragPayload | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const r = parsed as Record<string, unknown>;
+    const leadId = typeof r.leadId === 'string' ? r.leadId : '';
+    const fromStageId = typeof r.fromStageId === 'string' ? r.fromStageId : '';
+    const pipelineId = typeof r.pipelineId === 'string' ? r.pipelineId : '';
+    if (!leadId || !fromStageId || !pipelineId) return null;
+    return { leadId, fromStageId, pipelineId };
+  } catch {
+    return null;
+  }
+}
+
 export default function PipelinePage() {
   const { activeWorkspaceId } = useWorkspace();
 
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Pipelines
+  const [pipelinesLoading, setPipelinesLoading] = useState(true);
   const [pipelines, setPipelines] = useState<PipelineRow[]>([]);
   const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
 
-  const [stages, setStages] = useState<StageRow[]>([]);
-  const [stagesLoading, setStagesLoading] = useState(false);
-
+  // Create pipeline (opcional, si ya lo montaste)
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
+
+  // Board
+  const [boardLoading, setBoardLoading] = useState(false);
+  const [stages, setStages] = useState<StageRow[]>([]);
+  const [leadsByStage, setLeadsByStage] = useState<Record<string, LeadRow[]>>({});
 
   const selectedPipeline = useMemo(() => {
     if (!selectedPipelineId) return null;
@@ -71,18 +119,17 @@ export default function PipelinePage() {
     if (!activeWorkspaceId) {
       setPipelines([]);
       setSelectedPipelineId(null);
-      setStages([]);
-      setLoading(false);
+      setPipelinesLoading(false);
       return;
     }
 
-    setLoading(true);
+    setPipelinesLoading(true);
     setError(null);
 
     const token = await getAccessToken();
     if (!token) {
       setError('login_required');
-      setLoading(false);
+      setPipelinesLoading(false);
       return;
     }
 
@@ -94,75 +141,25 @@ export default function PipelinePage() {
       },
     });
 
-    const data = (await res.json()) as unknown;
+    const raw = (await res.json()) as unknown;
+    const parsed = raw as PipelinesListResponse;
 
-    const parsed = data as PipelinesListResponse;
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'failed_to_load';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'failed_to_load_pipelines';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setPipelines([]);
       setSelectedPipelineId(null);
-      setStages([]);
-      setLoading(false);
+      setPipelinesLoading(false);
       return;
     }
 
     setPipelines(parsed.pipelines);
 
-    // Auto-select: default o primero
     const def = parsed.pipelines.find((p) => p.is_default) ?? parsed.pipelines[0] ?? null;
     setSelectedPipelineId(def?.id ?? null);
 
-    setLoading(false);
-  }
-
-  async function loadStages(pipelineId: string): Promise<void> {
-    if (!activeWorkspaceId) return;
-
-    setStagesLoading(true);
-    setError(null);
-
-    const token = await getAccessToken();
-    if (!token) {
-      setError('login_required');
-      setStagesLoading(false);
-      return;
-    }
-
-    const url = new URL('/api/pipelines/stages', window.location.origin);
-    url.searchParams.set('pipelineId', pipelineId);
-
-    const res = await fetch(url.toString(), {
-      method: 'GET',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'x-workspace-id': activeWorkspaceId,
-      },
-    });
-
-    const data = (await res.json()) as unknown;
-    const parsed = data as StagesResponse;
-
-    if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'failed_to_load_stages';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
-      setError(detail ? `${msg}: ${detail}` : msg);
-      setStages([]);
-      setStagesLoading(false);
-      return;
-    }
-
-    setStages(parsed.stages);
-    setStagesLoading(false);
+    setPipelinesLoading(false);
   }
 
   async function createPipeline(): Promise<void> {
@@ -191,53 +188,265 @@ export default function PipelinePage() {
       body: JSON.stringify({ name }),
     });
 
-    const data = (await res.json()) as unknown;
-    const parsed = data as CreatePipelineResponse;
+    const raw = (await res.json()) as unknown;
+    if (!res.ok || typeof raw !== 'object' || raw === null) {
+      setError('create_failed');
+      setCreating(false);
+      return;
+    }
 
-    if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'create_failed';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+    const r = raw as Record<string, unknown>;
+    if (r.ok !== true) {
+      const msg = typeof r.error === 'string' ? r.error : 'create_failed';
+      const detail = typeof r.detail === 'string' ? r.detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setCreating(false);
       return;
     }
 
-    setNewName('');
+    const pipeline = r.pipeline as unknown as PipelineRow | undefined;
+    const pipelineId = typeof r.pipelineId === 'string' ? r.pipelineId : null;
 
-    // Añadimos al listado y seleccionamos
-    setPipelines((prev) => [parsed.pipeline, ...prev]);
-    setSelectedPipelineId(parsed.pipelineId);
-    setStages(parsed.stages);
+    if (!pipeline || !pipelineId) {
+      setError('create_failed: bad_return');
+      setCreating(false);
+      return;
+    }
+
+    setNewName('');
+    setPipelines((prev) => [pipeline, ...prev]);
+    setSelectedPipelineId(pipelineId);
 
     setCreating(false);
   }
 
+  async function loadBoard(pipelineId: string): Promise<void> {
+    if (!activeWorkspaceId) return;
+
+    setBoardLoading(true);
+    setError(null);
+
+    const token = await getAccessToken();
+    if (!token) {
+      setError('login_required');
+      setBoardLoading(false);
+      return;
+    }
+
+    const url = new URL('/api/pipelines/board', window.location.origin);
+    url.searchParams.set('pipelineId', pipelineId);
+
+    const res = await fetch(url.toString(), {
+      method: 'GET',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': activeWorkspaceId,
+      },
+    });
+
+    const raw = (await res.json()) as unknown;
+    const parsed = raw as BoardResponse;
+
+    if (!res.ok || !parsed || parsed.ok !== true) {
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'failed_to_load_board';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      setError(detail ? `${msg}: ${detail}` : msg);
+      setStages([]);
+      setLeadsByStage({});
+      setBoardLoading(false);
+      return;
+    }
+
+    setStages(parsed.stages);
+    setLeadsByStage(parsed.leadsByStage ?? {});
+    setBoardLoading(false);
+  }
+
+  function optimisticMoveLead(args: { leadId: string; fromStageId: string; toStageId: string; pipelineId: string }): void {
+    setLeadsByStage((prev) => {
+      const next: Record<string, LeadRow[]> = { ...prev };
+
+      const fromArr = Array.isArray(next[args.fromStageId]) ? [...next[args.fromStageId]!] : [];
+      const toArr = Array.isArray(next[args.toStageId]) ? [...next[args.toStageId]!] : [];
+
+      const idx = fromArr.findIndex((l) => l.id === args.leadId);
+      if (idx < 0) return prev;
+
+      const lead = fromArr[idx]!;
+      fromArr.splice(idx, 1);
+
+      const moved: LeadRow = {
+        ...lead,
+        stage_id: args.toStageId,
+        position: 999999, // al final
+        stage_changed_at: new Date().toISOString(),
+      };
+
+      toArr.push(moved);
+
+      next[args.fromStageId] = fromArr;
+      next[args.toStageId] = toArr;
+
+      return next;
+    });
+  }
+
+  async function persistMoveLead(args: { leadId: string; toStageId: string; pipelineId: string; toPosition: number }): Promise<boolean> {
+    if (!activeWorkspaceId) return false;
+
+    const token = await getAccessToken();
+    if (!token) {
+      setError('login_required');
+      return false;
+    }
+
+    const res = await fetch('/api/pipelines/move-lead', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': activeWorkspaceId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        pipelineId: args.pipelineId,
+        leadId: args.leadId,
+        toStageId: args.toStageId,
+        toPosition: args.toPosition,
+      }),
+    });
+
+    const raw = (await res.json()) as unknown;
+    const parsed = raw as MoveLeadResponse;
+
+    if (!res.ok || !parsed || parsed.ok !== true) {
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'move_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
+      setError(detail ? `${msg}: ${detail}` : msg);
+      return false;
+    }
+
+    return true;
+  }
+
+  // Load pipelines on workspace change
   useEffect(() => {
     void loadPipelines();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkspaceId]);
 
+  // Load board when pipeline selected
   useEffect(() => {
     if (!selectedPipelineId) {
       setStages([]);
+      setLeadsByStage({});
       return;
     }
-    void loadStages(selectedPipelineId);
+    void loadBoard(selectedPipelineId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPipelineId, activeWorkspaceId]);
 
+  // Drag handlers
+  function onDragStartLead(e: React.DragEvent, payload: DragPayload): void {
+    const data = safeJsonStringify(payload);
+    e.dataTransfer.setData('application/json', data);
+    e.dataTransfer.effectAllowed = 'move';
+  }
+
+  function onDragOverColumn(e: React.DragEvent): void {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  }
+
+  async function onDropColumn(e: React.DragEvent, toStageId: string): Promise<void> {
+    e.preventDefault();
+
+    const raw = e.dataTransfer.getData('application/json');
+    const payload = safeParseDragPayload(raw);
+    if (!payload) return;
+
+    if (!selectedPipelineId) return;
+    if (payload.pipelineId !== selectedPipelineId) return;
+
+    if (payload.fromStageId === toStageId) return; // por ahora no reordenamos dentro misma columna
+
+    // Optimistic
+    optimisticMoveLead({
+      leadId: payload.leadId,
+      fromStageId: payload.fromStageId,
+      toStageId,
+      pipelineId: payload.pipelineId,
+    });
+
+    const ok = await persistMoveLead({
+      leadId: payload.leadId,
+      pipelineId: payload.pipelineId,
+      toStageId,
+      toPosition: 999999,
+    });
+
+    // Si falla, recargamos board como “rollback”
+    if (!ok) {
+      await loadBoard(payload.pipelineId);
+    }
+  }
+
   return (
     <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Pipeline</h1>
           <p className="mt-2 text-sm text-white/70">
-            Crea y gestiona tus pipelines. El kanban (drag &amp; drop) lo montamos justo después.
+            Kanban por stages. Arrastra leads entre columnas.
           </p>
+        </div>
+
+        <div className="flex flex-col gap-2 md:items-end">
+          <div className="flex items-center gap-2">
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Nuevo pipeline (ej: Ventas)"
+              className="w-full md:w-[260px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-white/40 outline-none focus:border-indigo-400/30"
+            />
+            <button
+              type="button"
+              onClick={() => void createPipeline()}
+              disabled={creating || newName.trim().length === 0 || !activeWorkspaceId}
+              className={cx(
+                'rounded-xl border px-3 py-2 text-sm',
+                creating || newName.trim().length === 0 || !activeWorkspaceId
+                  ? 'border-white/10 bg-white/5 text-white/40'
+                  : 'border-indigo-400/25 bg-indigo-500/10 text-white hover:bg-indigo-500/15'
+              )}
+            >
+              {creating ? 'Creando…' : 'Crear'}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-white/55">Pipeline:</span>
+            <select
+              value={selectedPipelineId ?? ''}
+              onChange={(e) => setSelectedPipelineId(e.target.value || null)}
+              className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none"
+              disabled={pipelinesLoading || pipelines.length === 0}
+            >
+              <option value="" disabled>
+                {pipelinesLoading ? 'Cargando…' : 'Selecciona'}
+              </option>
+              {pipelines.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -247,124 +456,92 @@ export default function PipelinePage() {
         </div>
       ) : null}
 
-      <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
-        {/* Left: Pipelines list */}
-        <div className="md:col-span-1">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-semibold text-white/90">Tus pipelines</p>
-              {loading ? <span className="text-xs text-white/50">Cargando…</span> : null}
-            </div>
-
-            <div className="mt-3 flex gap-2">
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                placeholder="Nombre (ej: Ventas)"
-                className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white placeholder:text-white/40 outline-none focus:border-indigo-400/30"
-              />
-              <button
-                type="button"
-                onClick={() => void createPipeline()}
-                disabled={creating || newName.trim().length === 0 || !activeWorkspaceId}
-                className={cx(
-                  'shrink-0 rounded-xl border px-3 py-2 text-sm',
-                  creating || newName.trim().length === 0 || !activeWorkspaceId
-                    ? 'border-white/10 bg-white/5 text-white/40'
-                    : 'border-indigo-400/25 bg-indigo-500/10 text-white hover:bg-indigo-500/15',
-                )}
-              >
-                {creating ? 'Creando…' : 'Crear'}
-              </button>
-            </div>
-
-            <div className="mt-4 flex flex-col gap-2">
-              {!loading && pipelines.length === 0 ? (
-                <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/70">
-                  No tienes pipelines aún. Crea el primero arriba.
-                </div>
-              ) : null}
-
-              {pipelines.map((p) => {
-                const isActive = p.id === selectedPipelineId;
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setSelectedPipelineId(p.id)}
-                    className={cx(
-                      'w-full rounded-xl border px-3 py-2 text-left text-sm transition',
-                      isActive
-                        ? 'border-indigo-400/30 bg-indigo-500/10 text-white'
-                        : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10 hover:text-white',
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="truncate">{p.name}</span>
-                      {p.is_default ? (
-                        <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70">
-                          Default
-                        </span>
-                      ) : null}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+      <div className="mt-6">
+        {boardLoading ? (
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
+            Cargando board…
           </div>
-        </div>
-
-        {/* Right: Selected pipeline + stages */}
-        <div className="md:col-span-2">
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-sm text-white/60">Seleccionado</p>
-                <p className="truncate text-base font-semibold text-white">
-                  {selectedPipeline?.name ?? '—'}
-                </p>
-              </div>
-              {stagesLoading ? <span className="text-xs text-white/50">Cargando stages…</span> : null}
-            </div>
-
-            <div className="mt-4">
-              <p className="text-sm font-semibold text-white/90">Stages</p>
-
-              {selectedPipelineId && !stagesLoading && stages.length === 0 ? (
-                <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/70">
-                  Este pipeline no tiene stages (raro). Si lo acabas de crear debería venir con default stages.
-                </div>
-              ) : null}
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                {stages.map((s) => (
-                  <span
-                    key={s.id}
-                    className={cx(
-                      'rounded-xl border px-3 py-1 text-xs',
-                      s.is_won
-                        ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-100'
-                        : s.is_lost
-                          ? 'border-red-400/25 bg-red-500/10 text-red-100'
-                          : 'border-white/10 bg-white/5 text-white/80',
-                    )}
-                  >
-                    {s.name}
-                  </span>
-                ))}
-              </div>
-
-              <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4">
-                <p className="text-sm font-semibold text-white/90">Kanban</p>
-                <p className="mt-1 text-sm text-white/60">
-                  Siguiente paso: aquí pintamos columnas por stage + cards de leads y activamos drag &amp; drop usando
-                  <span className="text-white/85"> lead_pipeline_state </span>
-                  (pipeline_id + stage_id + position).
-                </p>
-              </div>
-            </div>
+        ) : stages.length === 0 ? (
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
+            {selectedPipeline ? 'Este pipeline no tiene stages.' : 'Selecciona un pipeline.'}
           </div>
-        </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-5">
+            {stages.map((st) => {
+              const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
+
+              return (
+                <div
+                  key={st.id}
+                  onDragOver={onDragOverColumn}
+                  onDrop={(e) => void onDropColumn(e, st.id)}
+                  className={cx(
+                    'rounded-2xl border border-white/10 bg-white/5 p-3 min-h-[220px]',
+                    'transition'
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
+                    <span className="text-xs text-white/55">{items.length}</span>
+                  </div>
+
+                  <div className="mt-3 flex flex-col gap-2">
+                    {items.map((lead) => (
+                      <div
+                        key={lead.id}
+                        draggable
+                        onDragStart={(e) =>
+                          onDragStartLead(e, {
+                            leadId: lead.id,
+                            fromStageId: st.id,
+                            pipelineId: selectedPipelineId ?? '',
+                          })
+                        }
+                        className="cursor-grab active:cursor-grabbing rounded-xl border border-white/10 bg-black/25 p-3 hover:bg-black/30"
+                      >
+                        <p className="text-sm font-semibold text-white truncate">
+                          {lead.full_name ?? 'Sin nombre'}
+                        </p>
+                        <div className="mt-1 space-y-1">
+                          {lead.email ? (
+                            <p className="text-[12px] text-white/70 truncate">{lead.email}</p>
+                          ) : null}
+                          {lead.phone ? (
+                            <p className="text-[12px] text-white/70 truncate">{lead.phone}</p>
+                          ) : null}
+                          <div className="flex items-center gap-2 pt-1">
+                            {lead.source ? (
+                              <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70">
+                                {lead.source}
+                              </span>
+                            ) : null}
+                            <span className="text-[11px] text-white/45">
+                              {new Date(lead.created_at).toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {items.length === 0 ? (
+                      <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">
+                        Suelta aquí…
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4">
+        <p className="text-sm font-semibold text-white/90">Estado</p>
+        <p className="mt-1 text-sm text-white/60">
+          Workspace: <span className="text-white/85">{activeWorkspaceId ?? '—'}</span> · Pipeline:{' '}
+          <span className="text-white/85">{selectedPipeline?.name ?? '—'}</span>
+        </p>
       </div>
     </div>
   );
