@@ -18,10 +18,9 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { useTranslations } from 'next-intl';
+import { WorkspaceProvider, type Workspace } from '@/components/app/WorkspaceContext';
 
 import LanguageSwitcher from '@/components/LanguageSwitcher';
-
-type Workspace = { id: string; name: string; slug: string };
 
 type MembershipRow = {
   workspace_id: string;
@@ -145,6 +144,12 @@ export default function AppShell(props: {
     router.refresh();
   }
 
+  const content = (
+    <WorkspaceProvider activeWorkspaceId={activeWorkspaceId} activeWorkspace={active} workspaces={workspaces}>
+      {props.children}
+    </WorkspaceProvider>
+  );
+
   return (
     <div className="min-h-screen w-full">
       <div className="pointer-events-none fixed inset-0 -z-10">
@@ -176,7 +181,6 @@ export default function AppShell(props: {
             </p>
           </div>
 
-          {/* ✅ Idioma + Logout (sin “minicard”) */}
           <div className="flex items-center gap-3">
             <LanguageSwitcher />
 
@@ -222,13 +226,13 @@ export default function AppShell(props: {
             </div>
           </aside>
 
-          <main className="min-w-0 flex-1">{props.children}</main>
+          <main className="min-w-0 flex-1">{content}</main>
         </div>
       </div>
 
       {/* Mobile main */}
       <div className="md:hidden w-full px-4 py-4">
-        <main className="min-w-0">{props.children}</main>
+        <main className="min-w-0">{content}</main>
       </div>
     </div>
   );
@@ -252,7 +256,6 @@ function SidebarContent(props: {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* ✅ Selector idioma sin caja */}
           <LanguageSwitcher />
 
           <button
@@ -281,7 +284,7 @@ function SidebarContent(props: {
               onClick={props.onNavigate}
               className={cx(
                 'group flex items-center gap-3 rounded-xl px-2 py-2 text-sm transition',
-                isActive ? 'text-white bg-white/5' : 'text-white/80 hover:text-white hover:bg-white/5'
+                isActive ? 'text-white bg-white/5' : 'text-white/80 hover:text-white hover:bg-white/5',
               )}
             >
               <span
@@ -289,7 +292,7 @@ function SidebarContent(props: {
                   'inline-flex h-9 w-9 items-center justify-center rounded-xl border transition',
                   isActive
                     ? 'border-indigo-400/25 bg-indigo-500/10'
-                    : 'border-white/10 bg-white/5 group-hover:bg-white/10'
+                    : 'border-white/10 bg-white/5 group-hover:bg-white/10',
                 )}
               >
                 <Icon className="h-4 w-4" />
@@ -300,7 +303,7 @@ function SidebarContent(props: {
               <span
                 className={cx(
                   'ml-auto h-2 w-2 rounded-full transition',
-                  isActive ? 'bg-indigo-300 opacity-100' : 'bg-white/20 opacity-0 group-hover:opacity-100'
+                  isActive ? 'bg-indigo-300 opacity-100' : 'bg-white/20 opacity-0 group-hover:opacity-100',
                 )}
               />
             </Link>

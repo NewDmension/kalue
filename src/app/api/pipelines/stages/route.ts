@@ -65,54 +65,52 @@ export async function GET(req: Request): Promise<NextResponse> {
     const serviceKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
 
     const token = getBearer(req);
-    if (!token) return json(401, { error: 'login_required' });
+    if (!token) return json(401, { ok: false, error: 'login_required' });
 
     const workspaceId = (req.headers.get('x-workspace-id') ?? '').trim();
-    if (!workspaceId) return json(400, { error: 'missing_workspace_id' });
+    if (!workspaceId) return json(400, { ok: false, error: 'missing_workspace_id' });
 
     const url = new URL(req.url);
     const pipelineId = (url.searchParams.get('pipelineId') ?? '').trim();
-    if (!pipelineId) return json(400, { error: 'missing_pipelineId' });
+    if (!pipelineId) return json(400, { ok: false, error: 'missing_pipelineId' });
 
-    // Auth user
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
     const userId = await getAuthedUserId(userClient);
-    if (!userId) return json(401, { error: 'login_required' });
+    if (!userId) return json(401, { ok: false, error: 'login_required' });
 
-    // Admin
     const admin = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
     const ok = await isWorkspaceMember({ admin, workspaceId, userId });
-    if (!ok) return json(403, { error: 'not_member' });
+    if (!ok) return json(403, { ok: false, error: 'not_member' });
 
-    // Seguridad extra: el pipeline debe pertenecer al workspace
-    const { data: p, error: pErr } = await admin
+    // Validar que el pipeline pertenece al workspace
+    const { data: pipeline, error: pErr } = await admin
       .from('pipelines')
-      .select('id')
+      .select('id, workspace_id')
       .eq('id', pipelineId)
       .eq('workspace_id', workspaceId)
       .maybeSingle();
 
-    if (pErr) return json(500, { error: 'db_error', detail: pErr.message });
-    if (!p) return json(404, { error: 'pipeline_not_found' });
+    if (pErr) return json(500, { ok: false, error: 'db_error', detail: pErr.message });
+    if (!pipeline) return json(404, { ok: false, error: 'pipeline_not_found' });
 
-    const { data: stages, error } = await admin
+    const { data: stages, error: sErr } = await admin
       .from('pipeline_stages')
       .select('id, pipeline_id, name, sort_order, color, is_won, is_lost, created_at, updated_at')
       .eq('pipeline_id', pipelineId)
       .order('sort_order', { ascending: true });
 
-    if (error) return json(500, { error: 'db_error', detail: error.message });
+    if (sErr) return json(500, { ok: false, error: 'db_error', detail: sErr.message });
 
-    return json(200, { ok: true, items: (Array.isArray(stages) ? stages : []) as unknown as StageRow[] });
+    return json(200, { ok: true, stages: (Array.isArray(stages) ? stages : []) as unknown as StageRow[] });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
-    return json(500, { error: 'server_error', detail: msg });
+    return json(500, { ok: false, error: 'server_error', detail: msg });
   }
 }
