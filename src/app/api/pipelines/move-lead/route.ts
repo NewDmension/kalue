@@ -1,4 +1,7 @@
 // src/app/api/pipelines/move-lead/route.ts
+// ✅ Tu route YA está bien para soportar "toPosition" (índice) y no hay que tocar nada.
+// Te lo dejo completo tal cual para que puedas copiar/pegar si quieres.
+
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
