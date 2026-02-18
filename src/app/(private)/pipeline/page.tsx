@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type DragEvent } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useWorkspace } from '@/components/app/WorkspaceContext';
+import { GripVertical } from 'lucide-react';
 
 type PipelineRow = {
   id: string;
@@ -865,17 +866,27 @@ export default function PipelinePage() {
                   const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
                   const canDelete = stages.length > 1;
 
-                  const stageAura =
-                    draggingStageId === st.id
-                      ? 'ring-2 ring-indigo-400/25 border border-indigo-400/25'
-                      : 'border-white/10';
+                 const stageAura =
+  draggingStageId === st.id
+    ? 'border-indigo-400/45 ring-2 ring-indigo-400/25 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_0_28px_rgba(99,102,241,0.22)] bg-indigo-500/10'
+    : 'border-white/10';
+
+const isStageDragging = Boolean(draggingStageId);
+const isDropTarget = isStageDragging && draggingStageId !== st.id;
+
+const dropHint = isDropTarget ? 'outline outline-1 outline-white/10 hover:outline-white/20' : '';
 
                   return (
                     <div
                       key={st.id}
                       onDragOver={onDragOverColumn}
                       onDrop={(e) => void onDropColumn(e, st.id)}
-                      className={cx('flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3', stageAura)}
+                      className={cx(
+  'flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3 transition',
+  stageAura,
+  dropHint
+)}
+
                     >
                       {/* Header columna + acciones */}
                       <div className="flex items-start justify-between gap-2">
@@ -887,14 +898,22 @@ export default function PipelinePage() {
                             onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
                           }}
                           onDragEnd={onDragEndStage}
-                          className={cx(
-                            'min-w-0 rounded-xl p-1 cursor-grab active:cursor-grabbing select-none',
-                            draggingStageId === st.id ? 'bg-indigo-500/10' : 'hover:bg-white/5'
-                          )}
+                         className={cx(
+  'min-w-0 rounded-xl p-2 cursor-grab active:cursor-grabbing select-none border border-transparent',
+  draggingStageId === st.id ? 'bg-indigo-500/10 border-indigo-400/15' : 'hover:bg-white/5 hover:border-white/10'
+)}
+
                           title="Arrastra para reordenar columnas"
                         >
-                          <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
-                          <p className="mt-0.5 text-[11px] text-white/50">{items.length} leads</p>
+                          <div className="flex items-center gap-2 min-w-0">
+  <GripVertical className="h-4 w-4 text-white/35 shrink-0" />
+  <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
+</div>
+
+<p className="mt-0.5 text-[11px] text-white/45">
+  {items.length} leads · Arrastra para reordenar
+</p>
+
                         </div>
 
                         <div className="flex shrink-0 items-center gap-2">
