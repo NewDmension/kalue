@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type DragEvent } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useWorkspace } from '@/components/app/WorkspaceContext';
 
@@ -69,6 +69,15 @@ type DragPayload = {
   pipelineId: string;
 };
 
+type StageDragPayload = {
+  stageId: string;
+  pipelineId: string;
+};
+
+type StageReorderResponse =
+  | { ok: true }
+  | { ok: false; error: string; detail?: string };
+
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
@@ -102,6 +111,21 @@ function safeParseDragPayload(raw: string): DragPayload | null {
   }
 }
 
+function safeParseStageDragPayload(raw: string): StageDragPayload | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const r = parsed as Record<string, unknown>;
+    const stageId = typeof r.stageId === 'string' ? r.stageId : '';
+    const pipelineId = typeof r.pipelineId === 'string' ? r.pipelineId : '';
+    if (!stageId || !pipelineId) return null;
+    return { stageId, pipelineId };
+  } catch {
+    return null;
+  }
+}
+
 function formatLocal(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -116,6 +140,7 @@ export default function PipelinePage() {
   // Selección + drag “aura”
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [draggingLeadId, setDraggingLeadId] = useState<string | null>(null);
+  const [draggingStageId, setDraggingStageId] = useState<string | null>(null);
 
   // Pipelines
   const [pipelinesLoading, setPipelinesLoading] = useState(true);
@@ -383,6 +408,44 @@ export default function PipelinePage() {
     return true;
   }
 
+  async function persistReorderStages(args: { pipelineId: string; stageIds: string[] }): Promise<boolean> {
+    if (!activeWorkspaceId) return false;
+
+    const token = await getAccessToken();
+    if (!token) {
+      setError('login_required');
+      return false;
+    }
+
+    const res = await fetch('/api/pipelines/stages/reorder', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': activeWorkspaceId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ pipelineId: args.pipelineId, stageIds: args.stageIds }),
+    });
+
+    const raw = (await res.json()) as unknown;
+    const parsed = raw as StageReorderResponse;
+
+    if (!res.ok || !parsed || parsed.ok !== true) {
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'reorder_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
+      setError(detail ? `${msg}: ${detail}` : msg);
+      return false;
+    }
+
+    return true;
+  }
+
   async function createStage(): Promise<void> {
     if (!activeWorkspaceId || !selectedPipelineId) return;
 
@@ -560,8 +623,57 @@ export default function PipelinePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPipelineId, activeWorkspaceId]);
 
-  // Drag handlers
-  function onDragStartLead(e: React.DragEvent, payload: DragPayload): void {
+  // Drag handlers (STAGES)
+  function onDragStartStage(e: DragEvent, payload: StageDragPayload): void {
+    setDraggingStageId(payload.stageId);
+    const data = safeJsonStringify(payload);
+    e.dataTransfer.setData('application/x-kalue-stage', data);
+    e.dataTransfer.effectAllowed = 'move';
+  }
+
+  function onDragEndStage(): void {
+    setDraggingStageId(null);
+  }
+
+  async function onDropStage(e: DragEvent, toStageId: string): Promise<boolean> {
+    const raw = e.dataTransfer.getData('application/x-kalue-stage');
+    const payload = safeParseStageDragPayload(raw);
+    if (!payload) return false;
+
+    if (!selectedPipelineId) return true;
+    if (payload.pipelineId !== selectedPipelineId) return true;
+    if (payload.stageId === toStageId) return true;
+
+    const fromId = payload.stageId;
+    const toId = toStageId;
+
+    const current = [...stages];
+    const fromIndex = current.findIndex((s) => s.id === fromId);
+    const toIndex = current.findIndex((s) => s.id === toId);
+    if (fromIndex < 0 || toIndex < 0) return true;
+
+    const next = [...current];
+    const [moved] = next.splice(fromIndex, 1);
+    if (!moved) return true;
+
+    const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
+    next.splice(insertIndex, 0, moved);
+
+    // Optimista
+    setStages(next);
+
+    const stageIds = next.map((s) => s.id);
+    const ok = await persistReorderStages({ pipelineId: selectedPipelineId, stageIds });
+
+    if (!ok) {
+      await loadBoard(selectedPipelineId);
+    }
+
+    return true;
+  }
+
+  // Drag handlers (LEADS)
+  function onDragStartLead(e: DragEvent, payload: DragPayload): void {
     setDraggingLeadId(payload.leadId);
     const data = safeJsonStringify(payload);
     e.dataTransfer.setData('application/json', data);
@@ -572,13 +684,22 @@ export default function PipelinePage() {
     setDraggingLeadId(null);
   }
 
-  function onDragOverColumn(e: React.DragEvent): void {
+  function onDragOverColumn(e: DragEvent): void {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
   }
 
-  async function onDropColumn(e: React.DragEvent, toStageId: string): Promise<void> {
+  async function onDropColumn(e: DragEvent, toStageId: string): Promise<void> {
     e.preventDefault();
+
+    // 1) Si sueltas una COLUMNA, reorder y salir
+    const handledStage = await onDropStage(e, toStageId);
+    if (handledStage) {
+      setDraggingStageId(null);
+      return;
+    }
+
+    // 2) Si no, es un LEAD (tu comportamiento actual)
     setDraggingLeadId(null);
 
     const raw = e.dataTransfer.getData('application/json');
@@ -714,16 +835,37 @@ export default function PipelinePage() {
                   const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
                   const canDelete = stages.length > 1;
 
+                  const stageAura =
+                    draggingStageId === st.id
+                      ? 'ring-2 ring-indigo-400/25 border border-indigo-400/25'
+                      : 'border-white/10';
+
                   return (
                     <div
                       key={st.id}
                       onDragOver={onDragOverColumn}
                       onDrop={(e) => void onDropColumn(e, st.id)}
-                      className="flex h-full w-[300px] shrink-0 flex-col rounded-2xl border border-white/10 bg-white/5 p-3"
+                      className={cx(
+                        'flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3',
+                        stageAura
+                      )}
                     >
                       {/* Header columna + acciones */}
                       <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
+                        {/* DRAG HANDLE (solo título) */}
+                        <div
+                          draggable
+                          onDragStart={(e) => {
+                            if (!selectedPipelineId) return;
+                            onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
+                          }}
+                          onDragEnd={onDragEndStage}
+                          className={cx(
+                            'min-w-0 rounded-xl p-1 cursor-grab active:cursor-grabbing',
+                            draggingStageId === st.id ? 'bg-indigo-500/10' : 'hover:bg-white/5'
+                          )}
+                          title="Arrastra para reordenar columnas"
+                        >
                           <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
                           <p className="mt-0.5 text-[11px] text-white/50">{items.length} leads</p>
                         </div>
@@ -754,16 +896,12 @@ export default function PipelinePage() {
                       </div>
 
                       {/* Lista con scroll: NO pisa cards */}
-                      <div
-                        className="mt-3 flex-1 overflow-y-auto pr-2"
-                        style={{ scrollbarGutter: 'stable' }}
-                      >
+                      <div className="mt-3 flex-1 overflow-y-auto pr-2" style={{ scrollbarGutter: 'stable' }}>
                         <div className="flex flex-col gap-2">
                           {items.map((lead) => {
                             const isSelected = selectedLeadId === lead.id;
                             const isDragging = draggingLeadId === lead.id;
 
-                            // Aura “verde” (como tus cards) + cuando arrastras
                             const aura =
                               isDragging || isSelected
                                 ? 'border-emerald-400/45 ring-2 ring-emerald-400/25 shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_0_24px_rgba(16,185,129,0.18)]'
