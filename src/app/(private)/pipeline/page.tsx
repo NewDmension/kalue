@@ -78,6 +78,9 @@ type StageReorderResponse =
   | { ok: true }
   | { ok: false; error: string; detail?: string };
 
+const DND_KEY_LEAD = 'application/x-kalue-lead';
+const DND_KEY_STAGE = 'application/x-kalue-stage';
+
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
@@ -532,8 +535,14 @@ export default function PipelinePage() {
     const parsed = raw as StageRenameResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'rename_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'rename_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setRenaming(false);
       return;
@@ -591,8 +600,14 @@ export default function PipelinePage() {
     const parsed = raw as StageDeleteResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'delete_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'delete_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setDeleting(false);
       return;
@@ -625,60 +640,72 @@ export default function PipelinePage() {
 
   // Drag handlers (STAGES)
   function onDragStartStage(e: DragEvent, payload: StageDragPayload): void {
-    setDraggingStageId(payload.stageId);
-    const data = safeJsonStringify(payload);
-    e.dataTransfer.setData('application/x-kalue-stage', data);
-    e.dataTransfer.effectAllowed = 'move';
-  }
+  setDraggingStageId(payload.stageId);
+
+  const data = safeJsonStringify(payload);
+
+  // Fallback crucial: algunos navegadores solo arrancan drag si hay text/plain
+  e.dataTransfer.setData('text/plain', data);
+  e.dataTransfer.setData(DND_KEY_STAGE, data);
+
+  e.dataTransfer.effectAllowed = 'move';
+}
+
 
   function onDragEndStage(): void {
     setDraggingStageId(null);
   }
 
   async function onDropStage(e: DragEvent, toStageId: string): Promise<boolean> {
-    const raw = e.dataTransfer.getData('application/x-kalue-stage');
-    const payload = safeParseStageDragPayload(raw);
-    if (!payload) return false;
+  const raw = e.dataTransfer.getData(DND_KEY_STAGE) || e.dataTransfer.getData('text/plain');
+  const payload = safeParseStageDragPayload(raw);
+  if (!payload) return false;
 
-    if (!selectedPipelineId) return true;
-    if (payload.pipelineId !== selectedPipelineId) return true;
-    if (payload.stageId === toStageId) return true;
+  if (!selectedPipelineId) return true;
+  if (payload.pipelineId !== selectedPipelineId) return true;
+  if (payload.stageId === toStageId) return true;
 
-    const fromId = payload.stageId;
-    const toId = toStageId;
+  const fromId = payload.stageId;
 
-    const current = [...stages];
-    const fromIndex = current.findIndex((s) => s.id === fromId);
-    const toIndex = current.findIndex((s) => s.id === toId);
-    if (fromIndex < 0 || toIndex < 0) return true;
+  const current = [...stages];
+  const fromIndex = current.findIndex((s) => s.id === fromId);
+  const toIndex = current.findIndex((s) => s.id === toStageId);
+  if (fromIndex < 0 || toIndex < 0) return true;
 
-    const next = [...current];
-    const [moved] = next.splice(fromIndex, 1);
-    if (!moved) return true;
+  const next = [...current];
+  const [moved] = next.splice(fromIndex, 1);
+  if (!moved) return true;
 
-    const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
-    next.splice(insertIndex, 0, moved);
+  const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
+  next.splice(insertIndex, 0, moved);
 
-    // Optimista
-    setStages(next);
+  // Optimista
+  setStages(next);
 
-    const stageIds = next.map((s) => s.id);
-    const ok = await persistReorderStages({ pipelineId: selectedPipelineId, stageIds });
+  // Persist
+  const stageIds = next.map((s) => s.id);
+  const ok = await persistReorderStages({ pipelineId: selectedPipelineId, stageIds });
 
-    if (!ok) {
-      await loadBoard(selectedPipelineId);
-    }
-
-    return true;
+  if (!ok) {
+    await loadBoard(selectedPipelineId);
   }
+
+  return true;
+}
+
 
   // Drag handlers (LEADS)
   function onDragStartLead(e: DragEvent, payload: DragPayload): void {
-    setDraggingLeadId(payload.leadId);
-    const data = safeJsonStringify(payload);
-    e.dataTransfer.setData('application/json', data);
-    e.dataTransfer.effectAllowed = 'move';
-  }
+  setDraggingLeadId(payload.leadId);
+
+  const data = safeJsonStringify(payload);
+
+  e.dataTransfer.setData('text/plain', data);
+  e.dataTransfer.setData(DND_KEY_LEAD, data);
+
+  e.dataTransfer.effectAllowed = 'move';
+}
+
 
   function onDragEndLead(): void {
     setDraggingLeadId(null);
@@ -690,39 +717,42 @@ export default function PipelinePage() {
   }
 
   async function onDropColumn(e: DragEvent, toStageId: string): Promise<void> {
-    e.preventDefault();
+  e.preventDefault();
 
-    // 1) Si sueltas una COLUMNA, reorder y salir
+  const types = Array.from(e.dataTransfer.types);
+
+  // 1) Si es una columna, reorder
+  if (types.includes(DND_KEY_STAGE)) {
     const handledStage = await onDropStage(e, toStageId);
-    if (handledStage) {
-      setDraggingStageId(null);
-      return;
-    }
-
-    // 2) Si no, es un LEAD (tu comportamiento actual)
-    setDraggingLeadId(null);
-
-    const raw = e.dataTransfer.getData('application/json');
-    const payload = safeParseDragPayload(raw);
-    if (!payload) return;
-
-    if (!selectedPipelineId) return;
-    if (payload.pipelineId !== selectedPipelineId) return;
-    if (payload.fromStageId === toStageId) return;
-
-    optimisticMoveLead({ leadId: payload.leadId, fromStageId: payload.fromStageId, toStageId });
-
-    const ok = await persistMoveLead({
-      leadId: payload.leadId,
-      pipelineId: payload.pipelineId,
-      toStageId,
-      toPosition: 999999,
-    });
-
-    if (!ok) {
-      await loadBoard(payload.pipelineId);
-    }
+    if (handledStage) setDraggingStageId(null);
+    return;
   }
+
+  // 2) Si es un lead, tu flujo actual
+  setDraggingLeadId(null);
+
+  const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
+  const payload = safeParseDragPayload(raw);
+  if (!payload) return;
+
+  if (!selectedPipelineId) return;
+  if (payload.pipelineId !== selectedPipelineId) return;
+  if (payload.fromStageId === toStageId) return;
+
+  optimisticMoveLead({ leadId: payload.leadId, fromStageId: payload.fromStageId, toStageId });
+
+  const ok = await persistMoveLead({
+    leadId: payload.leadId,
+    pipelineId: payload.pipelineId,
+    toStageId,
+    toPosition: 999999,
+  });
+
+  if (!ok) {
+    await loadBoard(payload.pipelineId);
+  }
+}
+
 
   const boardHasStages = stages.length > 0;
 
@@ -845,31 +875,24 @@ export default function PipelinePage() {
                       key={st.id}
                       onDragOver={onDragOverColumn}
                       onDrop={(e) => void onDropColumn(e, st.id)}
-                      className={cx(
-                        'flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3',
-                        stageAura
-                      )}
+                      className={cx('flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3', stageAura)}
                     >
                       {/* Header columna + acciones */}
                       <div className="flex items-start justify-between gap-2">
                         {/* DRAG HANDLE (solo título) */}
                         <div
-  draggable
-  onDragStart={(e) => {
-    if (!selectedPipelineId) return;
-    onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
-  }}
-  onDragEnd={onDragEndStage}
-  onDragOver={onDragOverColumn}
-  onDrop={(e) => void onDropColumn(e, st.id)}
-  className={cx(
-    'min-w-0 rounded-xl p-1 cursor-grab active:cursor-grabbing select-none',
-
-    draggingStageId === st.id ? 'bg-indigo-500/10' : 'hover:bg-white/5'
-  )}
-  title="Arrastra para reordenar columnas"
->
-
+                          draggable
+                          onDragStart={(e) => {
+                            if (!selectedPipelineId) return;
+                            onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
+                          }}
+                          onDragEnd={onDragEndStage}
+                          className={cx(
+                            'min-w-0 rounded-xl p-1 cursor-grab active:cursor-grabbing select-none',
+                            draggingStageId === st.id ? 'bg-indigo-500/10' : 'hover:bg-white/5'
+                          )}
+                          title="Arrastra para reordenar columnas"
+                        >
                           <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
                           <p className="mt-0.5 text-[11px] text-white/50">{items.length} leads</p>
                         </div>
@@ -918,7 +941,11 @@ export default function PipelinePage() {
                                 onDragStart={(e) => {
                                   if (!selectedPipelineId) return;
                                   setSelectedLeadId(lead.id);
-                                  onDragStartLead(e, { leadId: lead.id, fromStageId: st.id, pipelineId: selectedPipelineId });
+                                  onDragStartLead(e, {
+                                    leadId: lead.id,
+                                    fromStageId: st.id,
+                                    pipelineId: selectedPipelineId,
+                                  });
                                 }}
                                 onDragEnd={onDragEndLead}
                                 onClick={() => setSelectedLeadId(lead.id)}
