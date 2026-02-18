@@ -854,18 +854,22 @@ export default function PipelinePage() {
                       <div className="flex items-start justify-between gap-2">
                         {/* DRAG HANDLE (solo título) */}
                         <div
-                          draggable
-                          onDragStart={(e) => {
-                            if (!selectedPipelineId) return;
-                            onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
-                          }}
-                          onDragEnd={onDragEndStage}
-                          className={cx(
-                            'min-w-0 rounded-xl p-1 cursor-grab active:cursor-grabbing',
-                            draggingStageId === st.id ? 'bg-indigo-500/10' : 'hover:bg-white/5'
-                          )}
-                          title="Arrastra para reordenar columnas"
-                        >
+  draggable
+  onDragStart={(e) => {
+    if (!selectedPipelineId) return;
+    onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
+  }}
+  onDragEnd={onDragEndStage}
+  onDragOver={onDragOverColumn}
+  onDrop={(e) => void onDropColumn(e, st.id)}
+  className={cx(
+    'min-w-0 rounded-xl p-1 cursor-grab active:cursor-grabbing select-none',
+
+    draggingStageId === st.id ? 'bg-indigo-500/10' : 'hover:bg-white/5'
+  )}
+  title="Arrastra para reordenar columnas"
+>
+
                           <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
                           <p className="mt-0.5 text-[11px] text-white/50">{items.length} leads</p>
                         </div>
