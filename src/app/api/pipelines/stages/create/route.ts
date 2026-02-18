@@ -119,37 +119,16 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (pErr) return json(500, { ok: false, error: 'db_error', detail: pErr.message });
     if (!p) return json(404, { ok: false, error: 'pipeline_not_found' });
 
-    // sort_order = max + 1
-    const { data: lastStage, error: lastErr } = await admin
-      .from('pipeline_stages')
-      .select('sort_order')
-      .eq('pipeline_id', pipelineId)
-      .order('sort_order', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // RPC atómica (evita race en sort_order)
+    const { data: stage, error: rpcErr } = await admin.rpc('create_stage_in_pipeline', {
+      p_pipeline_id: pipelineId,
+      p_name: name,
+    });
 
-    if (lastErr) return json(500, { ok: false, error: 'db_error', detail: lastErr.message });
+    if (rpcErr) return json(500, { ok: false, error: 'db_error', detail: rpcErr.message });
+    if (!stage) return json(500, { ok: false, error: 'insert_failed' });
 
-    const maxSort = typeof lastStage?.sort_order === 'number' ? lastStage.sort_order : -1;
-    const nextSort = maxSort + 1;
-
-    const { data: inserted, error: insErr } = await admin
-      .from('pipeline_stages')
-      .insert({
-        pipeline_id: pipelineId,
-        name,
-        sort_order: nextSort,
-        color: null,
-        is_won: false,
-        is_lost: false,
-      })
-      .select('id, pipeline_id, name, sort_order, color, is_won, is_lost, created_at, updated_at')
-      .maybeSingle();
-
-    if (insErr) return json(500, { ok: false, error: 'db_error', detail: insErr.message });
-    if (!inserted) return json(500, { ok: false, error: 'insert_failed' });
-
-    return json(200, { ok: true, stage: inserted as unknown as StageRow });
+    return json(200, { ok: true, stage: stage as unknown as StageRow });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
     return json(500, { ok: false, error: 'server_error', detail: msg });
