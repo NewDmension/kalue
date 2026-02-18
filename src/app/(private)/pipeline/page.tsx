@@ -145,6 +145,7 @@ export default function PipelinePage() {
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const [draggingLeadId, setDraggingLeadId] = useState<string | null>(null);
   const [draggingStageId, setDraggingStageId] = useState<string | null>(null);
+  const [dragOverStageIndex, setDragOverStageIndex] = useState<number | null>(null);
 
   // Pipelines
   const [pipelinesLoading, setPipelinesLoading] = useState(true);
@@ -641,72 +642,33 @@ export default function PipelinePage() {
 
   // Drag handlers (STAGES)
   function onDragStartStage(e: DragEvent, payload: StageDragPayload): void {
-  setDraggingStageId(payload.stageId);
+    setDraggingStageId(payload.stageId);
 
-  const data = safeJsonStringify(payload);
+    const data = safeJsonStringify(payload);
 
-  // Fallback crucial: algunos navegadores solo arrancan drag si hay text/plain
-  e.dataTransfer.setData('text/plain', data);
-  e.dataTransfer.setData(DND_KEY_STAGE, data);
+    // Fallback crucial: algunos navegadores solo arrancan drag si hay text/plain
+    e.dataTransfer.setData('text/plain', data);
+    e.dataTransfer.setData(DND_KEY_STAGE, data);
 
-  e.dataTransfer.effectAllowed = 'move';
-}
-
+    e.dataTransfer.effectAllowed = 'move';
+  }
 
   function onDragEndStage(): void {
     setDraggingStageId(null);
+    setDragOverStageIndex(null);
   }
-
-  async function onDropStage(e: DragEvent, toStageId: string): Promise<boolean> {
-  const raw = e.dataTransfer.getData(DND_KEY_STAGE) || e.dataTransfer.getData('text/plain');
-  const payload = safeParseStageDragPayload(raw);
-  if (!payload) return false;
-
-  if (!selectedPipelineId) return true;
-  if (payload.pipelineId !== selectedPipelineId) return true;
-  if (payload.stageId === toStageId) return true;
-
-  const fromId = payload.stageId;
-
-  const current = [...stages];
-  const fromIndex = current.findIndex((s) => s.id === fromId);
-  const toIndex = current.findIndex((s) => s.id === toStageId);
-  if (fromIndex < 0 || toIndex < 0) return true;
-
-  const next = [...current];
-  const [moved] = next.splice(fromIndex, 1);
-  if (!moved) return true;
-
-  const insertIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
-  next.splice(insertIndex, 0, moved);
-
-  // Optimista
-  setStages(next);
-
-  // Persist
-  const stageIds = next.map((s) => s.id);
-  const ok = await persistReorderStages({ pipelineId: selectedPipelineId, stageIds });
-
-  if (!ok) {
-    await loadBoard(selectedPipelineId);
-  }
-
-  return true;
-}
-
 
   // Drag handlers (LEADS)
   function onDragStartLead(e: DragEvent, payload: DragPayload): void {
-  setDraggingLeadId(payload.leadId);
+    setDraggingLeadId(payload.leadId);
 
-  const data = safeJsonStringify(payload);
+    const data = safeJsonStringify(payload);
 
-  e.dataTransfer.setData('text/plain', data);
-  e.dataTransfer.setData(DND_KEY_LEAD, data);
+    e.dataTransfer.setData('text/plain', data);
+    e.dataTransfer.setData(DND_KEY_LEAD, data);
 
-  e.dataTransfer.effectAllowed = 'move';
-}
-
+    e.dataTransfer.effectAllowed = 'move';
+  }
 
   function onDragEndLead(): void {
     setDraggingLeadId(null);
@@ -717,43 +679,88 @@ export default function PipelinePage() {
     e.dataTransfer.dropEffect = 'move';
   }
 
+  function onDragOverStageGap(e: DragEvent, index: number): void {
+    const types = Array.from(e.dataTransfer.types);
+    if (!types.includes(DND_KEY_STAGE)) return;
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverStageIndex(index);
+  }
+
+  async function onDropStageGap(e: DragEvent, targetIndex: number): Promise<void> {
+    const types = Array.from(e.dataTransfer.types);
+    if (!types.includes(DND_KEY_STAGE)) return;
+
+    e.preventDefault();
+
+    const raw = e.dataTransfer.getData(DND_KEY_STAGE) || e.dataTransfer.getData('text/plain');
+    const payload = safeParseStageDragPayload(raw);
+    if (!payload) return;
+
+    if (!selectedPipelineId) return;
+    if (payload.pipelineId !== selectedPipelineId) return;
+
+    const current = [...stages];
+    const fromIndex = current.findIndex((s) => s.id === payload.stageId);
+    if (fromIndex < 0) return;
+
+    // si sueltas donde ya está (o justo al lado), no hagas nada
+    if (fromIndex === targetIndex || fromIndex + 1 === targetIndex) {
+      setDragOverStageIndex(null);
+      setDraggingStageId(null);
+      return;
+    }
+
+    const next = [...current];
+    const [moved] = next.splice(fromIndex, 1);
+    if (!moved) return;
+
+    const insertIndex = fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
+    next.splice(insertIndex, 0, moved);
+
+    // Optimista
+    setStages(next);
+
+    // Persist
+    const stageIds = next.map((s) => s.id);
+    const ok = await persistReorderStages({ pipelineId: selectedPipelineId, stageIds });
+
+    if (!ok) {
+      await loadBoard(selectedPipelineId);
+    }
+
+    setDragOverStageIndex(null);
+    setDraggingStageId(null);
+  }
+
   async function onDropColumn(e: DragEvent, toStageId: string): Promise<void> {
-  e.preventDefault();
+    e.preventDefault();
 
-  const types = Array.from(e.dataTransfer.types);
+    // SOLO LEADS (las columnas se reordenan con gaps)
+    setDraggingLeadId(null);
 
-  // 1) Si es una columna, reorder
-  if (types.includes(DND_KEY_STAGE)) {
-    const handledStage = await onDropStage(e, toStageId);
-    if (handledStage) setDraggingStageId(null);
-    return;
+    const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
+    const payload = safeParseDragPayload(raw);
+    if (!payload) return;
+
+    if (!selectedPipelineId) return;
+    if (payload.pipelineId !== selectedPipelineId) return;
+    if (payload.fromStageId === toStageId) return;
+
+    optimisticMoveLead({ leadId: payload.leadId, fromStageId: payload.fromStageId, toStageId });
+
+    const ok = await persistMoveLead({
+      leadId: payload.leadId,
+      pipelineId: payload.pipelineId,
+      toStageId,
+      toPosition: 999999,
+    });
+
+    if (!ok) {
+      await loadBoard(payload.pipelineId);
+    }
   }
-
-  // 2) Si es un lead, tu flujo actual
-  setDraggingLeadId(null);
-
-  const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
-  const payload = safeParseDragPayload(raw);
-  if (!payload) return;
-
-  if (!selectedPipelineId) return;
-  if (payload.pipelineId !== selectedPipelineId) return;
-  if (payload.fromStageId === toStageId) return;
-
-  optimisticMoveLead({ leadId: payload.leadId, fromStageId: payload.fromStageId, toStageId });
-
-  const ok = await persistMoveLead({
-    leadId: payload.leadId,
-    pipelineId: payload.pipelineId,
-    toStageId,
-    toPosition: 999999,
-  });
-
-  if (!ok) {
-    await loadBoard(payload.pipelineId);
-  }
-}
-
 
   const boardHasStages = stages.length > 0;
 
@@ -861,36 +868,41 @@ export default function PipelinePage() {
         ) : (
           <div className={cx('rounded-2xl border border-white/10 bg-black/10 p-3', 'h-[calc(100vh-380px)] min-h-[440px]')}>
             <div className="h-full overflow-x-auto">
-              <div className="flex h-full gap-4 pr-2">
-                {stages.map((st) => {
+              {/* ✅ (PASO 6+7) Layout con gaps e inserción por posición */}
+              <div className="flex h-full pr-2">
+                {/* GAP inicial (insertar al principio) */}
+                <div
+                  onDragOver={(e) => onDragOverStageGap(e, 0)}
+                  onDrop={(e) => void onDropStageGap(e, 0)}
+                  onDragLeave={() => setDragOverStageIndex(null)}
+                  className={cx(
+                    'h-full w-2 shrink-0 rounded-xl transition',
+                    draggingStageId
+                      ? dragOverStageIndex === 0
+                        ? 'bg-indigo-400/25'
+                        : 'bg-white/5'
+                      : 'bg-transparent'
+                  )}
+                />
+
+                {stages.map((st, idx) => {
                   const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
                   const canDelete = stages.length > 1;
 
-                 const stageAura =
-  draggingStageId === st.id
-    ? 'border-indigo-400/45 ring-2 ring-indigo-400/25 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_0_28px_rgba(99,102,241,0.22)] bg-indigo-500/10'
-    : 'border-white/10';
-
-const isStageDragging = Boolean(draggingStageId);
-const isDropTarget = isStageDragging && draggingStageId !== st.id;
-
-const dropHint = isDropTarget ? 'outline outline-1 outline-white/10 hover:outline-white/20' : '';
+                  const stageAura =
+                    draggingStageId === st.id
+                      ? 'border-indigo-400/45 ring-2 ring-indigo-400/25 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_0_28px_rgba(99,102,241,0.22)] bg-indigo-500/10'
+                      : 'border-white/10';
 
                   return (
-                    <div
-                      key={st.id}
-                      onDragOver={onDragOverColumn}
-                      onDrop={(e) => void onDropColumn(e, st.id)}
-                      className={cx(
-  'flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3 transition',
-  stageAura,
-  dropHint
-)}
-
-                    >
-                      {/* Header columna + acciones */}
-                      <div className="flex items-start justify-between gap-2">
-                        {/* DRAG HANDLE (solo título) */}
+                    <div key={st.id} className="flex h-full">
+                      {/* COLUMNA */}
+                      <div
+                        onDragOver={onDragOverColumn}
+                        onDrop={(e) => void onDropColumn(e, st.id)}
+                        className={cx('flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3 transition', stageAura)}
+                      >
+                        {/* HEADER: drag desde aquí (sin “card” extra) */}
                         <div
                           draggable
                           onDragStart={(e) => {
@@ -898,25 +910,21 @@ const dropHint = isDropTarget ? 'outline outline-1 outline-white/10 hover:outlin
                             onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
                           }}
                           onDragEnd={onDragEndStage}
-                         className={cx(
-  'min-w-0 rounded-xl p-2 cursor-grab active:cursor-grabbing select-none border border-transparent',
-  draggingStageId === st.id ? 'bg-indigo-500/10 border-indigo-400/15' : 'hover:bg-white/5 hover:border-white/10'
-)}
-
+                          className="cursor-grab active:cursor-grabbing select-none pb-2 mb-2 border-b border-white/10"
                           title="Arrastra para reordenar columnas"
                         >
-                          <div className="flex items-center gap-2 min-w-0">
-  <GripVertical className="h-4 w-4 text-white/35 shrink-0" />
-  <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
-</div>
-
-<p className="mt-0.5 text-[11px] text-white/45">
-  {items.length} leads · Arrastra para reordenar
-</p>
-
+                          <div className="flex items-center justify-between gap-2 min-w-0">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <GripVertical className="h-4 w-4 text-white/35 shrink-0" />
+                              <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
+                            </div>
+                            <span className="text-[11px] text-white/45">{items.length}</span>
+                          </div>
+                          <p className="mt-0.5 text-[11px] text-white/45">Arrastra para reordenar</p>
                         </div>
 
-                        <div className="flex shrink-0 items-center gap-2">
+                        {/* Acciones */}
+                        <div className="mb-3 flex items-center justify-end gap-2">
                           <button
                             type="button"
                             onClick={() => openRename(st.id)}
@@ -939,68 +947,83 @@ const dropHint = isDropTarget ? 'outline outline-1 outline-white/10 hover:outlin
                             Eliminar
                           </button>
                         </div>
-                      </div>
 
-                      {/* Lista con scroll: NO pisa cards */}
-                      <div className="mt-3 flex-1 overflow-y-auto pr-2" style={{ scrollbarGutter: 'stable' }}>
-                        <div className="flex flex-col gap-2">
-                          {items.map((lead) => {
-                            const isSelected = selectedLeadId === lead.id;
-                            const isDragging = draggingLeadId === lead.id;
+                        {/* Lista con scroll */}
+                        <div className="flex-1 overflow-y-auto pr-2" style={{ scrollbarGutter: 'stable' }}>
+                          <div className="flex flex-col gap-2">
+                            {items.map((lead) => {
+                              const isSelected = selectedLeadId === lead.id;
+                              const isDragging = draggingLeadId === lead.id;
 
-                            const aura =
-                              isDragging || isSelected
-                                ? 'border-emerald-400/45 ring-2 ring-emerald-400/25 shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_0_24px_rgba(16,185,129,0.18)]'
-                                : 'border-white/10 hover:border-white/20';
+                              const aura =
+                                isDragging || isSelected
+                                  ? 'border-emerald-400/45 ring-2 ring-emerald-400/25 shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_0_24px_rgba(16,185,129,0.18)]'
+                                  : 'border-white/10 hover:border-white/20';
 
-                            return (
-                              <div
-                                key={lead.id}
-                                draggable
-                                onDragStart={(e) => {
-                                  if (!selectedPipelineId) return;
-                                  setSelectedLeadId(lead.id);
-                                  onDragStartLead(e, {
-                                    leadId: lead.id,
-                                    fromStageId: st.id,
-                                    pipelineId: selectedPipelineId,
-                                  });
-                                }}
-                                onDragEnd={onDragEndLead}
-                                onClick={() => setSelectedLeadId(lead.id)}
-                                className={cx(
-                                  'cursor-grab active:cursor-grabbing rounded-xl border bg-black/25 p-3 transition',
-                                  aura,
-                                  isDragging ? 'opacity-95' : '',
-                                  'hover:bg-black/30'
-                                )}
-                                role="button"
-                                tabIndex={0}
-                              >
-                                <p className="text-sm font-semibold text-white truncate">{lead.full_name ?? 'Sin nombre'}</p>
+                              return (
+                                <div
+                                  key={lead.id}
+                                  draggable
+                                  onDragStart={(e) => {
+                                    if (!selectedPipelineId) return;
+                                    setSelectedLeadId(lead.id);
+                                    onDragStartLead(e, {
+                                      leadId: lead.id,
+                                      fromStageId: st.id,
+                                      pipelineId: selectedPipelineId,
+                                    });
+                                  }}
+                                  onDragEnd={onDragEndLead}
+                                  onClick={() => setSelectedLeadId(lead.id)}
+                                  className={cx(
+                                    'cursor-grab active:cursor-grabbing rounded-xl border bg-black/25 p-3 transition',
+                                    aura,
+                                    isDragging ? 'opacity-95' : '',
+                                    'hover:bg-black/30'
+                                  )}
+                                  role="button"
+                                  tabIndex={0}
+                                >
+                                  <p className="text-sm font-semibold text-white truncate">{lead.full_name ?? 'Sin nombre'}</p>
 
-                                <div className="mt-1 space-y-1">
-                                  {lead.email ? <p className="text-[12px] text-white/70 truncate">{lead.email}</p> : null}
-                                  {lead.phone ? <p className="text-[12px] text-white/70 truncate">{lead.phone}</p> : null}
+                                  <div className="mt-1 space-y-1">
+                                    {lead.email ? <p className="text-[12px] text-white/70 truncate">{lead.email}</p> : null}
+                                    {lead.phone ? <p className="text-[12px] text-white/70 truncate">{lead.phone}</p> : null}
 
-                                  <div className="flex items-center gap-2 pt-1">
-                                    {lead.source ? (
-                                      <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70">
-                                        {lead.source}
-                                      </span>
-                                    ) : null}
-                                    <span className="text-[11px] text-white/45">{formatLocal(lead.created_at)}</span>
+                                    <div className="flex items-center gap-2 pt-1">
+                                      {lead.source ? (
+                                        <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70">
+                                          {lead.source}
+                                        </span>
+                                      ) : null}
+                                      <span className="text-[11px] text-white/45">{formatLocal(lead.created_at)}</span>
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                            );
-                          })}
+                              );
+                            })}
 
-                          {items.length === 0 ? (
-                            <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">Suelta aquí…</div>
-                          ) : null}
+                            {items.length === 0 ? (
+                              <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">Suelta aquí…</div>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
+
+                      {/* GAP después de esta columna (insertar en idx+1) */}
+                      <div
+                        onDragOver={(e) => onDragOverStageGap(e, idx + 1)}
+                        onDrop={(e) => void onDropStageGap(e, idx + 1)}
+                        onDragLeave={() => setDragOverStageIndex(null)}
+                        className={cx(
+                          'h-full w-2 shrink-0 ml-3 rounded-xl transition',
+                          draggingStageId
+                            ? dragOverStageIndex === idx + 1
+                              ? 'bg-indigo-400/25'
+                              : 'bg-white/5'
+                            : 'bg-transparent'
+                        )}
+                      />
                     </div>
                   );
                 })}
