@@ -1,3 +1,4 @@
+// src/app/api/pipelines/stages/create/route.ts
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -69,9 +70,18 @@ type StageRow = {
   color: string | null;
   is_won: boolean;
   is_lost: boolean;
+  is_default: boolean;
   created_at: string;
   updated_at: string;
 };
+
+function firstRowId(rows: unknown): string | null {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const r = rows[0];
+  if (!isRecord(r)) return null;
+  const id = r.id;
+  return typeof id === 'string' ? id : null;
+}
 
 export async function POST(req: Request): Promise<NextResponse> {
   try {
@@ -119,16 +129,47 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (pErr) return json(500, { ok: false, error: 'db_error', detail: pErr.message });
     if (!p) return json(404, { ok: false, error: 'pipeline_not_found' });
 
-    // RPC atómica (evita race en sort_order)
-    const { data: stage, error: rpcErr } = await admin.rpc('create_stage_in_pipeline', {
+    // ✅ NUEVO: decidir si este stage debe ser default (si aún no hay default en el pipeline)
+    const { data: existingDefault, error: defErr } = await admin
+      .from('pipeline_stages')
+      .select('id')
+      .eq('pipeline_id', pipelineId)
+      .eq('is_default', true)
+      .limit(1);
+
+    if (defErr) return json(500, { ok: false, error: 'db_error', detail: defErr.message });
+
+    const shouldBeDefault = firstRowId(existingDefault) === null;
+
+    // RPC atómica para crear (sort_order)
+    const { data: stageRaw, error: rpcErr } = await admin.rpc('create_stage_in_pipeline', {
       p_pipeline_id: pipelineId,
       p_name: name,
     });
 
     if (rpcErr) return json(500, { ok: false, error: 'db_error', detail: rpcErr.message });
-    if (!stage) return json(500, { ok: false, error: 'insert_failed' });
+    if (!stageRaw) return json(500, { ok: false, error: 'insert_failed' });
 
-    return json(200, { ok: true, stage: stage as unknown as StageRow });
+    // ✅ NUEVO: si debe ser default, lo marcamos explícitamente
+    // (no rompemos tu RPC; lo complementamos con un update rápido)
+    let stage = stageRaw as unknown as StageRow;
+
+    if (shouldBeDefault) {
+      const stageId = (stage && typeof stage.id === 'string' ? stage.id : '') || '';
+      if (stageId) {
+        const { data: updated, error: updErr } = await admin
+          .from('pipeline_stages')
+          .update({ is_default: true })
+          .eq('id', stageId)
+          .select('id, pipeline_id, name, sort_order, color, is_won, is_lost, is_default, created_at, updated_at')
+          .maybeSingle();
+
+        if (updErr) return json(500, { ok: false, error: 'db_error', detail: updErr.message });
+        if (updated) stage = updated as unknown as StageRow;
+      }
+    }
+
+    return json(200, { ok: true, stage });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
     return json(500, { ok: false, error: 'server_error', detail: msg });

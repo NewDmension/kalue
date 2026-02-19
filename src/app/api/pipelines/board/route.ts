@@ -30,11 +30,7 @@ async function getAuthedUserId(supabase: SupabaseClient): Promise<string | null>
   return data.user?.id ?? null;
 }
 
-async function isWorkspaceMember(args: {
-  admin: SupabaseClient;
-  workspaceId: string;
-  userId: string;
-}): Promise<boolean> {
+async function isWorkspaceMember(args: { admin: SupabaseClient; workspaceId: string; userId: string }): Promise<boolean> {
   const { data, error } = await args.admin
     .from('workspace_members')
     .select('user_id')
@@ -54,6 +50,7 @@ type StageRow = {
   color: string | null;
   is_won: boolean;
   is_lost: boolean;
+  is_default: boolean;
 };
 
 type LeadRow = {
@@ -67,7 +64,6 @@ type LeadRow = {
   source: string | null;
   labels: string[] | null;
   notes: string | null;
-  // form_answers existe pero no lo necesitamos para listar
 };
 
 type StateRow = {
@@ -86,6 +82,11 @@ type BoardLead = LeadRow & {
   position: number;
   stage_changed_at: string | null;
 };
+
+function safeTime(iso: string): number {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? 0 : t;
+}
 
 export async function GET(req: Request): Promise<NextResponse> {
   try {
@@ -131,27 +132,31 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (pErr) return json(500, { error: 'db_error', detail: pErr.message });
     if (!p) return json(404, { error: 'pipeline_not_found' });
 
-    // stages
+    // stages (✅ incluye is_default)
     const { data: stagesRaw, error: sErr } = await admin
       .from('pipeline_stages')
-      .select('id, pipeline_id, name, sort_order, color, is_won, is_lost')
+      .select('id, pipeline_id, name, sort_order, color, is_won, is_lost, is_default')
       .eq('pipeline_id', pipelineId)
       .order('sort_order', { ascending: true });
 
     if (sErr) return json(500, { error: 'db_error', detail: sErr.message });
 
     const stages = (Array.isArray(stagesRaw) ? stagesRaw : []) as unknown as StageRow[];
-    if (stages.length === 0) return json(200, { ok: true, stages: [], columns: {} });
+    if (stages.length === 0) return json(200, { ok: true, stages: [], leadsByStage: {} });
 
-    const defaultStageId = stages[0]?.id ?? null;
-    if (!defaultStageId) return json(200, { ok: true, stages, columns: {} });
+    // ✅ default fijo por pipeline (NO depende del orden visual)
+    const defaultStageId = stages.find((s) => s.is_default)?.id ?? stages[0]?.id ?? null;
+    if (!defaultStageId) return json(200, { ok: true, stages, leadsByStage: {} });
 
-    // estado actual
+    // estado actual (ordenado desde DB para consistencia)
     const { data: stateRaw, error: stErr } = await admin
       .from('lead_pipeline_state')
       .select('lead_id, workspace_id, pipeline_id, stage_id, position, stage_changed_at, created_at, updated_at')
       .eq('workspace_id', workspaceId)
-      .eq('pipeline_id', pipelineId);
+      .eq('pipeline_id', pipelineId)
+      .order('stage_id', { ascending: true })
+      .order('position', { ascending: true })
+      .order('created_at', { ascending: true });
 
     if (stErr) return json(500, { error: 'db_error', detail: stErr.message });
 
@@ -164,7 +169,6 @@ export async function GET(req: Request): Promise<NextResponse> {
       .from('leads')
       .select('id, workspace_id, created_at, full_name, email, phone, status, source, labels, notes')
       .eq('workspace_id', workspaceId)
-      .order('created_at', { ascending: false })
       .limit(500);
 
     if (lErr) return json(500, { error: 'db_error', detail: lErr.message });
@@ -178,7 +182,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     for (const lead of leads) {
       const st = stateByLeadId.get(lead.id);
       const stageId = st?.stage_id ?? defaultStageId;
-      const position = st?.position ?? 0;
+      const position = typeof st?.position === 'number' ? st.position : 0;
       const stageChangedAt = st?.stage_changed_at ?? null;
 
       const enriched: BoardLead = {
@@ -192,15 +196,14 @@ export async function GET(req: Request): Promise<NextResponse> {
       byStage[stageId].push(enriched);
     }
 
-    // Orden interno por position, y fallback por created_at
+    // Orden interno por position, fallback por created_at (estable)
     for (const stageId of Object.keys(byStage)) {
       byStage[stageId].sort((a, b) => {
         if (a.position !== b.position) return a.position - b.position;
-        // fallback: más nuevo arriba (created_at desc)
-        const ta = Date.parse(a.created_at);
-        const tb = Date.parse(b.created_at);
-        if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
-        return tb - ta;
+        const ta = safeTime(a.created_at);
+        const tb = safeTime(b.created_at);
+        if (ta !== tb) return ta - tb; // más antiguo primero
+        return a.id.localeCompare(b.id);
       });
     }
 
