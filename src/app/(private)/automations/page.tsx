@@ -259,22 +259,18 @@ export default function AutomationsPage() {
   }, [loading, error, items, createNew, deleteWorkflow]);
 
   return (
-    <div className="p-4 md:p-6">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-white/95">Automatizaciones</h1>
-          <p className="text-sm text-white/60">Crea workflows tipo GHL: triggers → condiciones → acciones.</p>
-        </div>
-        <button
-          onClick={() => void createNew()}
-          className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-indigo-500/20 px-4 py-2 text-white hover:bg-indigo-500/30"
-        >
-          <Plus className="h-4 w-4" />
-          Nuevo workflow
-        </button>
+  <div className="p-4 md:p-6">
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <div>
+        <h1 className="text-xl font-semibold text-white/95">Automatizaciones</h1>
+        <p className="text-sm text-white/60">Crea workflows tipo GHL: triggers → condiciones → acciones.</p>
       </div>
 
-      {content}
+      {/* ✅ Quitado el botón de arriba */}
     </div>
-  );
+
+    {content}
+  </div>
+);
+
 }
