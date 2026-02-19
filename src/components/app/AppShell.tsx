@@ -4,7 +4,6 @@
 import { useMemo, useState, useEffect } from 'react';
 import {
   Home,
-  Inbox,
   Users,
   Workflow,
   Plug,
@@ -54,9 +53,9 @@ function safeSetActiveWorkspaceId(id: string): void {
 
 const NAV = [
   { href: '/onboarding', key: 'dashboard', icon: Home },
-  { href: '/inbox', key: 'inbox', icon: Inbox },
   { href: '/leads', key: 'leads', icon: Users },
   { href: '/pipeline', key: 'pipeline', icon: Workflow },
+  { href: '/automations', key: 'automations', icon: Workflow },
   { href: '/integrations', key: 'integrations', icon: Plug },
   { href: '/campaigns', key: 'campaigns', icon: Megaphone },
   { href: '/settings', key: 'settings', icon: Settings },
