@@ -1,7 +1,4 @@
 // src/app/api/pipelines/move-lead/route.ts
-// ✅ Tu route YA está bien para soportar "toPosition" (índice) y no hay que tocar nada.
-// Te lo dejo completo tal cual para que puedas copiar/pegar si quieres.
-
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -80,6 +77,58 @@ async function isWorkspaceMember(args: {
   return Array.isArray(data) && data.length > 0;
 }
 
+async function pipelineBelongsToWorkspace(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  pipelineId: string;
+}): Promise<boolean> {
+  const { data, error } = await args.admin
+    .from('pipelines')
+    .select('id')
+    .eq('id', args.pipelineId)
+    .eq('workspace_id', args.workspaceId)
+    .maybeSingle();
+
+  if (error) return false;
+  return Boolean(data?.id);
+}
+
+async function tryMoveLead(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  pipelineId: string;
+  leadId: string;
+  toStageId: string;
+  toPosition: number;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const { error } = await args.admin.rpc('move_lead_in_pipeline', {
+    p_workspace_id: args.workspaceId,
+    p_pipeline_id: args.pipelineId,
+    p_lead_id: args.leadId,
+    p_to_stage_id: args.toStageId,
+    p_to_position: Math.max(0, args.toPosition),
+  });
+
+  if (error) return { ok: false, message: error.message };
+  return { ok: true };
+}
+
+async function rebalanceStage(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  pipelineId: string;
+  stageId: string;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const { error } = await args.admin.rpc('rebalance_stage_positions', {
+    p_workspace_id: args.workspaceId,
+    p_pipeline_id: args.pipelineId,
+    p_stage_id: args.stageId,
+  });
+
+  if (error) return { ok: false, message: error.message };
+  return { ok: true };
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   try {
     const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL');
@@ -87,10 +136,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     const serviceKey = getEnv('SUPABASE_SERVICE_ROLE_KEY');
 
     const token = getBearer(req);
-    if (!token) return json(401, { error: 'login_required' });
+    if (!token) return json(401, { ok: false, error: 'login_required' });
 
     const workspaceId = (req.headers.get('x-workspace-id') ?? '').trim();
-    if (!workspaceId) return json(400, { error: 'missing_workspace_id' });
+    if (!workspaceId) return json(400, { ok: false, error: 'missing_workspace_id' });
 
     const body = await safeJson(req);
 
@@ -99,10 +148,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     const toStageId = pickString(body, 'toStageId');
     const toPosition = pickInt(body, 'toPosition');
 
-    if (!pipelineId) return json(400, { error: 'missing_pipelineId' });
-    if (!leadId) return json(400, { error: 'missing_leadId' });
-    if (!toStageId) return json(400, { error: 'missing_toStageId' });
-    if (toPosition === null) return json(400, { error: 'missing_toPosition' });
+    if (!pipelineId) return json(400, { ok: false, error: 'missing_pipelineId' });
+    if (!leadId) return json(400, { ok: false, error: 'missing_leadId' });
+    if (!toStageId) return json(400, { ok: false, error: 'missing_toStageId' });
+    if (toPosition === null) return json(400, { ok: false, error: 'missing_toPosition' });
 
     // Auth user
     const userClient = createClient(supabaseUrl, anonKey, {
@@ -111,32 +160,59 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
 
     const userId = await getAuthedUserId(userClient);
-    if (!userId) return json(401, { error: 'login_required' });
+    if (!userId) return json(401, { ok: false, error: 'login_required' });
 
     // Admin
     const admin = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    const ok = await isWorkspaceMember({ admin, workspaceId, userId });
-    if (!ok) return json(403, { error: 'not_member' });
+    const member = await isWorkspaceMember({ admin, workspaceId, userId });
+    if (!member) return json(403, { ok: false, error: 'not_member' });
 
-    // Ejecutar función
-    const { error } = await admin.rpc('move_lead_in_pipeline', {
-      p_workspace_id: workspaceId,
-      p_pipeline_id: pipelineId,
-      p_lead_id: leadId,
-      p_to_stage_id: toStageId,
-      p_to_position: Math.max(0, toPosition),
+    const pipelineOk = await pipelineBelongsToWorkspace({ admin, workspaceId, pipelineId });
+    if (!pipelineOk) return json(404, { ok: false, error: 'pipeline_not_found' });
+
+    // 1) Intento normal
+    const first = await tryMoveLead({
+      admin,
+      workspaceId,
+      pipelineId,
+      leadId,
+      toStageId,
+      toPosition,
     });
 
-    if (error) {
-      return json(500, { error: 'db_error', detail: error.message });
+    if (first.ok) return json(200, { ok: true });
+
+    // 2) Fallback: rebalance del stage destino y reintento 1 vez
+    const reb = await rebalanceStage({
+      admin,
+      workspaceId,
+      pipelineId,
+      stageId: toStageId,
+    });
+
+    if (!reb.ok) {
+      return json(500, { ok: false, error: 'db_error', detail: `rebalance_failed: ${reb.message}` });
+    }
+
+    const second = await tryMoveLead({
+      admin,
+      workspaceId,
+      pipelineId,
+      leadId,
+      toStageId,
+      toPosition,
+    });
+
+    if (!second.ok) {
+      return json(500, { ok: false, error: 'db_error', detail: `move_failed_after_rebalance: ${second.message}` });
     }
 
     return json(200, { ok: true });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
-    return json(500, { error: 'server_error', detail: msg });
+    return json(500, { ok: false, error: 'server_error', detail: msg });
   }
 }
