@@ -266,64 +266,97 @@ export default function AutomationBuilderPage() {
   );
 
   const createNode = useCallback(
-    async (type: 'trigger' | 'action'): Promise<void> => {
-      setActionError(null);
-      setActionInfo(null);
+  async (type: 'trigger' | 'action'): Promise<void> => {
+    setActionError(null);
+    setActionInfo(null);
 
-      const ws = await getActiveWorkspaceId();
-      const { data: sess } = await supabase.auth.getSession();
-      const token = sess.session?.access_token;
+    const ws = await getActiveWorkspaceId();
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess.session?.access_token;
 
-      if (!ws || !token) {
-        setActionError(!ws ? 'missing_workspace' : 'login_required');
-        return;
-      }
+    if (!ws || !token) {
+      setActionError(!ws ? 'missing_workspace' : 'login_required');
+      return;
+    }
 
-      const rect = canvasRef.current?.getBoundingClientRect() ?? null;
-      const x = rect ? Math.max(40, rect.width / 2 - 80) : 120;
-      const y = rect ? Math.max(40, rect.height / 2 - 40) : 120;
+    const rect = canvasRef.current?.getBoundingClientRect() ?? null;
+    const x = rect ? Math.max(40, rect.width / 2 - 80) : 120;
+    const y = rect ? Math.max(40, rect.height / 2 - 40) : 120;
 
-      const res = await fetch('/api/automations/workflows/node-create', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'x-workspace-id': ws,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          workflowId,
-          type,
-          name: type === 'trigger' ? 'Trigger' : 'Acción',
-          x,
-          y,
-        }),
-      });
+    const res = await fetch('/api/automations/workflows/node-create', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'x-workspace-id': ws,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        workflowId,
+        type,
+        name: type === 'trigger' ? 'Trigger' : 'Acción',
+        x,
+        y,
+      }),
+    });
 
-      const j = (await res.json()) as NodeCreateResponse;
-      if (!j.ok) {
-        console.error('node-create failed', j);
-        setActionError(j.detail ?? j.error);
-        return;
-      }
+    let rawJson: unknown = null;
+    try {
+      rawJson = (await res.json()) as unknown;
+    } catch {
+      rawJson = null;
+    }
 
-      const raw = j.node;
-      const ui = parseNodeUi(raw.ui);
-      const config = isRecord(raw.config) ? raw.config : {};
+    if (!res.ok) {
+      console.error('node-create http error', res.status, rawJson);
+      setActionError(`node_create_http_${res.status}`);
+      return;
+    }
 
-      const node: NodeVM = {
-        id: raw.id,
-        type: raw.type,
-        name: raw.name,
-        config,
-        ui,
-      };
+    if (!isRecord(rawJson)) {
+      console.error('node-create invalid json', rawJson);
+      setActionError('node_create_invalid_json');
+      return;
+    }
 
-      setNodes((prev) => [...prev, node]);
-      setSelectedNodeId(node.id);
-      setActionInfo(`${type === 'trigger' ? 'Trigger' : 'Acción'} creado.`);
-    },
-    [workflowId]
-  );
+    const ok = rawJson.ok === true;
+    if (!ok) {
+      const err = typeof rawJson.error === 'string' ? rawJson.error : 'node_create_failed';
+      const detail = typeof rawJson.detail === 'string' ? rawJson.detail : '';
+      console.error('node-create failed', rawJson);
+      setActionError(detail ? `${err}: ${detail}` : err);
+      return;
+    }
+
+    // ✅ soporta varias formas: node (ideal) o data (fallback)
+    const nodeUnknown = (rawJson.node ?? rawJson.data) as unknown;
+
+    if (!isRecord(nodeUnknown)) {
+      console.error('node-create missing node', rawJson);
+      setActionError('node_create_missing_node');
+      return;
+    }
+
+    const id = typeof nodeUnknown.id === 'string' ? nodeUnknown.id : '';
+    const nodeType = typeof nodeUnknown.type === 'string' ? nodeUnknown.type : type;
+    const name = typeof nodeUnknown.name === 'string' ? nodeUnknown.name : (type === 'trigger' ? 'Trigger' : 'Acción');
+    if (!id) {
+      console.error('node-create invalid node.id', nodeUnknown);
+      setActionError('node_create_invalid_node_id');
+      return;
+    }
+
+    const ui = parseNodeUi(nodeUnknown.ui);
+    const config = isRecord(nodeUnknown.config) ? nodeUnknown.config : {};
+
+    const node: NodeVM = { id, type: nodeType, name, config, ui };
+
+    setNodes((prev) => [...prev, node]);
+    setSelectedNodeId(node.id);
+    setActionInfo(`${type === 'trigger' ? 'Trigger' : 'Acción'} creado.`);
+  },
+  [workflowId]
+);
+
 
   const saveGraph = useCallback(async (): Promise<void> => {
     setActionError(null);
