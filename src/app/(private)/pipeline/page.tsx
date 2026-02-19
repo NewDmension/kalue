@@ -137,6 +137,10 @@ function formatLocal(iso: string): string {
   return d.toLocaleString();
 }
 
+function safePos(n: unknown): number {
+  return typeof n === 'number' && Number.isFinite(n) ? n : 0;
+}
+
 export default function PipelinePage() {
   const { activeWorkspaceId } = useWorkspace();
 
@@ -148,7 +152,7 @@ export default function PipelinePage() {
   const [draggingStageId, setDraggingStageId] = useState<string | null>(null);
   const [dragOverStageIndex, setDragOverStageIndex] = useState<number | null>(null);
 
-  // ✅ NUEVO: gap hover para insertar leads por índice
+  // gap hover para insertar leads por índice
   const [dragOverLead, setDragOverLead] = useState<{ stageId: string; index: number } | null>(null);
 
   // Pipelines
@@ -340,41 +344,52 @@ export default function PipelinePage() {
     setBoardLoading(false);
   }
 
-  function optimisticMoveLead(args: { leadId: string; fromStageId: string; toStageId: string }): void {
-    setLeadsByStage((prev) => {
-      const next: Record<string, LeadRow[]> = { ...prev };
+  // ✅ Calcula un "position" estable entre vecinos (no uses índice como position)
+  function computeToPosition(args: {
+    leadId: string;
+    fromStageId: string;
+    toStageId: string;
+    toIndex: number;
+  }): number {
+    const STEP = 1000;
 
-      const fromArr = Array.isArray(next[args.fromStageId]) ? [...next[args.fromStageId]!] : [];
-      const toArr = Array.isArray(next[args.toStageId]) ? [...next[args.toStageId]!] : [];
+    const rawArr = Array.isArray(leadsByStage[args.toStageId]) ? leadsByStage[args.toStageId]! : [];
 
-      const idx = fromArr.findIndex((l) => l.id === args.leadId);
-      if (idx < 0) return prev;
+    // si reordenas en el mismo stage, quita el lead primero (para calcular vecinos correctos)
+    const arr =
+      args.fromStageId === args.toStageId ? rawArr.filter((l) => l.id !== args.leadId) : rawArr;
 
-      const lead = fromArr[idx]!;
-      fromArr.splice(idx, 1);
+    const boundedIndex = Math.max(0, Math.min(args.toIndex, arr.length));
 
-      const moved: LeadRow = {
-        ...lead,
-        stage_id: args.toStageId,
-        position: 999999,
-        stage_changed_at: new Date().toISOString(),
-      };
+    const prev = boundedIndex - 1 >= 0 ? arr[boundedIndex - 1] : null;
+    const next = boundedIndex < arr.length ? arr[boundedIndex] : null;
 
-      toArr.push(moved);
+    const prevPos = prev ? safePos(prev.position) : null;
+    const nextPos = next ? safePos(next.position) : null;
 
-      next[args.fromStageId] = fromArr;
-      next[args.toStageId] = toArr;
+    if (prevPos === null && nextPos === null) return STEP; // primera card del stage
+    if (prevPos === null && nextPos !== null) return nextPos - STEP; // al principio
+    if (prevPos !== null && nextPos === null) return prevPos + STEP; // al final
 
-      return next;
-    });
+    // entre dos posiciones: elige un punto medio
+    if (prevPos !== null && nextPos !== null) {
+      if (nextPos - prevPos >= 2) {
+        return prevPos + Math.floor((nextPos - prevPos) / 2);
+      }
+      // gap demasiado pequeño: igualmente mete algo "entre" (se va compactando, pero ordena)
+      return prevPos + 1;
+    }
+
+    return STEP;
   }
 
-  // ✅ NUEVO: mover o reordenar lead por índice (mismo stage o stage distinto)
+  // ✅ mover o reordenar lead por índice (mismo stage o stage distinto)
   function optimisticUpsertLead(args: {
     leadId: string;
     fromStageId: string;
     toStageId: string;
     toIndex: number;
+    toPosition: number;
   }): void {
     setLeadsByStage((prev) => {
       const next: Record<string, LeadRow[]> = { ...prev };
@@ -399,13 +414,31 @@ export default function PipelinePage() {
         ...lead,
         stage_id: args.toStageId,
         stage_changed_at: new Date().toISOString(),
-        position: 999999,
+        position: args.toPosition,
       };
 
       toArr.splice(boundedIndex, 0, moved);
 
+      // ordenar por position para que el UI quede consistente con el backend
+      toArr.sort((a, b) => {
+        if (a.position !== b.position) return a.position - b.position;
+        const ta = Date.parse(a.created_at);
+        const tb = Date.parse(b.created_at);
+        if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+        return ta - tb;
+      });
+
       next[args.toStageId] = toArr;
+
       if (args.fromStageId !== args.toStageId) {
+        // también ordenamos el fromArr por si acaso
+        fromArr.sort((a, b) => {
+          if (a.position !== b.position) return a.position - b.position;
+          const ta = Date.parse(a.created_at);
+          const tb = Date.parse(b.created_at);
+          if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+          return ta - tb;
+        });
         next[args.fromStageId] = fromArr;
       } else {
         next[args.fromStageId] = toArr;
@@ -696,7 +729,6 @@ export default function PipelinePage() {
 
     const data = safeJsonStringify(payload);
 
-    // Fallback crucial: algunos navegadores solo arrancan drag si hay text/plain
     e.dataTransfer.setData('text/plain', data);
     e.dataTransfer.setData(DND_KEY_STAGE, data);
 
@@ -730,7 +762,7 @@ export default function PipelinePage() {
     e.dataTransfer.dropEffect = 'move';
   }
 
-  // ✅ NUEVO: gaps para insertar leads
+  // gaps para insertar leads
   function onDragOverLeadGap(e: DragEvent, stageId: string, index: number): void {
     const types = Array.from(e.dataTransfer.types);
     if (!types.includes(DND_KEY_LEAD)) return;
@@ -769,20 +801,28 @@ export default function PipelinePage() {
       }
     }
 
-    // Optimista
-    optimisticUpsertLead({
+    const toPosition = computeToPosition({
       leadId: payload.leadId,
       fromStageId: payload.fromStageId,
       toStageId,
       toIndex,
     });
 
-    // Persist (toPosition = índice)
+    // Optimista
+    optimisticUpsertLead({
+      leadId: payload.leadId,
+      fromStageId: payload.fromStageId,
+      toStageId,
+      toIndex,
+      toPosition,
+    });
+
+    // Persist (position estable)
     const ok = await persistMoveLead({
       leadId: payload.leadId,
       pipelineId: payload.pipelineId,
       toStageId,
-      toPosition: toIndex,
+      toPosition,
     });
 
     if (!ok) {
@@ -820,7 +860,6 @@ export default function PipelinePage() {
     const fromIndex = current.findIndex((s) => s.id === payload.stageId);
     if (fromIndex < 0) return;
 
-    // si sueltas donde ya está (o justo al lado), no hagas nada
     if (fromIndex === targetIndex || fromIndex + 1 === targetIndex) {
       setDragOverStageIndex(null);
       setDraggingStageId(null);
@@ -834,10 +873,8 @@ export default function PipelinePage() {
     const insertIndex = fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
     next.splice(insertIndex, 0, moved);
 
-    // Optimista
     setStages(next);
 
-    // Persist
     const stageIds = next.map((s) => s.id);
     const ok = await persistReorderStages({ pipelineId: selectedPipelineId, stageIds });
 
@@ -852,10 +889,7 @@ export default function PipelinePage() {
   async function onDropColumn(e: DragEvent, toStageId: string): Promise<void> {
     e.preventDefault();
 
-    // limpiar UI de gaps de lead
     setDragOverLead(null);
-
-    // SOLO LEADS (las columnas se reordenan con gaps)
     setDraggingLeadId(null);
 
     const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
@@ -865,22 +899,29 @@ export default function PipelinePage() {
     if (!selectedPipelineId) return;
     if (payload.pipelineId !== selectedPipelineId) return;
 
-    // si es mismo stage y sueltas en columna (no gap), lo tratamos como "al final"
     const items = Array.isArray(leadsByStage[toStageId]) ? leadsByStage[toStageId]! : [];
     const toIndex = items.length;
 
-    optimisticUpsertLead({
+    const toPosition = computeToPosition({
       leadId: payload.leadId,
       fromStageId: payload.fromStageId,
       toStageId,
       toIndex,
     });
 
+    optimisticUpsertLead({
+      leadId: payload.leadId,
+      fromStageId: payload.fromStageId,
+      toStageId,
+      toIndex,
+      toPosition,
+    });
+
     const ok = await persistMoveLead({
       leadId: payload.leadId,
       pipelineId: payload.pipelineId,
       toStageId,
-      toPosition: toIndex,
+      toPosition,
     });
 
     if (!ok) {
@@ -994,7 +1035,6 @@ export default function PipelinePage() {
         ) : (
           <div className={cx('rounded-2xl border border-white/10 bg-black/10 p-3', 'h-[calc(100vh-380px)] min-h-[440px]')}>
             <div className="h-full overflow-x-auto">
-              {/* ✅ Layout con gaps columnas */}
               <div className="flex h-full pr-2">
                 {/* GAP inicial (insertar columna al principio) */}
                 <div
