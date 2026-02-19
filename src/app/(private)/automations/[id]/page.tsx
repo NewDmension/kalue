@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactElement } from 'react';
 import { useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
@@ -14,8 +15,8 @@ type NodeRow = {
   id: string;
   type: string;
   name: string;
-  config: Record<string, unknown> | null;
-  ui: Record<string, unknown> | null;
+  config: unknown;
+  ui: unknown;
 };
 
 type NodeVM = {
@@ -33,12 +34,7 @@ type EdgeRow = {
   condition_key: string | null;
 };
 
-type EdgeVM = {
-  id: string;
-  from_node_id: string;
-  to_node_id: string;
-  condition_key: string | null;
-};
+type EdgeVM = EdgeRow;
 
 type GetResponse =
   | { ok: true; workflow: Workflow; nodes: NodeRow[]; edges: EdgeRow[] }
@@ -54,9 +50,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function parseNodeUi(ui: Record<string, unknown> | null): NodeUI {
-  const x = ui && typeof ui.x === 'number' && Number.isFinite(ui.x) ? ui.x : 80;
-  const y = ui && typeof ui.y === 'number' && Number.isFinite(ui.y) ? ui.y : 80;
+function parseNodeUi(ui: unknown): NodeUI {
+  if (!isRecord(ui)) return { x: 80, y: 80 };
+  const x = typeof ui.x === 'number' && Number.isFinite(ui.x) ? ui.x : 80;
+  const y = typeof ui.y === 'number' && Number.isFinite(ui.y) ? ui.y : 80;
   return { x, y };
 }
 
@@ -64,10 +61,21 @@ function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
 }
 
-function newEdgeId(): string {
-  // simple client id; DB will accept any uuid if you used uuid type.
-  // If your DB enforces UUID format strictly and doesn't accept this, I’ll switch to server endpoint for edges too.
-  return crypto.randomUUID();
+function uuidv4(): string {
+  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto !== 'undefined' && typeof globalThis.crypto.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < 16; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 export default function AutomationBuilderPage() {
@@ -75,18 +83,19 @@ export default function AutomationBuilderPage() {
   const workflowId = params.id;
 
   const [loading, setLoading] = useState(true);
+
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionInfo, setActionInfo] = useState<string | null>(null);
+
   const [wf, setWf] = useState<Workflow | null>(null);
   const [nodes, setNodes] = useState<NodeVM[]>([]);
   const [edges, setEdges] = useState<EdgeVM[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
-  // Connect mode
   const [connectMode, setConnectMode] = useState(false);
   const [connectFromId, setConnectFromId] = useState<string | null>(null);
 
-  // Drag node
   const draggingRef = useRef<{
     nodeId: string;
     startMouseX: number;
@@ -104,14 +113,16 @@ export default function AutomationBuilderPage() {
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
-    setError(null);
+    setPageError(null);
+    setActionError(null);
+    setActionInfo(null);
 
     const ws = await getActiveWorkspaceId();
     const { data: sess } = await supabase.auth.getSession();
     const token = sess.session?.access_token;
 
     if (!ws || !token) {
-      setError(!ws ? 'missing_workspace' : 'login_required');
+      setPageError(!ws ? 'missing_workspace' : 'login_required');
       setLoading(false);
       return;
     }
@@ -127,30 +138,38 @@ export default function AutomationBuilderPage() {
 
     const j = (await res.json()) as GetResponse;
     if (!j.ok) {
-      setError(j.detail ?? j.error);
+      setPageError(j.detail ?? j.error);
       setLoading(false);
       return;
     }
 
     setWf(j.workflow);
 
-    const vmNodes: NodeVM[] = j.nodes.map((n) => ({
-      id: n.id,
-      type: n.type,
-      name: n.name,
-      config: isRecord(n.config) ? n.config : {},
-      ui: parseNodeUi(isRecord(n.ui) ? n.ui : null),
-    }));
+    const vmNodes: NodeVM[] = (Array.isArray(j.nodes) ? j.nodes : [])
+      .filter((n): n is NodeRow => Boolean(n && typeof n.id === 'string'))
+      .map((n) => ({
+        id: n.id,
+        type: n.type,
+        name: n.name,
+        config: isRecord(n.config) ? n.config : {},
+        ui: parseNodeUi(n.ui),
+      }));
 
-    const vmEdges: EdgeVM[] = j.edges.map((e) => ({
-      id: e.id,
-      from_node_id: e.from_node_id,
-      to_node_id: e.to_node_id,
-      condition_key: e.condition_key,
-    }));
+    const vmEdges: EdgeVM[] = (Array.isArray(j.edges) ? j.edges : [])
+      .filter((e): e is EdgeRow => Boolean(e && typeof e.id === 'string'))
+      .map((e) => ({
+        id: e.id,
+        from_node_id: e.from_node_id,
+        to_node_id: e.to_node_id,
+        condition_key: e.condition_key,
+      }));
 
     setNodes(vmNodes);
-    setEdges(vmEdges);
+
+    // ✅ IMPORTANTE: limpia edges que apuntan a nodes que no existen (evita a/b undefined)
+    const nodeIdSet = new Set(vmNodes.map((n) => n.id));
+    setEdges(vmEdges.filter((e) => nodeIdSet.has(e.from_node_id) && nodeIdSet.has(e.to_node_id)));
+
     setLoading(false);
   }, [workflowId]);
 
@@ -158,7 +177,6 @@ export default function AutomationBuilderPage() {
     void load();
   }, [load]);
 
-  // Mouse move/up for dragging
   useEffect(() => {
     const onMove = (ev: MouseEvent) => {
       const d = draggingRef.current;
@@ -185,72 +203,82 @@ export default function AutomationBuilderPage() {
     };
   }, []);
 
-  const startDragNode = useCallback((nodeId: string, ev: React.MouseEvent) => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const n = nodes.find((x) => x.id === nodeId);
-    if (!n) return;
+  const startDragNode = useCallback(
+    (nodeId: string, ev: React.MouseEvent) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const n = nodes.find((x) => x.id === nodeId);
+      if (!n) return;
 
-    setSelectedNodeId(nodeId);
+      setSelectedNodeId(nodeId);
 
-    draggingRef.current = {
-      nodeId,
-      startMouseX: ev.clientX,
-      startMouseY: ev.clientY,
-      startX: n.ui.x,
-      startY: n.ui.y,
-    };
-  }, [nodes]);
+      draggingRef.current = {
+        nodeId,
+        startMouseX: ev.clientX,
+        startMouseY: ev.clientY,
+        startX: n.ui.x,
+        startY: n.ui.y,
+      };
+    },
+    [nodes]
+  );
 
   const onCanvasClick = useCallback(() => {
     setSelectedNodeId(null);
-    if (connectMode) {
-      setConnectFromId(null);
-    }
+    setActionInfo(null);
+    setActionError(null);
+    if (connectMode) setConnectFromId(null);
   }, [connectMode]);
 
   const onNodeClick = useCallback(
     (nodeId: string) => {
+      setActionError(null);
+      setActionInfo(null);
+
       if (!connectMode) {
         setSelectedNodeId(nodeId);
         return;
       }
 
-      // connect mode
       if (!connectFromId) {
         setConnectFromId(nodeId);
         setSelectedNodeId(nodeId);
+        setActionInfo('Origen seleccionado. Ahora elige el destino…');
         return;
       }
 
       if (connectFromId === nodeId) return;
 
-      // create edge
       const exists = edges.some((e) => e.from_node_id === connectFromId && e.to_node_id === nodeId);
-      if (exists) return;
+      if (exists) {
+        setActionInfo('Ese enlace ya existe.');
+        setConnectFromId(null);
+        return;
+      }
 
-      const id = newEdgeId();
+      const id = uuidv4();
       setEdges((prev) => [...prev, { id, from_node_id: connectFromId, to_node_id: nodeId, condition_key: null }]);
       setConnectFromId(null);
       setSelectedNodeId(nodeId);
+      setActionInfo('Conexión creada (no olvides Guardar).');
     },
     [connectMode, connectFromId, edges]
   );
 
   const createNode = useCallback(
     async (type: 'trigger' | 'action'): Promise<void> => {
-      setError(null);
+      setActionError(null);
+      setActionInfo(null);
 
       const ws = await getActiveWorkspaceId();
       const { data: sess } = await supabase.auth.getSession();
       const token = sess.session?.access_token;
 
       if (!ws || !token) {
-        setError(!ws ? 'missing_workspace' : 'login_required');
+        setActionError(!ws ? 'missing_workspace' : 'login_required');
         return;
       }
 
-      // place near center-ish
       const rect = canvasRef.current?.getBoundingClientRect() ?? null;
       const x = rect ? Math.max(40, rect.width / 2 - 80) : 120;
       const y = rect ? Math.max(40, rect.height / 2 - 40) : 120;
@@ -273,12 +301,13 @@ export default function AutomationBuilderPage() {
 
       const j = (await res.json()) as NodeCreateResponse;
       if (!j.ok) {
-        setError(j.detail ?? j.error);
+        console.error('node-create failed', j);
+        setActionError(j.detail ?? j.error);
         return;
       }
 
       const raw = j.node;
-      const ui = isRecord(raw.ui) ? parseNodeUi(raw.ui) : { x, y };
+      const ui = parseNodeUi(raw.ui);
       const config = isRecord(raw.config) ? raw.config : {};
 
       const node: NodeVM = {
@@ -291,19 +320,21 @@ export default function AutomationBuilderPage() {
 
       setNodes((prev) => [...prev, node]);
       setSelectedNodeId(node.id);
+      setActionInfo(`${type === 'trigger' ? 'Trigger' : 'Acción'} creado.`);
     },
     [workflowId]
   );
 
   const saveGraph = useCallback(async (): Promise<void> => {
-    setError(null);
+    setActionError(null);
+    setActionInfo(null);
 
     const ws = await getActiveWorkspaceId();
     const { data: sess } = await supabase.auth.getSession();
     const token = sess.session?.access_token;
 
     if (!ws || !token) {
-      setError(!ws ? 'missing_workspace' : 'login_required');
+      setActionError(!ws ? 'missing_workspace' : 'login_required');
       return;
     }
 
@@ -336,14 +367,20 @@ export default function AutomationBuilderPage() {
 
     const j = (await res.json()) as UpsertGraphResponse;
     if (!j.ok) {
-      setError(j.detail ?? j.error);
+      console.error('upsert-graph failed', j);
+      setActionError(j.detail ?? j.error);
       return;
     }
+
+    setActionInfo('Guardado.');
   }, [workflowId, nodes, edges]);
 
-  const updateSelectedName = useCallback((name: string) => {
-    setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, name } : n)));
-  }, [selectedNodeId]);
+  const updateSelectedName = useCallback(
+    (name: string) => {
+      setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, name } : n)));
+    },
+    [selectedNodeId]
+  );
 
   const deleteSelected = useCallback(() => {
     const id = selectedNodeId;
@@ -353,36 +390,39 @@ export default function AutomationBuilderPage() {
     setEdges((prev) => prev.filter((e) => e.from_node_id !== id && e.to_node_id !== id));
     setSelectedNodeId(null);
     if (connectFromId === id) setConnectFromId(null);
+    setActionInfo('Nodo eliminado (no olvides Guardar).');
   }, [selectedNodeId, connectFromId]);
 
-  const edgesSvg = useMemo(() => {
+  // ✅ Render de líneas ultra defensivo (sin JSX type-guard)
+  const edgesSvg = useMemo((): ReactElement[] => {
     const map = new Map<string, NodeVM>();
     for (const n of nodes) map.set(n.id, n);
 
-    return edges
-      .map((e) => {
-        const a = map.get(e.from_node_id);
-        const b = map.get(e.to_node_id);
-        if (!a || !b) return null;
+    const out: ReactElement[] = [];
+    for (const e of edges) {
+      const a = map.get(e.from_node_id);
+      const b = map.get(e.to_node_id);
+      if (!a || !b) continue; // <- evita ui undefined
 
-        const x1 = a.ui.x + 150;
-        const y1 = a.ui.y + 30;
-        const x2 = b.ui.x;
-        const y2 = b.ui.y + 30;
+      const x1 = a.ui.x + 150;
+      const y1 = a.ui.y + 30;
+      const x2 = b.ui.x;
+      const y2 = b.ui.y + 30;
 
-        return (
-          <line
-            key={e.id}
-            x1={x1}
-            y1={y1}
-            x2={x2}
-            y2={y2}
-            stroke="rgba(255,255,255,0.25)"
-            strokeWidth={2}
-          />
-        );
-      })
-      .filter(Boolean);
+      out.push(
+        <line
+          key={e.id}
+          x1={x1}
+          y1={y1}
+          x2={x2}
+          y2={y2}
+          stroke="rgba(255,255,255,0.25)"
+          strokeWidth={2}
+        />
+      );
+    }
+
+    return out;
   }, [nodes, edges]);
 
   if (loading) {
@@ -395,12 +435,12 @@ export default function AutomationBuilderPage() {
     );
   }
 
-  if (error || !wf) {
+  if (pageError || !wf) {
     return (
       <div className="p-6">
         <div className="card-glass rounded-2xl border border-red-400/30 bg-red-500/10 p-6 backdrop-blur">
           <div className="text-white/90 font-medium">Error</div>
-          <div className="mt-2 text-sm text-white/70">{error ?? 'not_found'}</div>
+          <div className="mt-2 text-sm text-white/70">{pageError ?? 'not_found'}</div>
         </div>
       </div>
     );
@@ -411,7 +451,7 @@ export default function AutomationBuilderPage() {
 
   return (
     <div className="p-4 md:p-6">
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <h1 className="truncate text-xl font-semibold text-white/95">{wf.name}</h1>
           <p className="text-sm text-white/60">
@@ -423,10 +463,17 @@ export default function AutomationBuilderPage() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setConnectMode((v) => !v)}
+            onClick={() => {
+              setActionError(null);
+              setActionInfo(null);
+              setConnectMode((v) => !v);
+              setConnectFromId(null);
+            }}
             className={cx(
               'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition',
-              connectMode ? 'border-indigo-400/30 bg-indigo-500/20 text-white' : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+              connectMode
+                ? 'border-indigo-400/30 bg-indigo-500/20 text-white'
+                : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
             )}
             title="Conectar nodos"
           >
@@ -446,9 +493,15 @@ export default function AutomationBuilderPage() {
         </div>
       </div>
 
-      {error ? (
-        <div className="mb-4 card-glass rounded-2xl border border-red-400/30 bg-red-500/10 p-4 text-sm text-white/80">
-          {error}
+      {actionError ? (
+        <div className="mb-3 card-glass rounded-2xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-white/80">
+          {actionError}
+        </div>
+      ) : null}
+
+      {actionInfo ? (
+        <div className="mb-3 card-glass rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-white/75">
+          {actionInfo}
         </div>
       ) : null}
 
@@ -475,17 +528,9 @@ export default function AutomationBuilderPage() {
             </button>
           </div>
 
-          <div
-            ref={canvasRef}
-            onClick={onCanvasClick}
-            className="absolute inset-0 overflow-hidden rounded-2xl"
-          >
-            {/* Lines layer */}
-            <svg className="absolute inset-0 h-full w-full">
-              {edgesSvg}
-            </svg>
+          <div ref={canvasRef} onClick={onCanvasClick} className="absolute inset-0 overflow-hidden rounded-2xl">
+            <svg className="absolute inset-0 h-full w-full">{edgesSvg}</svg>
 
-            {/* Nodes layer */}
             {nodes.map((n) => {
               const isSelected = n.id === selectedNodeId;
               const isConnectFrom = connectMode && connectFromId === n.id;
@@ -525,7 +570,7 @@ export default function AutomationBuilderPage() {
           </div>
         </div>
 
-        {/* Panel derecho */}
+        {/* Panel */}
         <div className="card-glass rounded-2xl border border-white/10 bg-black/20 p-5 backdrop-blur">
           <div className="flex items-center justify-between">
             <div className="text-white/90 font-medium">Configuración</div>
@@ -568,13 +613,11 @@ export default function AutomationBuilderPage() {
               </div>
 
               <div className="text-xs text-white/55">
-                Siguiente: aquí pondremos config fuerte por bloque (trigger/action/condition/wait).
+                Próximo: config tipada por bloque (Lead moved → Add label/Webhook/Email).
               </div>
             </div>
           ) : (
-            <div className="mt-4 text-sm text-white/60">
-              Selecciona un nodo para editar.
-            </div>
+            <div className="mt-4 text-sm text-white/60">Selecciona un nodo para editar.</div>
           )}
         </div>
       </div>
