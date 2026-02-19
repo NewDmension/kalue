@@ -1,20 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+import { supabase } from '@/lib/supabaseClient';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
-
-function createBrowserSupabase(): SupabaseClient | null {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anon) return null;
-
-  return createClient(url, anon, {
-    auth: { persistSession: true, autoRefreshToken: true },
-  });
-}
 
 type CreateResponse =
   | { ok: true; workflowId: string }
@@ -22,16 +12,10 @@ type CreateResponse =
 
 export default function NewAutomationPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createBrowserSupabase(), []);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const run = async (): Promise<void> => {
-      if (!supabase) {
-        setError('missing_supabase_env');
-        return;
-      }
-
       const ws = await getActiveWorkspaceId();
       if (!ws) {
         setError('missing_workspace');
@@ -68,7 +52,7 @@ export default function NewAutomationPage() {
     };
 
     void run();
-  }, [router, supabase]);
+  }, [router]);
 
   return (
     <div className="p-6">
@@ -77,11 +61,6 @@ export default function NewAutomationPage() {
           <div>
             <div className="text-white/90 font-medium">No se pudo crear el workflow</div>
             <div className="mt-2 text-sm text-white/70">{error}</div>
-            {error === 'missing_supabase_env' ? (
-              <div className="mt-2 text-sm text-white/60">
-                Falta NEXT_PUBLIC_SUPABASE_URL o NEXT_PUBLIC_SUPABASE_ANON_KEY en Vercel.
-              </div>
-            ) : null}
           </div>
         ) : (
           <div className="text-white/80">Creando workflow…</div>

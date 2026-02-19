@@ -4,9 +4,10 @@ import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
+import { supabase } from '@/lib/supabaseClient';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
+
 import { Plus, Workflow, PauseCircle, PlayCircle, FileText, Trash2 } from 'lucide-react';
 
 type WorkflowStatus = 'draft' | 'active' | 'paused' | string;
@@ -48,20 +49,8 @@ function statusBadge(status: WorkflowStatus): { label: string; icon: ReactNode; 
   };
 }
 
-function createBrowserSupabase(): SupabaseClient | null {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anon) return null;
-
-  return createClient(url, anon, {
-    auth: { persistSession: true, autoRefreshToken: true },
-  });
-}
-
 export default function AutomationsPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createBrowserSupabase(), []);
-
   const [loading, setLoading] = useState<boolean>(true);
   const [items, setItems] = useState<WorkflowItem[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -70,20 +59,20 @@ export default function AutomationsPage() {
     setLoading(true);
     setError(null);
 
-    if (!supabase) {
-      setLoading(false);
-      setError('missing_supabase_env');
-      return;
-    }
-
     const ws = await getActiveWorkspaceId();
     if (!ws) {
       setLoading(false);
-      setError('No workspace activo');
+      setError('missing_workspace');
       return;
     }
 
-    const { data: sess } = await supabase.auth.getSession();
+    const { data: sess, error: sessErr } = await supabase.auth.getSession();
+    if (sessErr) {
+      setLoading(false);
+      setError(sessErr.message);
+      return;
+    }
+
     const token = sess.session?.access_token;
     if (!token) {
       setLoading(false);
@@ -110,7 +99,7 @@ export default function AutomationsPage() {
 
     setItems(json.workflows);
     setLoading(false);
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -119,14 +108,9 @@ export default function AutomationsPage() {
   const createNew = useCallback(async (): Promise<void> => {
     setError(null);
 
-    if (!supabase) {
-      setError('missing_supabase_env');
-      return;
-    }
-
     const ws = await getActiveWorkspaceId();
     if (!ws) {
-      setError('No workspace activo');
+      setError('missing_workspace');
       return;
     }
 
@@ -157,20 +141,15 @@ export default function AutomationsPage() {
     }
 
     router.push(`/automations/${j.workflowId}`);
-  }, [router, supabase]);
+  }, [router]);
 
   const deleteWorkflow = useCallback(
     async (id: string): Promise<void> => {
       setError(null);
 
-      if (!supabase) {
-        setError('missing_supabase_env');
-        return;
-      }
-
       const ws = await getActiveWorkspaceId();
       if (!ws) {
-        setError('No workspace activo');
+        setError('missing_workspace');
         return;
       }
 
@@ -199,7 +178,7 @@ export default function AutomationsPage() {
 
       await load();
     },
-    [load, supabase]
+    [load]
   );
 
   const content = useMemo(() => {
@@ -215,11 +194,6 @@ export default function AutomationsPage() {
       return (
         <div className="card-glass rounded-2xl border border-red-400/30 bg-red-500/10 p-6 backdrop-blur">
           Error: {error}
-          {error === 'missing_supabase_env' ? (
-            <div className="mt-2 text-sm text-white/70">
-              Falta NEXT_PUBLIC_SUPABASE_URL o NEXT_PUBLIC_SUPABASE_ANON_KEY en Vercel.
-            </div>
-          ) : null}
         </div>
       );
     }
@@ -282,7 +256,7 @@ export default function AutomationsPage() {
         })}
       </div>
     );
-  }, [loading, error, items, createNew]);
+  }, [loading, error, items, createNew, deleteWorkflow]);
 
   return (
     <div className="p-4 md:p-6">
