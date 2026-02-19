@@ -93,6 +93,31 @@ async function pipelineBelongsToWorkspace(args: {
   return Boolean(data?.id);
 }
 
+async function readPrevLeadState(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  pipelineId: string;
+  leadId: string;
+}): Promise<{ stageId: string | null; position: number | null }> {
+  const { data, error } = await args.admin
+    .from('lead_pipeline_state')
+    .select('stage_id, position')
+    .eq('workspace_id', args.workspaceId)
+    .eq('pipeline_id', args.pipelineId)
+    .eq('lead_id', args.leadId)
+    .maybeSingle();
+
+  if (error) {
+    // Si falla la lectura, no rompemos el move. Devolvemos nulls.
+    return { stageId: null, position: null };
+  }
+
+  const stageId = typeof data?.stage_id === 'string' ? data.stage_id : null;
+  const position = typeof data?.position === 'number' && Number.isFinite(data.position) ? data.position : null;
+
+  return { stageId, position };
+}
+
 async function tryMoveLead(args: {
   admin: SupabaseClient;
   workspaceId: string;
@@ -123,6 +148,27 @@ async function rebalanceStage(args: {
     p_workspace_id: args.workspaceId,
     p_pipeline_id: args.pipelineId,
     p_stage_id: args.stageId,
+  });
+
+  if (error) return { ok: false, message: error.message };
+  return { ok: true };
+}
+
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | { [k: string]: JsonValue } | JsonValue[];
+
+async function enqueueWorkflowEvent(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  eventType: string;
+  entityId: string;
+  payload: Record<string, JsonValue>;
+}): Promise<{ ok: true } | { ok: false; message: string }> {
+  const { error } = await args.admin.from('workflow_event_queue').insert({
+    workspace_id: args.workspaceId,
+    event_type: args.eventType,
+    entity_id: args.entityId,
+    payload: args.payload,
   });
 
   if (error) return { ok: false, message: error.message };
@@ -162,7 +208,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const userId = await getAuthedUserId(userClient);
     if (!userId) return json(401, { ok: false, error: 'login_required' });
 
-    // Admin
+    // Admin (service role)
     const admin = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
@@ -172,6 +218,9 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     const pipelineOk = await pipelineBelongsToWorkspace({ admin, workspaceId, pipelineId });
     if (!pipelineOk) return json(404, { ok: false, error: 'pipeline_not_found' });
+
+    // Leer estado previo para evento (no bloqueante)
+    const prev = await readPrevLeadState({ admin, workspaceId, pipelineId, leadId });
 
     // 1) Intento normal
     const first = await tryMoveLead({
@@ -183,31 +232,63 @@ export async function POST(req: Request): Promise<NextResponse> {
       toPosition,
     });
 
-    if (first.ok) return json(200, { ok: true });
+    let movedOk = first.ok;
 
     // 2) Fallback: rebalance del stage destino y reintento 1 vez
-    const reb = await rebalanceStage({
-      admin,
-      workspaceId,
-      pipelineId,
-      stageId: toStageId,
-    });
+    if (!movedOk) {
+      const reb = await rebalanceStage({
+        admin,
+        workspaceId,
+        pipelineId,
+        stageId: toStageId,
+      });
 
-    if (!reb.ok) {
-      return json(500, { ok: false, error: 'db_error', detail: `rebalance_failed: ${reb.message}` });
+      if (!reb.ok) {
+        return json(500, { ok: false, error: 'db_error', detail: `rebalance_failed: ${reb.message}` });
+      }
+
+      const second = await tryMoveLead({
+        admin,
+        workspaceId,
+        pipelineId,
+        leadId,
+        toStageId,
+        toPosition,
+      });
+
+      if (!second.ok) {
+        return json(500, {
+          ok: false,
+          error: 'db_error',
+          detail: `move_failed_after_rebalance: ${second.message}`,
+        });
+      }
+
+      movedOk = true;
     }
 
-    const second = await tryMoveLead({
+    // Si hemos llegado aquí, el move ha ido OK.
+    // Encolamos evento para automatizaciones (NO rompe el move si falla)
+    const occurredAt = new Date().toISOString();
+
+    const ev = await enqueueWorkflowEvent({
       admin,
       workspaceId,
-      pipelineId,
-      leadId,
-      toStageId,
-      toPosition,
+      eventType: 'lead.stage_changed',
+      entityId: leadId,
+      payload: {
+        pipelineId,
+        fromStageId: prev.stageId,
+        toStageId,
+        fromPosition: prev.position,
+        toPosition: Math.max(0, toPosition),
+        actorUserId: userId,
+        occurredAt,
+      },
     });
 
-    if (!second.ok) {
-      return json(500, { ok: false, error: 'db_error', detail: `move_failed_after_rebalance: ${second.message}` });
+    if (!ev.ok) {
+      return json(200, { ok: true, warning: `event_enqueue_failed:${ev.message}` });
     }
 
     return json(200, { ok: true });
