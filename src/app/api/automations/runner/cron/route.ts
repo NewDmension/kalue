@@ -1,9 +1,7 @@
-// src/app/api/automations/runner/cron/route.ts
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300;
 
 function json(status: number, payload: Record<string, unknown>) {
   return new NextResponse(JSON.stringify(payload), {
@@ -18,62 +16,57 @@ function getEnv(name: string): string {
   return v;
 }
 
-function getBearer(req: Request): string | null {
-  const h = req.headers.get('authorization') ?? '';
-  const m = /^Bearer\s+(.+)$/i.exec(h);
-  return m ? m[1].trim() : null;
+function safeEq(a: string, b: string): boolean {
+  // evita timings obvios (sin crypto para no meter deps)
+  if (a.length !== b.length) return false;
+  let out = 0;
+  for (let i = 0; i < a.length; i += 1) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return out === 0;
 }
 
-async function safeReadJson(res: Response): Promise<Record<string, unknown> | null> {
-  const txt = await res.text();
-  if (!txt) return null;
-  try {
-    const parsed = JSON.parse(txt) as unknown;
-    if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, unknown>;
-    return { raw: txt };
-  } catch {
-    return { raw: txt };
-  }
+function pickSecretFromReq(req: Request): string | null {
+  const u = new URL(req.url);
+  const qs = (u.searchParams.get('secret') ?? '').trim();
+  if (qs) return qs;
+
+  const auth = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+  return auth || null;
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
   try {
-    const secret = getEnv('KALUE_CRON_SECRET');
+    const expected = getEnv('KALUE_CRON_SECRET');
+    const got = pickSecretFromReq(req);
 
-    const url = new URL(req.url);
-
-    // ✅ Vercel cron NO manda Authorization; normalmente lo pasas por query param
-    // (path puede incluir ?secret=...)
-    const gotFromQuery = (url.searchParams.get('secret') ?? '').trim();
-    const gotFromBearer = getBearer(req);
-
-    const got = gotFromBearer || gotFromQuery;
-
-    if (!got || got !== secret) {
+    if (!got || !safeEq(got, expected)) {
       return json(401, { ok: false, error: 'unauthorized' });
     }
 
-    // Llamada interna a process-queue
-    const origin = url.origin;
-    const target = new URL('/api/automations/runner/process-queue', origin);
+    // Llama a process-queue internamente con POST + Authorization (como lo tienes)
+    const base = new URL(req.url);
+    const target = new URL('/api/automations/runner/process-queue', base.origin);
 
-    const r = await fetch(target.toString(), {
+    const res = await fetch(target.toString(), {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${secret}`,
+        authorization: `Bearer ${expected}`,
         'content-type': 'application/json',
       },
-      // body vacío; process-queue no lo necesita
       body: JSON.stringify({}),
-      cache: 'no-store',
     });
 
-    // ✅ Propaga status/body de process-queue tal cual (importantísimo para debug)
-    const data = await safeReadJson(r);
-    return json(r.status, {
-      ok: r.ok,
-      upstreamStatus: r.status,
-      upstream: data,
+    const text = await res.text();
+    let upstream: unknown = null;
+    try {
+      upstream = text ? (JSON.parse(text) as unknown) : null;
+    } catch {
+      upstream = { raw: text };
+    }
+
+    return json(200, {
+      ok: true,
+      upstreamStatus: res.status,
+      upstream,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
