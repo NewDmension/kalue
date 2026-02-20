@@ -1,3 +1,4 @@
+// src/app/api/automations/runner/cron/route.ts
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
@@ -17,51 +18,63 @@ function getEnv(name: string): string {
   return v;
 }
 
-function isVercelCron(req: Request): boolean {
-  const ua = (req.headers.get('user-agent') ?? '').toLowerCase();
-  // En tus logs aparece: vercel-cron/1.0
-  if (ua.includes('vercel-cron/')) return true;
-  return false;
+function getBearer(req: Request): string | null {
+  const h = req.headers.get('authorization') ?? '';
+  const m = /^Bearer\s+(.+)$/i.exec(h);
+  return m ? m[1].trim() : null;
+}
+
+async function safeReadJson(res: Response): Promise<Record<string, unknown> | null> {
+  const txt = await res.text();
+  if (!txt) return null;
+  try {
+    const parsed = JSON.parse(txt) as unknown;
+    if (typeof parsed === 'object' && parsed !== null) return parsed as Record<string, unknown>;
+    return { raw: txt };
+  } catch {
+    return { raw: txt };
+  }
 }
 
 export async function GET(req: Request): Promise<NextResponse> {
   try {
-    if (!isVercelCron(req)) {
-      return json(401, { ok: false, error: 'unauthorized_cron' });
-    }
-
     const secret = getEnv('KALUE_CRON_SECRET');
 
-    // Llamamos al runner real (POST) con header Authorization.
-    const baseUrl = new URL(req.url).origin;
+    const url = new URL(req.url);
 
-    const res = await fetch(`${baseUrl}/api/automations/runner/process-queue`, {
+    // ✅ Vercel cron NO manda Authorization; normalmente lo pasas por query param
+    // (path puede incluir ?secret=...)
+    const gotFromQuery = (url.searchParams.get('secret') ?? '').trim();
+    const gotFromBearer = getBearer(req);
+
+    const got = gotFromBearer || gotFromQuery;
+
+    if (!got || got !== secret) {
+      return json(401, { ok: false, error: 'unauthorized' });
+    }
+
+    // Llamada interna a process-queue
+    const origin = url.origin;
+    const target = new URL('/api/automations/runner/process-queue', origin);
+
+    const r = await fetch(target.toString(), {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${secret}`,
+        authorization: `Bearer ${secret}`,
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ source: 'vercel_cron' }),
+      // body vacío; process-queue no lo necesita
+      body: JSON.stringify({}),
       cache: 'no-store',
     });
 
-    let raw: unknown = null;
-    try {
-      raw = (await res.json()) as unknown;
-    } catch {
-      raw = null;
-    }
-
-    if (!res.ok) {
-      return json(500, {
-        ok: false,
-        error: 'runner_failed',
-        status: res.status,
-        response: raw,
-      });
-    }
-
-    return json(200, { ok: true, runner: raw });
+    // ✅ Propaga status/body de process-queue tal cual (importantísimo para debug)
+    const data = await safeReadJson(r);
+    return json(r.status, {
+      ok: r.ok,
+      upstreamStatus: r.status,
+      upstream: data,
+    });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
     return json(500, { ok: false, error: 'server_error', detail: msg });

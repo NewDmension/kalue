@@ -2,7 +2,7 @@
   "framework": "nextjs",
   "crons": [
     {
-      "path": "/api/automations/runner/cron",
+      "path": "/api/automations/runner/cron?secret=${KALUE_CRON_SECRET}",
       "schedule": "*/1 * * * *"
     }
   ]
