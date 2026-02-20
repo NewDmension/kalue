@@ -40,14 +40,31 @@ type GetResponse =
   | { ok: true; workflow: Workflow; nodes: NodeRow[]; edges: EdgeRow[] }
   | { ok: false; error: string; detail?: string };
 
-type NodeCreateResponse =
-  | { ok: true; node: { id: string; type: string; name: string; config: unknown; ui: unknown } }
-  | { ok: false; error: string; detail?: string };
-
 type UpsertGraphResponse = { ok: true } | { ok: false; error: string; detail?: string };
+
+// ---- Tipos/config tipados (MVP) ----
+type TriggerEvent = 'lead.stage_changed';
+type ActionKind = 'lead.add_label';
+
+type TriggerConfig = { event: TriggerEvent; toStageId?: string };
+type ActionAddLabelConfig = { action: ActionKind; label: string };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
+}
+
+function asTriggerConfig(v: unknown): TriggerConfig {
+  if (!isRecord(v)) return { event: 'lead.stage_changed' };
+  const event: TriggerEvent = v.event === 'lead.stage_changed' ? 'lead.stage_changed' : 'lead.stage_changed';
+  const toStageId = typeof v.toStageId === 'string' && v.toStageId.trim() ? v.toStageId.trim() : undefined;
+  return { event, toStageId };
+}
+
+function asActionAddLabelConfig(v: unknown): ActionAddLabelConfig {
+  if (!isRecord(v)) return { action: 'lead.add_label', label: '' };
+  const action: ActionKind = 'lead.add_label';
+  const label = typeof v.label === 'string' ? v.label : '';
+  return { action, label };
 }
 
 function parseNodeUi(ui: unknown): NodeUI {
@@ -147,13 +164,23 @@ export default function AutomationBuilderPage() {
 
     const vmNodes: NodeVM[] = (Array.isArray(j.nodes) ? j.nodes : [])
       .filter((n): n is NodeRow => Boolean(n && typeof n.id === 'string'))
-      .map((n) => ({
-        id: n.id,
-        type: n.type,
-        name: n.name,
-        config: isRecord(n.config) ? n.config : {},
-        ui: parseNodeUi(n.ui),
-      }));
+      .map((n) => {
+        const baseConfig: Record<string, unknown> = isRecord(n.config) ? n.config : {};
+        const normalizedConfig: Record<string, unknown> =
+          n.type === 'trigger'
+            ? (asTriggerConfig(baseConfig) as unknown as Record<string, unknown>)
+            : n.type === 'action'
+              ? (asActionAddLabelConfig(baseConfig) as unknown as Record<string, unknown>)
+              : baseConfig;
+
+        return {
+          id: n.id,
+          type: n.type,
+          name: n.name,
+          config: normalizedConfig,
+          ui: parseNodeUi(n.ui),
+        };
+      });
 
     const vmEdges: EdgeVM[] = (Array.isArray(j.edges) ? j.edges : [])
       .filter((e): e is EdgeRow => Boolean(e && typeof e.id === 'string'))
@@ -166,7 +193,7 @@ export default function AutomationBuilderPage() {
 
     setNodes(vmNodes);
 
-    // ✅ IMPORTANTE: limpia edges que apuntan a nodes que no existen (evita a/b undefined)
+    // ✅ limpia edges inválidos (evita ui undefined)
     const nodeIdSet = new Set(vmNodes.map((n) => n.id));
     setEdges(vmEdges.filter((e) => nodeIdSet.has(e.from_node_id) && nodeIdSet.has(e.to_node_id)));
 
@@ -266,97 +293,110 @@ export default function AutomationBuilderPage() {
   );
 
   const createNode = useCallback(
-  async (type: 'trigger' | 'action'): Promise<void> => {
-    setActionError(null);
-    setActionInfo(null);
+    async (type: 'trigger' | 'action'): Promise<void> => {
+      setActionError(null);
+      setActionInfo(null);
 
-    const ws = await getActiveWorkspaceId();
-    const { data: sess } = await supabase.auth.getSession();
-    const token = sess.session?.access_token;
+      const ws = await getActiveWorkspaceId();
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token;
 
-    if (!ws || !token) {
-      setActionError(!ws ? 'missing_workspace' : 'login_required');
-      return;
-    }
+      if (!ws || !token) {
+        setActionError(!ws ? 'missing_workspace' : 'login_required');
+        return;
+      }
 
-    const rect = canvasRef.current?.getBoundingClientRect() ?? null;
-    const x = rect ? Math.max(40, rect.width / 2 - 80) : 120;
-    const y = rect ? Math.max(40, rect.height / 2 - 40) : 120;
+      const rect = canvasRef.current?.getBoundingClientRect() ?? null;
+      const x = rect ? Math.max(40, rect.width / 2 - 80) : 120;
+      const y = rect ? Math.max(40, rect.height / 2 - 40) : 120;
 
-    const res = await fetch('/api/automations/workflows/node-create', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'x-workspace-id': ws,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        workflowId,
-        type,
-        name: type === 'trigger' ? 'Trigger' : 'Acción',
-        x,
-        y,
-      }),
-    });
+      const res = await fetch('/api/automations/workflows/node-create', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'x-workspace-id': ws,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          workflowId,
+          type,
+          name: type === 'trigger' ? 'Trigger' : 'Acción',
+          x,
+          y,
+        }),
+      });
 
-    let rawJson: unknown = null;
-    try {
-      rawJson = (await res.json()) as unknown;
-    } catch {
-      rawJson = null;
-    }
+      let rawJson: unknown = null;
+      try {
+        rawJson = (await res.json()) as unknown;
+      } catch {
+        rawJson = null;
+      }
 
-    if (!res.ok) {
-      console.error('node-create http error', res.status, rawJson);
-      setActionError(`node_create_http_${res.status}`);
-      return;
-    }
+      if (!res.ok) {
+        // eslint-disable-next-line no-console
+        console.error('node-create http error', res.status, rawJson);
+        setActionError(`node_create_http_${res.status}`);
+        return;
+      }
 
-    if (!isRecord(rawJson)) {
-      console.error('node-create invalid json', rawJson);
-      setActionError('node_create_invalid_json');
-      return;
-    }
+      if (!isRecord(rawJson)) {
+        // eslint-disable-next-line no-console
+        console.error('node-create invalid json', rawJson);
+        setActionError('node_create_invalid_json');
+        return;
+      }
 
-    const ok = rawJson.ok === true;
-    if (!ok) {
-      const err = typeof rawJson.error === 'string' ? rawJson.error : 'node_create_failed';
-      const detail = typeof rawJson.detail === 'string' ? rawJson.detail : '';
-      console.error('node-create failed', rawJson);
-      setActionError(detail ? `${err}: ${detail}` : err);
-      return;
-    }
+      if (rawJson.ok !== true) {
+        const err = typeof rawJson.error === 'string' ? rawJson.error : 'node_create_failed';
+        const detail = typeof rawJson.detail === 'string' ? rawJson.detail : '';
+        // eslint-disable-next-line no-console
+        console.error('node-create failed', rawJson);
+        setActionError(detail ? `${err}: ${detail}` : err);
+        return;
+      }
 
-    // ✅ soporta varias formas: node (ideal) o data (fallback)
-    const nodeUnknown = (rawJson.node ?? rawJson.data) as unknown;
+      const nodeUnknown = (rawJson.node ?? rawJson.data) as unknown;
 
-    if (!isRecord(nodeUnknown)) {
-      console.error('node-create missing node', rawJson);
-      setActionError('node_create_missing_node');
-      return;
-    }
+      if (!isRecord(nodeUnknown)) {
+        // eslint-disable-next-line no-console
+        console.error('node-create missing node', rawJson);
+        setActionError('node_create_missing_node');
+        return;
+      }
 
-    const id = typeof nodeUnknown.id === 'string' ? nodeUnknown.id : '';
-    const nodeType = typeof nodeUnknown.type === 'string' ? nodeUnknown.type : type;
-    const name = typeof nodeUnknown.name === 'string' ? nodeUnknown.name : (type === 'trigger' ? 'Trigger' : 'Acción');
-    if (!id) {
-      console.error('node-create invalid node.id', nodeUnknown);
-      setActionError('node_create_invalid_node_id');
-      return;
-    }
+      const id = typeof nodeUnknown.id === 'string' ? nodeUnknown.id : '';
+      const nodeType = typeof nodeUnknown.type === 'string' ? nodeUnknown.type : type;
+      const name = typeof nodeUnknown.name === 'string' ? nodeUnknown.name : type === 'trigger' ? 'Trigger' : 'Acción';
 
-    const ui = parseNodeUi(nodeUnknown.ui);
-    const config = isRecord(nodeUnknown.config) ? nodeUnknown.config : {};
+      if (!id) {
+        // eslint-disable-next-line no-console
+        console.error('node-create invalid node.id', nodeUnknown);
+        setActionError('node_create_invalid_node_id');
+        return;
+      }
 
-    const node: NodeVM = { id, type: nodeType, name, config, ui };
+      const ui = parseNodeUi(nodeUnknown.ui);
 
-    setNodes((prev) => [...prev, node]);
-    setSelectedNodeId(node.id);
-    setActionInfo(`${type === 'trigger' ? 'Trigger' : 'Acción'} creado.`);
-  },
-  [workflowId]
-);
+      // Normaliza config según tipo
+      const rawConfig: unknown = nodeUnknown.config;
+      const normalizedConfig: Record<string, unknown> =
+        nodeType === 'trigger'
+          ? (asTriggerConfig(rawConfig) as unknown as Record<string, unknown>)
+          : nodeType === 'action'
+            ? (asActionAddLabelConfig(rawConfig) as unknown as Record<string, unknown>)
+            : isRecord(rawConfig)
+              ? rawConfig
+              : {};
 
+      const node: NodeVM = { id, type: nodeType, name, config: normalizedConfig, ui };
+
+      setNodes((prev) => [...prev, node]);
+      setSelectedNodeId(node.id);
+      setActionInfo(`${type === 'trigger' ? 'Trigger' : 'Acción'} creado.`);
+    },
+    [workflowId]
+  );
 
   const saveGraph = useCallback(async (): Promise<void> => {
     setActionError(null);
@@ -400,6 +440,7 @@ export default function AutomationBuilderPage() {
 
     const j = (await res.json()) as UpsertGraphResponse;
     if (!j.ok) {
+      // eslint-disable-next-line no-console
       console.error('upsert-graph failed', j);
       setActionError(j.detail ?? j.error);
       return;
@@ -426,6 +467,24 @@ export default function AutomationBuilderPage() {
     setActionInfo('Nodo eliminado (no olvides Guardar).');
   }, [selectedNodeId, connectFromId]);
 
+  const updateSelectedTriggerConfig = useCallback(
+    (next: TriggerConfig) => {
+      setNodes((prev) =>
+        prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next as unknown as Record<string, unknown> } : n))
+      );
+    },
+    [selectedNodeId]
+  );
+
+  const updateSelectedActionConfig = useCallback(
+    (next: ActionAddLabelConfig) => {
+      setNodes((prev) =>
+        prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next as unknown as Record<string, unknown> } : n))
+      );
+    },
+    [selectedNodeId]
+  );
+
   // ✅ Render de líneas ultra defensivo (sin JSX type-guard)
   const edgesSvg = useMemo((): ReactElement[] => {
     const map = new Map<string, NodeVM>();
@@ -435,7 +494,7 @@ export default function AutomationBuilderPage() {
     for (const e of edges) {
       const a = map.get(e.from_node_id);
       const b = map.get(e.to_node_id);
-      if (!a || !b) continue; // <- evita ui undefined
+      if (!a || !b) continue;
 
       const x1 = a.ui.x + 150;
       const y1 = a.ui.y + 30;
@@ -621,7 +680,7 @@ export default function AutomationBuilderPage() {
           </div>
 
           {selectedNode ? (
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 space-y-4">
               <div>
                 <label className="text-xs text-white/60">Nombre</label>
                 <input
@@ -638,21 +697,87 @@ export default function AutomationBuilderPage() {
                 </div>
               </div>
 
-              <div>
-                <label className="text-xs text-white/60">Posición</label>
-                <div className="mt-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80">
-                  x: {Math.round(selectedNode.ui.x)} · y: {Math.round(selectedNode.ui.y)}
-                </div>
-              </div>
+              {/* Config tipada por bloque */}
+              {selectedNode.type === 'trigger' ? (
+                <TriggerEditor
+                  config={asTriggerConfig(selectedNode.config)}
+                  onChange={(next) => updateSelectedTriggerConfig(next)}
+                />
+              ) : null}
+
+              {selectedNode.type === 'action' ? (
+                <ActionAddLabelEditor
+                  config={asActionAddLabelConfig(selectedNode.config)}
+                  onChange={(next) => updateSelectedActionConfig(next)}
+                />
+              ) : null}
 
               <div className="text-xs text-white/55">
-                Próximo: config tipada por bloque (Lead moved → Add label/Webhook/Email).
+                Recuerda pulsar <span className="text-white/75">Guardar</span> para persistir cambios.
               </div>
             </div>
           ) : (
             <div className="mt-4 text-sm text-white/60">Selecciona un nodo para editar.</div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function TriggerEditor(props: { config: TriggerConfig; onChange: (next: TriggerConfig) => void }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+      <div className="text-sm font-medium text-white/85">Trigger</div>
+
+      <div className="mt-3">
+        <label className="text-xs text-white/60">Evento</label>
+        <select
+          value={props.config.event}
+          onChange={() => props.onChange({ ...props.config, event: 'lead.stage_changed' })}
+          className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+        >
+          <option value="lead.stage_changed">Lead movido de stage</option>
+        </select>
+      </div>
+
+      <div className="mt-3">
+        <label className="text-xs text-white/60">Solo si entra a Stage ID (opcional)</label>
+        <input
+          value={props.config.toStageId ?? ''}
+          onChange={(e) => props.onChange({ ...props.config, toStageId: e.target.value.trim() || undefined })}
+          placeholder="stage_uuid (opcional)"
+          className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+        />
+      </div>
+    </div>
+  );
+}
+
+function ActionAddLabelEditor(props: { config: ActionAddLabelConfig; onChange: (next: ActionAddLabelConfig) => void }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+      <div className="text-sm font-medium text-white/85">Acción</div>
+
+      <div className="mt-3">
+        <label className="text-xs text-white/60">Tipo</label>
+        <select
+          value={props.config.action}
+          onChange={() => props.onChange({ ...props.config, action: 'lead.add_label' })}
+          className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+        >
+          <option value="lead.add_label">Añadir etiqueta (label)</option>
+        </select>
+      </div>
+
+      <div className="mt-3">
+        <label className="text-xs text-white/60">Label</label>
+        <input
+          value={props.config.label}
+          onChange={(e) => props.onChange({ ...props.config, label: e.target.value })}
+          placeholder="Ej: Movido a Contactado"
+          className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+        />
       </div>
     </div>
   );
