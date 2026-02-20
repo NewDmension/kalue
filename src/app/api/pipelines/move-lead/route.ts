@@ -108,7 +108,9 @@ async function getCurrentStageId(args: {
     .maybeSingle();
 
   if (error) return null;
-  return data?.stage_id ?? null;
+
+  const stageId = (data as { stage_id?: unknown } | null)?.stage_id;
+  return typeof stageId === 'string' && stageId.trim() ? stageId.trim() : null;
 }
 
 async function tryMoveLead(args: {
@@ -147,14 +149,16 @@ async function rebalanceStage(args: {
   return { ok: true };
 }
 
+type WorkflowEventType = 'lead.stage_changed';
+
 async function enqueueWorkflowEvent(args: {
   admin: SupabaseClient;
   workspaceId: string;
-  eventType: string;
+  eventType: WorkflowEventType;
   entityId: string;
   payload: Record<string, unknown>;
 }): Promise<void> {
-  // No bloqueamos el move si falla la cola: best-effort + log en server
+  // Best-effort: no bloqueamos el move si falla la cola.
   const { error } = await args.admin.from('workflow_event_queue').insert({
     workspace_id: args.workspaceId,
     event_type: args.eventType,
@@ -185,12 +189,14 @@ export async function POST(req: Request): Promise<NextResponse> {
     const pipelineId = pickString(body, 'pipelineId');
     const leadId = pickString(body, 'leadId');
     const toStageId = pickString(body, 'toStageId');
-    const toPosition = pickInt(body, 'toPosition');
+    const toPositionRaw = pickInt(body, 'toPosition');
 
     if (!pipelineId) return json(400, { ok: false, error: 'missing_pipelineId' });
     if (!leadId) return json(400, { ok: false, error: 'missing_leadId' });
     if (!toStageId) return json(400, { ok: false, error: 'missing_toStageId' });
-    if (toPosition === null) return json(400, { ok: false, error: 'missing_toPosition' });
+    if (toPositionRaw === null) return json(400, { ok: false, error: 'missing_toPosition' });
+
+    const toPosition = Math.max(0, toPositionRaw);
 
     // Auth user
     const userClient = createClient(supabaseUrl, anonKey, {
@@ -212,8 +218,18 @@ export async function POST(req: Request): Promise<NextResponse> {
     const pipelineOk = await pipelineBelongsToWorkspace({ admin, workspaceId, pipelineId });
     if (!pipelineOk) return json(404, { ok: false, error: 'pipeline_not_found' });
 
-    // ✅ Leer stage anterior (si existe) para el evento
+    // Leer stage anterior (si existe) para el evento
     const fromStageId = await getCurrentStageId({ admin, workspaceId, pipelineId, leadId });
+
+    const payload: Record<string, unknown> = {
+      pipelineId,
+      leadId,
+      fromStageId,
+      toStageId,
+      toPosition,
+      actorUserId: userId,
+      occurredAt: new Date().toISOString(),
+    };
 
     // 1) Intento normal
     const first = await tryMoveLead({
@@ -226,21 +242,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
 
     if (first.ok) {
-      // ✅ Emit event (best-effort)
       await enqueueWorkflowEvent({
         admin,
         workspaceId,
         eventType: 'lead.stage_changed',
         entityId: leadId,
-        payload: {
-          pipelineId,
-          leadId,
-          fromStageId,
-          toStageId,
-          toPosition: Math.max(0, toPosition),
-          actorUserId: userId,
-          occurredAt: new Date().toISOString(),
-        },
+        payload,
       });
 
       return json(200, { ok: true });
@@ -275,21 +282,12 @@ export async function POST(req: Request): Promise<NextResponse> {
       });
     }
 
-    // ✅ Emit event after success
     await enqueueWorkflowEvent({
       admin,
       workspaceId,
       eventType: 'lead.stage_changed',
       entityId: leadId,
-      payload: {
-        pipelineId,
-        leadId,
-        fromStageId,
-        toStageId,
-        toPosition: Math.max(0, toPosition),
-        actorUserId: userId,
-        occurredAt: new Date().toISOString(),
-      },
+      payload,
     });
 
     return json(200, { ok: true });
