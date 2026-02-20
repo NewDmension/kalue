@@ -1,4 +1,3 @@
-// src/app/api/pipelines/list/route.ts
 import { NextResponse } from 'next/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
@@ -24,8 +23,8 @@ function getBearer(req: Request): string | null {
   return m ? m[1] : null;
 }
 
-async function getAuthedUserId(supabase: SupabaseClient): Promise<string | null> {
-  const { data, error } = await supabase.auth.getUser();
+async function getAuthedUserId(userClient: SupabaseClient): Promise<string | null> {
+  const { data, error } = await userClient.auth.getUser();
   if (error) return null;
   return data.user?.id ?? null;
 }
@@ -48,11 +47,7 @@ async function isWorkspaceMember(args: {
 
 type PipelineRow = {
   id: string;
-  workspace_id: string;
   name: string;
-  is_default: boolean;
-  created_at: string;
-  updated_at: string;
 };
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -67,7 +62,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     const workspaceId = (req.headers.get('x-workspace-id') ?? '').trim();
     if (!workspaceId) return json(400, { ok: false, error: 'missing_workspace_id' });
 
-    // Auth user
+    // user client para validar sesión
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
       auth: { persistSession: false, autoRefreshToken: false },
@@ -76,27 +71,32 @@ export async function GET(req: Request): Promise<NextResponse> {
     const userId = await getAuthedUserId(userClient);
     if (!userId) return json(401, { ok: false, error: 'login_required' });
 
-    // Admin
+    // admin client
     const admin = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    const ok = await isWorkspaceMember({ admin, workspaceId, userId });
-    if (!ok) return json(403, { ok: false, error: 'not_member' });
+    const member = await isWorkspaceMember({ admin, workspaceId, userId });
+    if (!member) return json(403, { ok: false, error: 'not_member' });
 
     const { data, error } = await admin
       .from('pipelines')
-      .select('id, workspace_id, name, is_default, created_at, updated_at')
+      .select('id,name')
       .eq('workspace_id', workspaceId)
-      .order('is_default', { ascending: false })
       .order('created_at', { ascending: true });
 
     if (error) return json(500, { ok: false, error: 'db_error', detail: error.message });
 
-    return json(200, {
-      ok: true,
-      pipelines: (Array.isArray(data) ? data : []) as unknown as PipelineRow[],
-    });
+    const pipelines: PipelineRow[] = Array.isArray(data)
+      ? data
+          .map((r) => ({
+            id: typeof (r as { id?: unknown }).id === 'string' ? (r as { id: string }).id : '',
+            name: typeof (r as { name?: unknown }).name === 'string' ? (r as { name: string }).name : '',
+          }))
+          .filter((p) => p.id && p.name)
+      : [];
+
+    return json(200, { ok: true, pipelines });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
     return json(500, { ok: false, error: 'server_error', detail: msg });
