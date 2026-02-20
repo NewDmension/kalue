@@ -213,19 +213,50 @@ async function findMatchingWorkflows(
   admin: SupabaseClient,
   args: { workspaceId: string; event: QueueRow }
 ): Promise<string[]> {
+
+  // 🔹 1️⃣ obtener pipelineId desde payload
+  const pipelineId = pickString(args.event.payload, 'pipelineId');
+  if (!pipelineId) return [];
+
+  // 🔹 2️⃣ obtener workflows asignados a ese pipeline
+  const assignRes = await admin
+    .from('pipeline_workflows')
+    .select('workflow_id')
+    .eq('workspace_id', args.workspaceId)
+    .eq('pipeline_id', pipelineId)
+    .eq('is_active', true);
+
+  if (assignRes.error) throw new Error(assignRes.error.message);
+
+  const assignedWorkflowIds: string[] =
+    Array.isArray(assignRes.data)
+      ? assignRes.data
+          .map((r) => (isRecord(r) ? pickString(r, 'workflow_id') : null))
+          .filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : [];
+
+  if (assignedWorkflowIds.length === 0) return [];
+
+  // 🔹 3️⃣ traer workflows activos de esos IDs
   const wfRes = await admin
     .from('workflows')
-    .select('id, workspace_id, name, status')
+    .select('id')
     .eq('workspace_id', args.workspaceId)
-    .eq('status', 'active');
+    .eq('status', 'active')
+    .in('id', assignedWorkflowIds);
 
   if (wfRes.error) throw new Error(wfRes.error.message);
 
-  const workflows = (wfRes.data ?? []) as unknown as WorkflowRow[];
-  if (workflows.length === 0) return [];
+  const wfIds: string[] =
+    Array.isArray(wfRes.data)
+      ? wfRes.data
+          .map((r) => (isRecord(r) ? pickString(r, 'id') : null))
+          .filter((x): x is string => typeof x === 'string' && x.length > 0)
+      : [];
 
-  const wfIds = workflows.map((w) => w.id);
+  if (wfIds.length === 0) return [];
 
+  // 🔹 4️⃣ ahora filtramos por trigger match (igual que antes)
   const nodesRes = await admin
     .from('workflow_nodes')
     .select('id, workflow_id, type, name, config')
@@ -252,6 +283,7 @@ async function findMatchingWorkflows(
 
   return Array.from(matched);
 }
+
 
 async function loadGraph(admin: SupabaseClient, workflowId: string): Promise<{ nodes: NodeRow[]; edges: EdgeRow[] }> {
   const [nRes, eRes] = await Promise.all([
