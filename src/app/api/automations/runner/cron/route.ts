@@ -17,15 +17,24 @@ function getEnv(name: string): string {
 }
 
 function safeEq(a: string, b: string): boolean {
-  // evita timings obvios (sin crypto para no meter deps)
   if (a.length !== b.length) return false;
   let out = 0;
   for (let i = 0; i < a.length; i += 1) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return out === 0;
 }
 
+function isVercelCron(req: Request): boolean {
+  const h = req.headers;
+  const x = (h.get('x-vercel-cron') ?? '').trim();
+  if (x === '1' || x.toLowerCase() === 'true') return true;
+
+  const ua = (h.get('user-agent') ?? '').toLowerCase();
+  return ua.startsWith('vercel-cron/');
+}
+
 function pickSecretFromReq(req: Request): string | null {
   const u = new URL(req.url);
+
   const qs = (u.searchParams.get('secret') ?? '').trim();
   if (qs) return qs;
 
@@ -36,13 +45,17 @@ function pickSecretFromReq(req: Request): string | null {
 export async function GET(req: Request): Promise<NextResponse> {
   try {
     const expected = getEnv('KALUE_CRON_SECRET');
-    const got = pickSecretFromReq(req);
 
-    if (!got || !safeEq(got, expected)) {
-      return json(401, { ok: false, error: 'unauthorized' });
+    // ✅ Autorización:
+    // - Si es cron de Vercel => OK
+    // - Si no es cron => requiere secret (query o bearer)
+    if (!isVercelCron(req)) {
+      const got = pickSecretFromReq(req);
+      if (!got || !safeEq(got, expected)) {
+        return json(401, { ok: false, error: 'unauthorized' });
+      }
     }
 
-    // Llama a process-queue internamente con POST + Authorization (como lo tienes)
     const base = new URL(req.url);
     const target = new URL('/api/automations/runner/process-queue', base.origin);
 
@@ -67,6 +80,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       ok: true,
       upstreamStatus: res.status,
       upstream,
+      via: isVercelCron(req) ? 'vercel-cron' : 'manual-secret',
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
