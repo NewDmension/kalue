@@ -1,8 +1,8 @@
-// src/app/api/automations/runner/cron/route.ts
 import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
 
 function json(status: number, payload: Record<string, unknown>) {
   return new NextResponse(JSON.stringify(payload), {
@@ -17,47 +17,51 @@ function getEnv(name: string): string {
   return v;
 }
 
+function isVercelCron(req: Request): boolean {
+  const ua = (req.headers.get('user-agent') ?? '').toLowerCase();
+  // En tus logs aparece: vercel-cron/1.0
+  if (ua.includes('vercel-cron/')) return true;
+  return false;
+}
+
 export async function GET(req: Request): Promise<NextResponse> {
   try {
+    if (!isVercelCron(req)) {
+      return json(401, { ok: false, error: 'unauthorized_cron' });
+    }
+
     const secret = getEnv('KALUE_CRON_SECRET');
 
-    const url = new URL(req.url);
-    const got = (url.searchParams.get('secret') ?? '').trim();
+    // Llamamos al runner real (POST) con header Authorization.
+    const baseUrl = new URL(req.url).origin;
 
-    if (!got || got !== secret) return json(401, { ok: false, error: 'unauthorized' });
-
-    // Llama a process-queue con el header correcto
-    const origin = url.origin;
-
-    const res = await fetch(`${origin}/api/automations/runner/process-queue`, {
+    const res = await fetch(`${baseUrl}/api/automations/runner/process-queue`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${secret}`,
+        'content-type': 'application/json',
       },
+      body: JSON.stringify({ source: 'vercel_cron' }),
       cache: 'no-store',
     });
 
-    let out: unknown = null;
+    let raw: unknown = null;
     try {
-      out = (await res.json()) as unknown;
+      raw = (await res.json()) as unknown;
     } catch {
-      out = null;
+      raw = null;
     }
 
     if (!res.ok) {
       return json(500, {
         ok: false,
-        error: 'process_queue_failed',
+        error: 'runner_failed',
         status: res.status,
-        detail: out,
+        response: raw,
       });
     }
 
-    return json(200, {
-      ok: true,
-      forwarded: true,
-      result: out,
-    });
+    return json(200, { ok: true, runner: raw });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'server_error';
     return json(500, { ok: false, error: 'server_error', detail: msg });
