@@ -7,7 +7,13 @@ import { supabase } from '@/lib/supabaseClient';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
 import { Plus, Save, Link2, X } from 'lucide-react';
 
-type Workflow = { id: string; name: string; status: string };
+type WorkflowStatus = 'draft' | 'active' | 'paused';
+
+function normalizeStatus(v: unknown): WorkflowStatus {
+  return v === 'active' || v === 'paused' || v === 'draft' ? v : 'draft';
+}
+
+type Workflow = { id: string; name: string; status: WorkflowStatus };
 
 type NodeUI = { x: number; y: number };
 
@@ -37,10 +43,12 @@ type EdgeRow = {
 type EdgeVM = EdgeRow;
 
 type GetResponse =
-  | { ok: true; workflow: Workflow; nodes: NodeRow[]; edges: EdgeRow[] }
+  | { ok: true; workflow: { id: string; name: string; status: string }; nodes: NodeRow[]; edges: EdgeRow[] }
   | { ok: false; error: string; detail?: string };
 
 type UpsertGraphResponse = { ok: true } | { ok: false; error: string; detail?: string };
+
+type SetStatusResponse = { ok: true } | { ok: false; error: string; detail?: string };
 
 // ---- Tipos/config tipados (MVP) ----
 type TriggerEvent = 'lead.stage_changed';
@@ -160,7 +168,11 @@ export default function AutomationBuilderPage() {
       return;
     }
 
-    setWf(j.workflow);
+    setWf({
+      id: j.workflow.id,
+      name: j.workflow.name,
+      status: normalizeStatus(j.workflow.status),
+    });
 
     const vmNodes: NodeVM[] = (Array.isArray(j.nodes) ? j.nodes : [])
       .filter((n): n is NodeRow => Boolean(n && typeof n.id === 'string'))
@@ -193,7 +205,6 @@ export default function AutomationBuilderPage() {
 
     setNodes(vmNodes);
 
-    // ✅ limpia edges inválidos (evita ui undefined)
     const nodeIdSet = new Set(vmNodes.map((n) => n.id));
     setEdges(vmEdges.filter((e) => nodeIdSet.has(e.from_node_id) && nodeIdSet.has(e.to_node_id)));
 
@@ -378,7 +389,6 @@ export default function AutomationBuilderPage() {
 
       const ui = parseNodeUi(nodeUnknown.ui);
 
-      // Normaliza config según tipo
       const rawConfig: unknown = nodeUnknown.config;
       const normalizedConfig: Record<string, unknown> =
         nodeType === 'trigger'
@@ -449,6 +459,44 @@ export default function AutomationBuilderPage() {
     setActionInfo('Guardado.');
   }, [workflowId, nodes, edges]);
 
+  const setWorkflowStatus = useCallback(
+    async (nextStatus: WorkflowStatus): Promise<void> => {
+      setActionError(null);
+      setActionInfo(null);
+
+      const ws = await getActiveWorkspaceId();
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token;
+
+      if (!ws || !token) {
+        setActionError(!ws ? 'missing_workspace' : 'login_required');
+        return;
+      }
+
+      const res = await fetch('/api/automations/workflows/set-status', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'x-workspace-id': ws,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ workflowId, status: nextStatus }),
+      });
+
+      const j = (await res.json()) as SetStatusResponse;
+      if (!j.ok) {
+        // eslint-disable-next-line no-console
+        console.error('set-status failed', j);
+        setActionError('detail' in j && typeof j.detail === 'string' ? j.detail : j.error);
+        return;
+      }
+
+      setWf((prev) => (prev ? { ...prev, status: nextStatus } : prev));
+      setActionInfo(nextStatus === 'active' ? 'Workflow activado.' : nextStatus === 'paused' ? 'Workflow pausado.' : 'Workflow en borrador.');
+    },
+    [workflowId]
+  );
+
   const updateSelectedName = useCallback(
     (name: string) => {
       setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, name } : n)));
@@ -485,7 +533,6 @@ export default function AutomationBuilderPage() {
     [selectedNodeId]
   );
 
-  // ✅ Render de líneas ultra defensivo (sin JSX type-guard)
   const edgesSvg = useMemo((): ReactElement[] => {
     const map = new Map<string, NodeVM>();
     for (const n of nodes) map.set(n.id, n);
@@ -553,6 +600,33 @@ export default function AutomationBuilderPage() {
         </div>
 
         <div className="flex items-center gap-2">
+          <span
+            className={cx(
+              'rounded-full border px-3 py-1 text-xs',
+              wf.status === 'active'
+                ? 'border-emerald-400/30 bg-emerald-500/15 text-white/85'
+                : wf.status === 'paused'
+                  ? 'border-amber-400/30 bg-amber-500/15 text-white/85'
+                  : 'border-white/10 bg-white/5 text-white/70'
+            )}
+          >
+            {wf.status === 'active' ? 'Activo' : wf.status === 'paused' ? 'Pausado' : 'Borrador'}
+          </span>
+
+          <button
+            type="button"
+            onClick={() => void setWorkflowStatus(wf.status === 'active' ? 'paused' : 'active')}
+            className={cx(
+              'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition',
+              wf.status === 'active'
+                ? 'border-amber-400/25 bg-amber-500/15 text-white hover:bg-amber-500/25'
+                : 'border-emerald-400/25 bg-emerald-500/15 text-white hover:bg-emerald-500/25'
+            )}
+            title={wf.status === 'active' ? 'Pausar' : 'Activar'}
+          >
+            {wf.status === 'active' ? 'Pausar' : 'Activar'}
+          </button>
+
           <button
             type="button"
             onClick={() => {
@@ -598,7 +672,6 @@ export default function AutomationBuilderPage() {
       ) : null}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Canvas */}
         <div className="card-glass relative h-[70vh] rounded-2xl border border-white/10 bg-black/20 backdrop-blur lg:col-span-2">
           <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
             <button
@@ -662,7 +735,6 @@ export default function AutomationBuilderPage() {
           </div>
         </div>
 
-        {/* Panel */}
         <div className="card-glass rounded-2xl border border-white/10 bg-black/20 p-5 backdrop-blur">
           <div className="flex items-center justify-between">
             <div className="text-white/90 font-medium">Configuración</div>
@@ -697,7 +769,6 @@ export default function AutomationBuilderPage() {
                 </div>
               </div>
 
-              {/* Config tipada por bloque */}
               {selectedNode.type === 'trigger' ? (
                 <TriggerEditor
                   config={asTriggerConfig(selectedNode.config)}
