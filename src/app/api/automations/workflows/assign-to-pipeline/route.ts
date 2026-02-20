@@ -65,6 +65,38 @@ async function isWorkspaceMember(args: {
   return Array.isArray(data) && data.length > 0;
 }
 
+async function pipelineBelongsToWorkspace(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  pipelineId: string;
+}): Promise<boolean> {
+  const { data, error } = await args.admin
+    .from('pipelines')
+    .select('id')
+    .eq('workspace_id', args.workspaceId)
+    .eq('id', args.pipelineId)
+    .maybeSingle();
+
+  if (error) return false;
+  return Boolean(data?.id);
+}
+
+async function workflowBelongsToWorkspace(args: {
+  admin: SupabaseClient;
+  workspaceId: string;
+  workflowId: string;
+}): Promise<boolean> {
+  const { data, error } = await args.admin
+    .from('workflows')
+    .select('id')
+    .eq('workspace_id', args.workspaceId)
+    .eq('id', args.workflowId)
+    .maybeSingle();
+
+  if (error) return false;
+  return Boolean(data?.id);
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   try {
     const supabaseUrl = getEnv('NEXT_PUBLIC_SUPABASE_URL');
@@ -78,14 +110,15 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (!workspaceId) return json(400, { ok: false, error: 'missing_workspace_id' });
 
     const body = await safeJson(req);
-
-    const workflowId = pickString(body, 'workflowId');
     const pipelineId = pickString(body, 'pipelineId');
+    const workflowId = pickString(body, 'workflowId');
+    const enabledRaw = pickString(body, 'enabled');
+    const enabled = enabledRaw ? enabledRaw.toLowerCase() === 'true' : true;
 
-    if (!workflowId) return json(400, { ok: false, error: 'missing_workflowId' });
     if (!pipelineId) return json(400, { ok: false, error: 'missing_pipelineId' });
+    if (!workflowId) return json(400, { ok: false, error: 'missing_workflowId' });
 
-    // User client (para validar sesión)
+    // user client
     const userClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
       auth: { persistSession: false, autoRefreshToken: false },
@@ -94,7 +127,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const userId = await getAuthedUserId(userClient);
     if (!userId) return json(401, { ok: false, error: 'login_required' });
 
-    // Admin client (service_role)
+    // admin client
     const admin = createClient(supabaseUrl, serviceKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
@@ -102,18 +135,25 @@ export async function POST(req: Request): Promise<NextResponse> {
     const member = await isWorkspaceMember({ admin, workspaceId, userId });
     if (!member) return json(403, { ok: false, error: 'not_member' });
 
-    // Inserta assignment (idempotente por unique(workspace_id, workflow_id, pipeline_id))
-    const { error } = await admin.from('workflow_pipeline_assignments').insert({
-      workspace_id: workspaceId,
-      workflow_id: workflowId,
-      pipeline_id: pipelineId,
-    });
+    const pipelineOk = await pipelineBelongsToWorkspace({ admin, workspaceId, pipelineId });
+    if (!pipelineOk) return json(404, { ok: false, error: 'pipeline_not_found' });
 
-    if (error) {
-      // unique violation => ya existe => ok
-      if (error.code === '23505') return json(200, { ok: true, already: true });
-      return json(500, { ok: false, error: 'db_error', detail: error.message });
-    }
+    const workflowOk = await workflowBelongsToWorkspace({ admin, workspaceId, workflowId });
+    if (!workflowOk) return json(404, { ok: false, error: 'workflow_not_found' });
+
+    // upsert mapping
+    const { error } = await admin.from('workflow_pipeline_bindings').upsert(
+      {
+        workspace_id: workspaceId,
+        pipeline_id: pipelineId,
+        workflow_id: workflowId,
+        enabled,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'workspace_id,pipeline_id,workflow_id' }
+    );
+
+    if (error) return json(500, { ok: false, error: 'db_error', detail: error.message });
 
     return json(200, { ok: true });
   } catch (e: unknown) {
