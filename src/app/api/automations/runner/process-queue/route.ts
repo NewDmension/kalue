@@ -84,8 +84,8 @@ function isActionAddLabelConfig(v: unknown): v is ActionAddLabelConfig {
 }
 
 function payloadToStageId(payload: unknown): string | null {
-  // Esperamos payload.toStageId desde move-lead
-  return pickString(payload, 'toStageId');
+  // ✅ Preferimos toStageId (move-lead), fallback a stageId si algún sitio lo manda distinto
+  return pickString(payload, 'toStageId') ?? pickString(payload, 'stageId');
 }
 
 function payloadActor(payload: unknown): string | null {
@@ -116,8 +116,6 @@ async function unlockEvent(admin: SupabaseClient, eventId: string): Promise<void
  * ✅ IMPORTANTE: devuelve SIEMPRE una forma discriminable:
  * - { skipped: true, runId: null }
  * - { skipped: false, runId: string }
- *
- * Así evitamos el lío de TS con "in" checks y propiedades que no existen.
  */
 type EnsureRunResult = { skipped: true; runId: null } | { skipped: false; runId: string };
 
@@ -209,35 +207,38 @@ async function execAddLabel(
   if (upd.error) throw new Error(upd.error.message);
 }
 
+/**
+ * ✅ NUEVO MATCHING: workflows asignados a la COLUMNA (stage)
+ * - tabla: stage_workflows
+ * - opcional: filtrar workflows.status = 'active'
+ */
 async function findMatchingWorkflows(
   admin: SupabaseClient,
   args: { workspaceId: string; event: QueueRow }
 ): Promise<string[]> {
+  // 1) stage destino desde payload
+  const toStageId = payloadToStageId(args.event.payload);
+  if (!toStageId) return [];
 
-  // 🔹 1️⃣ obtener pipelineId desde payload
-  const pipelineId = pickString(args.event.payload, 'pipelineId');
-  if (!pipelineId) return [];
-
-  // 🔹 2️⃣ obtener workflows asignados a ese pipeline
+  // 2) traer asignaciones activas a ese stage
   const assignRes = await admin
-    .from('pipeline_workflows')
+    .from('stage_workflows')
     .select('workflow_id')
     .eq('workspace_id', args.workspaceId)
-    .eq('pipeline_id', pipelineId)
+    .eq('stage_id', toStageId)
     .eq('is_active', true);
 
   if (assignRes.error) throw new Error(assignRes.error.message);
 
-  const assignedWorkflowIds: string[] =
-    Array.isArray(assignRes.data)
-      ? assignRes.data
-          .map((r) => (isRecord(r) ? pickString(r, 'workflow_id') : null))
-          .filter((x): x is string => typeof x === 'string' && x.length > 0)
-      : [];
+  const assignedWorkflowIds: string[] = Array.isArray(assignRes.data)
+    ? assignRes.data
+        .map((r) => (isRecord(r) ? pickString(r, 'workflow_id') : null))
+        .filter((x): x is string => typeof x === 'string' && x.length > 0)
+    : [];
 
   if (assignedWorkflowIds.length === 0) return [];
 
-  // 🔹 3️⃣ traer workflows activos de esos IDs
+  // 3) filtrar a workflows activos (seguridad)
   const wfRes = await admin
     .from('workflows')
     .select('id')
@@ -247,16 +248,15 @@ async function findMatchingWorkflows(
 
   if (wfRes.error) throw new Error(wfRes.error.message);
 
-  const wfIds: string[] =
-    Array.isArray(wfRes.data)
-      ? wfRes.data
-          .map((r) => (isRecord(r) ? pickString(r, 'id') : null))
-          .filter((x): x is string => typeof x === 'string' && x.length > 0)
-      : [];
+  const wfIds: string[] = Array.isArray(wfRes.data)
+    ? wfRes.data
+        .map((r) => (isRecord(r) ? pickString(r, 'id') : null))
+        .filter((x): x is string => typeof x === 'string' && x.length > 0)
+    : [];
 
   if (wfIds.length === 0) return [];
 
-  // 🔹 4️⃣ ahora filtramos por trigger match (igual que antes)
+  // 4) filtro por trigger match (igual que antes)
   const nodesRes = await admin
     .from('workflow_nodes')
     .select('id, workflow_id, type, name, config')
@@ -266,7 +266,6 @@ async function findMatchingWorkflows(
   if (nodesRes.error) throw new Error(nodesRes.error.message);
 
   const trigNodes = (nodesRes.data ?? []) as unknown as NodeRow[];
-  const toStageId = payloadToStageId(args.event.payload);
 
   const matched = new Set<string>();
 
@@ -274,8 +273,10 @@ async function findMatchingWorkflows(
     if (!isTriggerConfig(n.config)) continue;
     if (n.config.event !== args.event.event_type) continue;
 
-    if (typeof n.config.toStageId === 'string' && n.config.toStageId.trim()) {
-      if (!toStageId || n.config.toStageId !== toStageId) continue;
+    // filtro opcional del trigger por toStageId
+    const tcfg = n.config as TriggerConfig;
+    if (typeof tcfg.toStageId === 'string' && tcfg.toStageId.trim()) {
+      if (tcfg.toStageId !== toStageId) continue;
     }
 
     matched.add(n.workflow_id);
@@ -283,7 +284,6 @@ async function findMatchingWorkflows(
 
   return Array.from(matched);
 }
-
 
 async function loadGraph(admin: SupabaseClient, workflowId: string): Promise<{ nodes: NodeRow[]; edges: EdgeRow[] }> {
   const [nRes, eRes] = await Promise.all([
