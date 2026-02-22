@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState, type DragEvent } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { useWorkspace } from '@/components/app/WorkspaceContext';
-import { GripVertical, X, Copy } from 'lucide-react';
+import { GripVertical, X, Copy, Zap, ToggleLeft, ToggleRight, RefreshCw, Link2 } from 'lucide-react';
 
 type PipelineRow = {
   id: string;
@@ -42,29 +42,45 @@ type LeadRow = {
   stage_changed_at: string | null;
 };
 
-type PipelinesListResponse =
-  | { ok: true; pipelines: PipelineRow[] }
-  | { ok: false; error: string; detail?: string };
+type WorkflowRow = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  status: string; // 'active' | 'draft'...
+};
+
+type PipelineWorkflowsLink = {
+  workflow_id: string;
+  is_active: boolean;
+};
+
+type PipelinesListResponse = { ok: true; pipelines: PipelineRow[] } | { ok: false; error: string; detail?: string };
 
 type BoardResponse =
   | { ok: true; stages: StageRow[]; leadsByStage: Record<string, LeadRow[]> }
   | { ok: false; error: string; detail?: string };
 
-type MoveLeadResponse =
-  | { ok: true }
+type MoveLeadResponse = { ok: true } | { ok: false; error: string; detail?: string };
+
+type StageCreateResponse = { ok: true; stage: StageRow } | { ok: false; error: string; detail?: string };
+
+type StageRenameResponse = { ok: true; stage: StageRow } | { ok: false; error: string; detail?: string };
+
+type StageDeleteResponse = { ok: true } | { ok: false; error: string; detail?: string };
+
+type StageReorderResponse = { ok: true } | { ok: false; error: string; detail?: string };
+
+type WorkflowsListResponse =
+  | { ok: true; workflows: WorkflowRow[] }
   | { ok: false; error: string; detail?: string };
 
-type StageCreateResponse =
-  | { ok: true; stage: StageRow }
+type PipelineWorkflowsListResponse =
+  | { ok: true; links: PipelineWorkflowsLink[] }
+  | { ok: true; items: Array<{ workflow_id: string; is_active: boolean }> }
+  | { ok: true; workflowIds?: string[]; activeWorkflowIds?: string[] }
   | { ok: false; error: string; detail?: string };
 
-type StageRenameResponse =
-  | { ok: true; stage: StageRow }
-  | { ok: false; error: string; detail?: string };
-
-type StageDeleteResponse =
-  | { ok: true }
-  | { ok: false; error: string; detail?: string };
+type TogglePipelineWorkflowResponse = { ok: true } | { ok: false; error: string; detail?: string };
 
 type DragPayload = {
   leadId: string;
@@ -76,10 +92,6 @@ type StageDragPayload = {
   stageId: string;
   pipelineId: string;
 };
-
-type StageReorderResponse =
-  | { ok: true }
-  | { ok: false; error: string; detail?: string };
 
 const DND_KEY_LEAD = 'application/x-kalue-lead';
 const DND_KEY_STAGE = 'application/x-kalue-stage';
@@ -143,7 +155,6 @@ async function copyToClipboard(text: string): Promise<boolean> {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    // fallback clásico
     try {
       const el = document.createElement('textarea');
       el.value = text;
@@ -159,6 +170,71 @@ async function copyToClipboard(text: string): Promise<boolean> {
       return false;
     }
   }
+}
+
+function normalizeWorkflowsList(raw: unknown): WorkflowRow[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const r = raw as Record<string, unknown>;
+  const arr = r.workflows;
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map((x) => (typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : null))
+    .filter((x): x is Record<string, unknown> => Boolean(x))
+    .map((x) => ({
+      id: typeof x.id === 'string' ? x.id : '',
+      workspace_id: typeof x.workspace_id === 'string' ? x.workspace_id : '',
+      name: typeof x.name === 'string' ? x.name : '',
+      status: typeof x.status === 'string' ? x.status : '',
+    }))
+    .filter((w) => w.id && w.name);
+}
+
+function normalizePipelineWorkflowLinks(raw: unknown): PipelineWorkflowsLink[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const r = raw as Record<string, unknown>;
+
+  // Formato A: { ok:true, links:[{workflow_id,is_active}] }
+  const links = r.links;
+  if (Array.isArray(links)) {
+    return links
+      .map((x) => (typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : null))
+      .filter((x): x is Record<string, unknown> => Boolean(x))
+      .map((x) => ({
+        workflow_id: typeof x.workflow_id === 'string' ? x.workflow_id : '',
+        is_active: typeof x.is_active === 'boolean' ? x.is_active : true,
+      }))
+      .filter((x) => x.workflow_id);
+  }
+
+  // Formato B: { ok:true, items:[{workflow_id,is_active}] }
+  const items = r.items;
+  if (Array.isArray(items)) {
+    return items
+      .map((x) => (typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : null))
+      .filter((x): x is Record<string, unknown> => Boolean(x))
+      .map((x) => ({
+        workflow_id: typeof x.workflow_id === 'string' ? x.workflow_id : '',
+        is_active: typeof x.is_active === 'boolean' ? x.is_active : true,
+      }))
+      .filter((x) => x.workflow_id);
+  }
+
+  // Formato C: { ok:true, activeWorkflowIds:[...] } o { workflowIds:[...] }
+  const activeIds = r.activeWorkflowIds;
+  if (Array.isArray(activeIds)) {
+    return activeIds
+      .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      .map((id) => ({ workflow_id: id, is_active: true }));
+  }
+
+  const ids = r.workflowIds;
+  if (Array.isArray(ids)) {
+    return ids
+      .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      .map((id) => ({ workflow_id: id, is_active: true }));
+  }
+
+  return [];
 }
 
 export default function PipelinePage() {
@@ -218,6 +294,14 @@ export default function PipelinePage() {
   const [deleteToStageId, setDeleteToStageId] = useState<string>('');
   const [deleting, setDeleting] = useState(false);
 
+  // ✅ Workflows (Automations)
+  const [workflowsLoading, setWorkflowsLoading] = useState(false);
+  const [workflows, setWorkflows] = useState<WorkflowRow[]>([]);
+  const [pipelineWorkflowLoading, setPipelineWorkflowLoading] = useState(false);
+  const [pipelineWorkflowMap, setPipelineWorkflowMap] = useState<Record<string, boolean>>({});
+  const [togglingWorkflowId, setTogglingWorkflowId] = useState<string | null>(null);
+  const [workflowUiError, setWorkflowUiError] = useState<string | null>(null);
+
   const selectedPipeline = useMemo(() => {
     if (!selectedPipelineId) return null;
     return pipelines.find((p) => p.id === selectedPipelineId) ?? null;
@@ -251,6 +335,13 @@ export default function PipelinePage() {
     return stageNameById.get(selectedLead.stage_id) ?? null;
   }, [selectedLead, stageNameById]);
 
+  const assignedWorkflowsCount = useMemo(() => {
+    const activeIds = Object.entries(pipelineWorkflowMap)
+      .filter(([, isActive]) => isActive === true)
+      .map(([id]) => id);
+    return activeIds.length;
+  }, [pipelineWorkflowMap]);
+
   async function loadPipelines(): Promise<void> {
     if (!activeWorkspaceId) {
       setPipelines([]);
@@ -282,10 +373,7 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'failed_to_load_pipelines';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setPipelines([]);
       setSelectedPipelineId(null);
@@ -385,10 +473,7 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'failed_to_load_board';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setStages([]);
       setLeadsByStage({});
@@ -408,11 +493,7 @@ export default function PipelinePage() {
 
       const fromArr = Array.isArray(next[args.fromStageId]) ? [...next[args.fromStageId]!] : [];
       const toArr =
-        args.fromStageId === args.toStageId
-          ? fromArr
-          : Array.isArray(next[args.toStageId])
-            ? [...next[args.toStageId]!]
-            : [];
+        args.fromStageId === args.toStageId ? fromArr : Array.isArray(next[args.toStageId]) ? [...next[args.toStageId]!] : [];
 
       const fromIndex = fromArr.findIndex((l) => l.id === args.leadId);
       if (fromIndex < 0) return prev;
@@ -442,7 +523,12 @@ export default function PipelinePage() {
     });
   }
 
-  async function persistMoveLead(args: { leadId: string; toStageId: string; pipelineId: string; toPosition: number }): Promise<boolean> {
+  async function persistMoveLead(args: {
+    leadId: string;
+    toStageId: string;
+    pipelineId: string;
+    toPosition: number;
+  }): Promise<boolean> {
     if (!activeWorkspaceId) return false;
 
     const token = await getAccessToken();
@@ -470,14 +556,8 @@ export default function PipelinePage() {
     const parsed = raw as MoveLeadResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'move_failed';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'move_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       return false;
     }
@@ -512,10 +592,7 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'reorder_failed';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       return false;
     }
@@ -557,10 +634,7 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'create_stage_failed';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setCreatingStage(false);
       return;
@@ -609,14 +683,8 @@ export default function PipelinePage() {
     const parsed = raw as StageRenameResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'rename_failed';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'rename_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setRenaming(false);
       return;
@@ -674,14 +742,8 @@ export default function PipelinePage() {
     const parsed = raw as StageDeleteResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'delete_failed';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'delete_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setDeleting(false);
       return;
@@ -694,9 +756,172 @@ export default function PipelinePage() {
     setDeleting(false);
   }
 
+  async function loadWorkflows(): Promise<void> {
+    if (!activeWorkspaceId) {
+      setWorkflows([]);
+      return;
+    }
+
+    setWorkflowsLoading(true);
+    setWorkflowUiError(null);
+
+    const token = await getAccessToken();
+    if (!token) {
+      setWorkflowUiError('login_required');
+      setWorkflowsLoading(false);
+      return;
+    }
+
+    // ✅ Intentamos endpoint “estándar”; si no existe aún, no rompe la página
+    const res = await fetch('/api/automations/workflows/list', {
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}`, 'x-workspace-id': activeWorkspaceId },
+    });
+
+    let raw: unknown = null;
+    try {
+      raw = (await res.json()) as unknown;
+    } catch {
+      raw = null;
+    }
+
+    if (!res.ok) {
+      // 404 = endpoint aún no montado -> no “rompemos”, solo mostramos hint
+      const hint = res.status === 404 ? 'workflows_endpoint_missing' : `workflows_load_failed(${res.status})`;
+      setWorkflowUiError(hint);
+      setWorkflows([]);
+      setWorkflowsLoading(false);
+      return;
+    }
+
+    const parsed = raw as WorkflowsListResponse;
+    if (!parsed || parsed.ok !== true) {
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'workflows_load_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      setWorkflowUiError(detail ? `${msg}: ${detail}` : msg);
+      setWorkflows([]);
+      setWorkflowsLoading(false);
+      return;
+    }
+
+    const normalized = normalizeWorkflowsList(raw);
+    // fallback por si viene bien tipado:
+    const list = normalized.length > 0 ? normalized : (parsed.workflows ?? []);
+    setWorkflows(list);
+    setWorkflowsLoading(false);
+  }
+
+  async function loadPipelineWorkflows(pipelineId: string): Promise<void> {
+    if (!activeWorkspaceId) return;
+
+    setPipelineWorkflowLoading(true);
+    setWorkflowUiError(null);
+
+    const token = await getAccessToken();
+    if (!token) {
+      setWorkflowUiError('login_required');
+      setPipelineWorkflowLoading(false);
+      return;
+    }
+
+    const url = new URL('/api/automations/pipelines/workflows/list', window.location.origin);
+    url.searchParams.set('pipelineId', pipelineId);
+
+    const res = await fetch(url.toString(), {
+      method: 'GET',
+      headers: { authorization: `Bearer ${token}`, 'x-workspace-id': activeWorkspaceId },
+    });
+
+    let raw: unknown = null;
+    try {
+      raw = (await res.json()) as unknown;
+    } catch {
+      raw = null;
+    }
+
+    if (!res.ok) {
+      const hint = res.status === 404 ? 'pipeline_workflows_endpoint_missing' : `pipeline_workflows_load_failed(${res.status})`;
+      setWorkflowUiError(hint);
+      setPipelineWorkflowMap({});
+      setPipelineWorkflowLoading(false);
+      return;
+    }
+
+    const parsed = raw as PipelineWorkflowsListResponse;
+    if (!parsed || parsed.ok !== true) {
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'pipeline_workflows_load_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      setWorkflowUiError(detail ? `${msg}: ${detail}` : msg);
+      setPipelineWorkflowMap({});
+      setPipelineWorkflowLoading(false);
+      return;
+    }
+
+    const links = normalizePipelineWorkflowLinks(raw);
+    const map: Record<string, boolean> = {};
+    for (const l of links) map[l.workflow_id] = l.is_active === true;
+    setPipelineWorkflowMap(map);
+    setPipelineWorkflowLoading(false);
+  }
+
+  async function toggleWorkflowForPipeline(args: { pipelineId: string; workflowId: string; nextActive: boolean }): Promise<void> {
+    if (!activeWorkspaceId) return;
+
+    setTogglingWorkflowId(args.workflowId);
+    setWorkflowUiError(null);
+
+    // optimistic
+    setPipelineWorkflowMap((prev) => ({ ...prev, [args.workflowId]: args.nextActive }));
+
+    const token = await getAccessToken();
+    if (!token) {
+      setWorkflowUiError('login_required');
+      // rollback
+      setPipelineWorkflowMap((prev) => ({ ...prev, [args.workflowId]: !args.nextActive }));
+      setTogglingWorkflowId(null);
+      return;
+    }
+
+    const res = await fetch('/api/automations/pipelines/workflows/toggle', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': activeWorkspaceId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        pipelineId: args.pipelineId,
+        workflowId: args.workflowId,
+        isActive: args.nextActive,
+      }),
+    });
+
+    let raw: unknown = null;
+    try {
+      raw = (await res.json()) as unknown;
+    } catch {
+      raw = null;
+    }
+
+    const parsed = raw as TogglePipelineWorkflowResponse;
+
+    if (!res.ok || !parsed || parsed.ok !== true) {
+      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'toggle_failed';
+      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      setWorkflowUiError(detail ? `${msg}: ${detail}` : msg);
+      // rollback
+      setPipelineWorkflowMap((prev) => ({ ...prev, [args.workflowId]: !args.nextActive }));
+      setTogglingWorkflowId(null);
+      return;
+    }
+
+    setTogglingWorkflowId(null);
+  }
+
   // Load pipelines on workspace change
   useEffect(() => {
     void loadPipelines();
+    void loadWorkflows();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkspaceId]);
 
@@ -709,9 +934,12 @@ export default function PipelinePage() {
     if (!selectedPipelineId || !activeWorkspaceId) {
       setStages([]);
       setLeadsByStage({});
+      setPipelineWorkflowMap({});
       return;
     }
+
     void loadBoard(selectedPipelineId);
+    void loadPipelineWorkflows(selectedPipelineId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPipelineId, activeWorkspaceId]);
 
@@ -962,7 +1190,7 @@ export default function PipelinePage() {
         </div>
 
         {/* TOOLBAR fila 2: crear columna */}
-        <div className="flex w-full flex-col gap-2 md:flex-row md:items-center md:justify-end">
+        <div className="flex w-full flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <div className="flex w-full items-center gap-2 md:w-auto">
             <input
               value={newStageName}
@@ -985,13 +1213,152 @@ export default function PipelinePage() {
               {creatingStage ? 'Añadiendo…' : '+ Columna'}
             </button>
           </div>
+
+          {/* ✅ Automations quick panel (no rompe si endpoint aún no existe) */}
+          <div className="flex w-full flex-col gap-2 md:w-auto md:items-end">
+            <div className="flex items-center gap-2 text-xs text-white/55">
+              <Zap className="h-4 w-4 text-white/40" />
+              Automatizaciones
+              {selectedPipelineId ? (
+                <span className="text-white/45">
+                  · activas: <span className="text-white/80">{assignedWorkflowsCount}</span>
+                </span>
+              ) : null}
+            </div>
+
+            <div className="flex w-full items-center gap-2 md:w-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!selectedPipelineId) return;
+                  void loadWorkflows();
+                  void loadPipelineWorkflows(selectedPipelineId);
+                }}
+                disabled={!selectedPipelineId || workflowsLoading || pipelineWorkflowLoading}
+                className={cx(
+                  'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs',
+                  !selectedPipelineId || workflowsLoading || pipelineWorkflowLoading
+                    ? 'border-white/10 bg-white/5 text-white/40'
+                    : 'border-white/10 bg-black/20 text-white/80 hover:bg-black/30'
+                )}
+                title="Recargar workflows"
+              >
+                <RefreshCw className={cx('h-4 w-4', workflowsLoading || pipelineWorkflowLoading ? 'animate-spin' : '')} />
+                Recargar
+              </button>
+
+              <Link
+                href="/automations"
+                className="inline-flex items-center gap-2 rounded-xl border border-indigo-400/25 bg-indigo-500/10 px-3 py-2 text-xs text-white hover:bg-indigo-500/15"
+                title="Ir a Automatizaciones"
+              >
+                <Link2 className="h-4 w-4 text-white/70" />
+                Abrir
+              </Link>
+            </div>
+          </div>
         </div>
+
+        {/* ✅ Lista asignación workflows */}
+        {selectedPipelineId ? (
+          <div className="rounded-2xl border border-white/10 bg-black/10 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white/90 truncate">Workflows para este pipeline</p>
+                <p className="mt-0.5 text-xs text-white/55">
+                  Activa/desactiva qué workflows se ejecutan cuando cambias leads de stage en este pipeline.
+                </p>
+              </div>
+              <div className="text-xs text-white/50">
+                {workflowsLoading || pipelineWorkflowLoading ? 'Cargando…' : `${workflows.length} workflows`}
+              </div>
+            </div>
+
+            {workflowUiError ? (
+              <div className="mt-3 rounded-xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                {workflowUiError}
+              </div>
+            ) : null}
+
+            <div className="mt-3 grid gap-2 md:grid-cols-2">
+              {workflows.length === 0 ? (
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">
+                  Aún no hay workflows (o el endpoint de listado no está montado).
+                </div>
+              ) : (
+                workflows.map((wf) => {
+                  const isActive = pipelineWorkflowMap[wf.id] === true;
+                  const busy = togglingWorkflowId === wf.id;
+                  const disabled = busy || pipelineWorkflowLoading || workflowsLoading;
+
+                  return (
+                    <div
+                      key={wf.id}
+                      className={cx(
+                        'rounded-2xl border bg-white/5 p-3 transition',
+                        isActive ? 'border-emerald-400/20' : 'border-white/10'
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-white/90 truncate">{wf.name}</p>
+                          <p className="mt-0.5 text-xs text-white/55 truncate">
+                            {wf.status ? `status: ${wf.status}` : 'status: —'} · {wf.id}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void toggleWorkflowForPipeline({
+                              pipelineId: selectedPipelineId,
+                              workflowId: wf.id,
+                              nextActive: !isActive,
+                            })
+                          }
+                          disabled={disabled}
+                          className={cx(
+                            'shrink-0 inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs',
+                            disabled
+                              ? 'border-white/10 bg-white/5 text-white/40'
+                              : isActive
+                                ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/15'
+                                : 'border-white/10 bg-black/20 text-white/80 hover:bg-black/30'
+                          )}
+                          title={isActive ? 'Desactivar workflow en este pipeline' : 'Activar workflow en este pipeline'}
+                        >
+                          {isActive ? <ToggleRight className="h-4 w-4" /> : <ToggleLeft className="h-4 w-4" />}
+                          {busy ? 'Guardando…' : isActive ? 'Activo' : 'Inactivo'}
+                        </button>
+                      </div>
+
+                      <div className="mt-3 flex items-center gap-2">
+                        <Link
+                          href={`/automations/workflows/${encodeURIComponent(wf.id)}`}
+                          className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-white/80 hover:bg-black/30"
+                        >
+                          Editar workflow
+                        </Link>
+
+                        <button
+                          type="button"
+                          onClick={() => void copyToClipboard(wf.id)}
+                          className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-white/80 hover:bg-black/30"
+                        >
+                          <Copy className="h-4 w-4 text-white/60" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {error ? (
-        <div className="mt-4 rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">
-          {error}
-        </div>
+        <div className="mt-4 rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">{error}</div>
       ) : null}
 
       {/* BOARD */}
@@ -1015,11 +1382,7 @@ export default function PipelinePage() {
                       onDragLeave={() => setDragOverStageIndex(null)}
                       className={cx(
                         'h-full w-2 shrink-0 rounded-xl transition',
-                        draggingStageId
-                          ? dragOverStageIndex === 0
-                            ? 'bg-indigo-400/25'
-                            : 'bg-white/5'
-                          : 'bg-transparent'
+                        draggingStageId ? (dragOverStageIndex === 0 ? 'bg-indigo-400/25' : 'bg-white/5') : 'bg-transparent'
                       )}
                     />
 
@@ -1172,9 +1535,7 @@ export default function PipelinePage() {
                                 })}
 
                                 {items.length === 0 ? (
-                                  <div className="mt-2 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">
-                                    Suelta aquí…
-                                  </div>
+                                  <div className="mt-2 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">Suelta aquí…</div>
                                 ) : null}
                               </div>
                             </div>
@@ -1222,9 +1583,7 @@ export default function PipelinePage() {
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-xs text-white/55">Lead</p>
-                <p className="mt-0.5 text-lg font-semibold text-white truncate">
-                  {selectedLead.full_name ?? 'Sin nombre'}
-                </p>
+                <p className="mt-0.5 text-lg font-semibold text-white truncate">{selectedLead.full_name ?? 'Sin nombre'}</p>
                 <p className="mt-0.5 text-xs text-white/55 truncate">{selectedLead.id}</p>
               </div>
 
@@ -1260,11 +1619,7 @@ export default function PipelinePage() {
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <p className="text-xs text-white/55">Contacto</p>
                 <div className="mt-2 space-y-1">
-                  {selectedLead.email ? (
-                    <p className="text-sm text-white/85 break-words">{selectedLead.email}</p>
-                  ) : (
-                    <p className="text-sm text-white/50">—</p>
-                  )}
+                  {selectedLead.email ? <p className="text-sm text-white/85 break-words">{selectedLead.email}</p> : <p className="text-sm text-white/50">—</p>}
                   {selectedLead.phone ? <p className="text-sm text-white/85 break-words">{selectedLead.phone}</p> : null}
                 </div>
               </div>
@@ -1274,25 +1629,17 @@ export default function PipelinePage() {
 
                 <div className="mt-2 flex flex-wrap gap-2">
                   {selectedLead.source ? (
-                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
-                      {selectedLead.source}
-                    </span>
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">{selectedLead.source}</span>
                   ) : (
-                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/45">
-                      sin source
-                    </span>
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/45">sin source</span>
                   )}
 
                   {selectedLead.status ? (
-                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
-                      {selectedLead.status}
-                    </span>
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">{selectedLead.status}</span>
                   ) : null}
 
                   {selectedLeadStageName ? (
-                    <span className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">
-                      {selectedLeadStageName}
-                    </span>
+                    <span className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">{selectedLeadStageName}</span>
                   ) : null}
                 </div>
 
@@ -1302,9 +1649,7 @@ export default function PipelinePage() {
                   </p>
                   <p>
                     Último cambio stage:{' '}
-                    <span className="text-white/75">
-                      {selectedLead.stage_changed_at ? formatLocal(selectedLead.stage_changed_at) : '—'}
-                    </span>
+                    <span className="text-white/75">{selectedLead.stage_changed_at ? formatLocal(selectedLead.stage_changed_at) : '—'}</span>
                   </p>
                   <p>
                     Pipeline: <span className="text-white/75">{selectedPipeline?.name ?? '—'}</span>
