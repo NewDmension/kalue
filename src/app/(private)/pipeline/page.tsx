@@ -70,9 +70,7 @@ type StageDeleteResponse = { ok: true } | { ok: false; error: string; detail?: s
 
 type StageReorderResponse = { ok: true } | { ok: false; error: string; detail?: string };
 
-type WorkflowsListResponse =
-  | { ok: true; workflows: WorkflowRow[] }
-  | { ok: false; error: string; detail?: string };
+type WorkflowsListResponse = { ok: true; workflows: WorkflowRow[] } | { ok: false; error: string; detail?: string };
 
 type PipelineWorkflowsListResponse =
   | { ok: true; links: PipelineWorkflowsLink[] }
@@ -373,7 +371,8 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'failed_to_load_pipelines';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setPipelines([]);
       setSelectedPipelineId(null);
@@ -473,7 +472,8 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'failed_to_load_board';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setStages([]);
       setLeadsByStage({});
@@ -556,8 +556,10 @@ export default function PipelinePage() {
     const parsed = raw as MoveLeadResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'move_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'move_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       return false;
     }
@@ -592,7 +594,8 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'reorder_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       return false;
     }
@@ -634,7 +637,8 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'create_stage_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setCreatingStage(false);
       return;
@@ -683,8 +687,10 @@ export default function PipelinePage() {
     const parsed = raw as StageRenameResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'rename_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'rename_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setRenaming(false);
       return;
@@ -742,8 +748,10 @@ export default function PipelinePage() {
     const parsed = raw as StageDeleteResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'delete_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'delete_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setDeleting(false);
       return;
@@ -796,8 +804,10 @@ export default function PipelinePage() {
 
     const parsed = raw as WorkflowsListResponse;
     if (!parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'workflows_load_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'workflows_load_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setWorkflowUiError(detail ? `${msg}: ${detail}` : msg);
       setWorkflows([]);
       setWorkflowsLoading(false);
@@ -805,7 +815,6 @@ export default function PipelinePage() {
     }
 
     const normalized = normalizeWorkflowsList(raw);
-    // fallback por si viene bien tipado:
     const list = normalized.length > 0 ? normalized : (parsed.workflows ?? []);
     setWorkflows(list);
     setWorkflowsLoading(false);
@@ -849,8 +858,12 @@ export default function PipelinePage() {
 
     const parsed = raw as PipelineWorkflowsListResponse;
     if (!parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'pipeline_workflows_load_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'pipeline_workflows_load_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setWorkflowUiError(detail ? `${msg}: ${detail}` : msg);
       setPipelineWorkflowMap({});
       setPipelineWorkflowLoading(false);
@@ -906,8 +919,10 @@ export default function PipelinePage() {
     const parsed = raw as TogglePipelineWorkflowResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'toggle_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'toggle_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setWorkflowUiError(detail ? `${msg}: ${detail}` : msg);
       // rollback
       setPipelineWorkflowMap((prev) => ({ ...prev, [args.workflowId]: !args.nextActive }));
@@ -1619,7 +1634,11 @@ export default function PipelinePage() {
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <p className="text-xs text-white/55">Contacto</p>
                 <div className="mt-2 space-y-1">
-                  {selectedLead.email ? <p className="text-sm text-white/85 break-words">{selectedLead.email}</p> : <p className="text-sm text-white/50">—</p>}
+                  {selectedLead.email ? (
+                    <p className="text-sm text-white/85 break-words">{selectedLead.email}</p>
+                  ) : (
+                    <p className="text-sm text-white/50">—</p>
+                  )}
                   {selectedLead.phone ? <p className="text-sm text-white/85 break-words">{selectedLead.phone}</p> : null}
                 </div>
               </div>
@@ -1629,17 +1648,25 @@ export default function PipelinePage() {
 
                 <div className="mt-2 flex flex-wrap gap-2">
                   {selectedLead.source ? (
-                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">{selectedLead.source}</span>
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
+                      {selectedLead.source}
+                    </span>
                   ) : (
-                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/45">sin source</span>
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/45">
+                      sin source
+                    </span>
                   )}
 
                   {selectedLead.status ? (
-                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">{selectedLead.status}</span>
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
+                      {selectedLead.status}
+                    </span>
                   ) : null}
 
                   {selectedLeadStageName ? (
-                    <span className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">{selectedLeadStageName}</span>
+                    <span className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">
+                      {selectedLeadStageName}
+                    </span>
                   ) : null}
                 </div>
 
@@ -1649,7 +1676,9 @@ export default function PipelinePage() {
                   </p>
                   <p>
                     Último cambio stage:{' '}
-                    <span className="text-white/75">{selectedLead.stage_changed_at ? formatLocal(selectedLead.stage_changed_at) : '—'}</span>
+                    <span className="text-white/75">
+                      {selectedLead.stage_changed_at ? formatLocal(selectedLead.stage_changed_at) : '—'}
+                    </span>
                   </p>
                   <p>
                     Pipeline: <span className="text-white/75">{selectedPipeline?.name ?? '—'}</span>
