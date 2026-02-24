@@ -93,6 +93,26 @@ async function pipelineBelongsToWorkspace(args: {
   return Boolean(data?.id);
 }
 
+/**
+ * ✅ Validación extra para evitar llamar al RPC con un stage inválido
+ * Asume tabla: pipeline_stages (id, pipeline_id, ...)
+ */
+async function stageBelongsToPipeline(args: {
+  admin: SupabaseClient;
+  pipelineId: string;
+  stageId: string;
+}): Promise<boolean> {
+  const { data, error } = await args.admin
+    .from('pipeline_stages')
+    .select('id')
+    .eq('id', args.stageId)
+    .eq('pipeline_id', args.pipelineId)
+    .maybeSingle();
+
+  if (error) return false;
+  return Boolean(data?.id);
+}
+
 async function getCurrentStageId(args: {
   admin: SupabaseClient;
   workspaceId: string;
@@ -158,7 +178,6 @@ async function enqueueWorkflowEvent(args: {
   entityId: string;
   payload: Record<string, unknown>;
 }): Promise<void> {
-  // Best-effort: no bloqueamos el move si falla la cola.
   const { error } = await args.admin.from('workflow_event_queue').insert({
     workspace_id: args.workspaceId,
     event_type: args.eventType,
@@ -190,6 +209,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const leadId = pickString(body, 'leadId');
     const toStageId = pickString(body, 'toStageId');
     const toPositionRaw = pickInt(body, 'toPosition');
+    const clientMoveId = pickString(body, 'clientMoveId'); // ✅ opcional (front)
 
     if (!pipelineId) return json(400, { ok: false, error: 'missing_pipelineId' });
     if (!leadId) return json(400, { ok: false, error: 'missing_leadId' });
@@ -218,10 +238,13 @@ export async function POST(req: Request): Promise<NextResponse> {
     const pipelineOk = await pipelineBelongsToWorkspace({ admin, workspaceId, pipelineId });
     if (!pipelineOk) return json(404, { ok: false, error: 'pipeline_not_found' });
 
-    // Leer stage anterior (si existe) para el evento
+    // ✅ Validación stage -> pipeline (evita llamadas inútiles al RPC)
+    const stageOk = await stageBelongsToPipeline({ admin, pipelineId, stageId: toStageId });
+    if (!stageOk) return json(404, { ok: false, error: 'stage_not_found_in_pipeline' });
+
     const fromStageId = await getCurrentStageId({ admin, workspaceId, pipelineId, leadId });
 
-    const payload: Record<string, unknown> = {
+    const eventPayload: Record<string, unknown> = {
       pipelineId,
       leadId,
       fromStageId,
@@ -229,6 +252,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       toPosition,
       actorUserId: userId,
       occurredAt: new Date().toISOString(),
+      clientMoveId: clientMoveId || null,
     };
 
     // 1) Intento normal
@@ -247,7 +271,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         workspaceId,
         eventType: 'lead.stage_changed',
         entityId: leadId,
-        payload,
+        payload: eventPayload,
       });
 
       return json(200, { ok: true });
@@ -262,7 +286,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
 
     if (!reb.ok) {
-      return json(500, { ok: false, error: 'db_error', detail: `rebalance_failed: ${reb.message}` });
+      return json(500, {
+        ok: false,
+        error: 'db_error',
+        detail: `rebalance_failed: ${reb.message}`,
+      });
     }
 
     const second = await tryMoveLead({
@@ -287,7 +315,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       workspaceId,
       eventType: 'lead.stage_changed',
       entityId: leadId,
-      payload,
+      payload: eventPayload,
     });
 
     return json(200, { ok: true });
