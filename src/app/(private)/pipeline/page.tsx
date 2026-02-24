@@ -42,21 +42,29 @@ type LeadRow = {
   stage_changed_at: string | null;
 };
 
-type PipelinesListResponse = { ok: true; pipelines: PipelineRow[] } | { ok: false; error: string; detail?: string };
+type PipelinesListResponse =
+  | { ok: true; pipelines: PipelineRow[] }
+  | { ok: false; error: string; detail?: string };
 
 type BoardResponse =
   | { ok: true; stages: StageRow[]; leadsByStage: Record<string, LeadRow[]> }
   | { ok: false; error: string; detail?: string };
 
-type MoveLeadResponse = { ok: true } | { ok: false; error: string; detail?: string };
+type MoveLeadResponse =
+  | { ok: true }
+  | { ok: false; error: string; detail?: string };
 
-type StageCreateResponse = { ok: true; stage: StageRow } | { ok: false; error: string; detail?: string };
+type StageCreateResponse =
+  | { ok: true; stage: StageRow }
+  | { ok: false; error: string; detail?: string };
 
-type StageRenameResponse = { ok: true; stage: StageRow } | { ok: false; error: string; detail?: string };
+type StageRenameResponse =
+  | { ok: true; stage: StageRow }
+  | { ok: false; error: string; detail?: string };
 
-type StageDeleteResponse = { ok: true } | { ok: false; error: string; detail?: string };
-
-type StageReorderResponse = { ok: true } | { ok: false; error: string; detail?: string };
+type StageDeleteResponse =
+  | { ok: true }
+  | { ok: false; error: string; detail?: string };
 
 type DragPayload = {
   leadId: string;
@@ -68,6 +76,10 @@ type StageDragPayload = {
   stageId: string;
   pipelineId: string;
 };
+
+type StageReorderResponse =
+  | { ok: true }
+  | { ok: false; error: string; detail?: string };
 
 const DND_KEY_LEAD = 'application/x-kalue-lead';
 const DND_KEY_STAGE = 'application/x-kalue-stage';
@@ -131,6 +143,7 @@ async function copyToClipboard(text: string): Promise<boolean> {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
+    // fallback clásico
     try {
       const el = document.createElement('textarea');
       el.value = text;
@@ -269,7 +282,10 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'failed_to_load_pipelines';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setPipelines([]);
       setSelectedPipelineId(null);
@@ -369,7 +385,10 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'failed_to_load_board';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setStages([]);
       setLeadsByStage({});
@@ -389,7 +408,11 @@ export default function PipelinePage() {
 
       const fromArr = Array.isArray(next[args.fromStageId]) ? [...next[args.fromStageId]!] : [];
       const toArr =
-        args.fromStageId === args.toStageId ? fromArr : Array.isArray(next[args.toStageId]) ? [...next[args.toStageId]!] : [];
+        args.fromStageId === args.toStageId
+          ? fromArr
+          : Array.isArray(next[args.toStageId])
+            ? [...next[args.toStageId]!]
+            : [];
 
       const fromIndex = fromArr.findIndex((l) => l.id === args.leadId);
       if (fromIndex < 0) return prev;
@@ -419,12 +442,7 @@ export default function PipelinePage() {
     });
   }
 
-  async function persistMoveLead(args: {
-    leadId: string;
-    toStageId: string;
-    pipelineId: string;
-    toPosition: number;
-  }): Promise<boolean> {
+  async function persistMoveLead(args: { leadId: string; toStageId: string; pipelineId: string; toPosition: number }): Promise<boolean> {
     if (!activeWorkspaceId) return false;
 
     const token = await getAccessToken();
@@ -452,8 +470,14 @@ export default function PipelinePage() {
     const parsed = raw as MoveLeadResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'move_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'move_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       return false;
     }
@@ -488,7 +512,10 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'reorder_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       return false;
     }
@@ -530,7 +557,10 @@ export default function PipelinePage() {
         typeof (parsed as { error?: string }).error === 'string'
           ? (parsed as { error: string }).error
           : 'create_stage_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setCreatingStage(false);
       return;
@@ -579,8 +609,14 @@ export default function PipelinePage() {
     const parsed = raw as StageRenameResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'rename_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'rename_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setRenaming(false);
       return;
@@ -638,8 +674,14 @@ export default function PipelinePage() {
     const parsed = raw as StageDeleteResponse;
 
     if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg = typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'delete_failed';
-      const detail = typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
+      const msg =
+        typeof (parsed as { error?: string }).error === 'string'
+          ? (parsed as { error: string }).error
+          : 'delete_failed';
+      const detail =
+        typeof (parsed as { detail?: string }).detail === 'string'
+          ? (parsed as { detail: string }).detail
+          : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setDeleting(false);
       return;
@@ -669,7 +711,6 @@ export default function PipelinePage() {
       setLeadsByStage({});
       return;
     }
-
     void loadBoard(selectedPipelineId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPipelineId, activeWorkspaceId]);
@@ -921,7 +962,7 @@ export default function PipelinePage() {
         </div>
 
         {/* TOOLBAR fila 2: crear columna */}
-        <div className="flex w-full flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <div className="flex w-full flex-col gap-2 md:flex-row md:items-center md:justify-end">
           <div className="flex w-full items-center gap-2 md:w-auto">
             <input
               value={newStageName}
@@ -944,13 +985,13 @@ export default function PipelinePage() {
               {creatingStage ? 'Añadiendo…' : '+ Columna'}
             </button>
           </div>
-
-          {/* ✅ Aquí antes estaba el panel rápido de Automatizaciones: eliminado para no romper /pipeline */}
         </div>
       </div>
 
       {error ? (
-        <div className="mt-4 rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">{error}</div>
+        <div className="mt-4 rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+          {error}
+        </div>
       ) : null}
 
       {/* BOARD */}
@@ -974,7 +1015,11 @@ export default function PipelinePage() {
                       onDragLeave={() => setDragOverStageIndex(null)}
                       className={cx(
                         'h-full w-2 shrink-0 rounded-xl transition',
-                        draggingStageId ? (dragOverStageIndex === 0 ? 'bg-indigo-400/25' : 'bg-white/5') : 'bg-transparent'
+                        draggingStageId
+                          ? dragOverStageIndex === 0
+                            ? 'bg-indigo-400/25'
+                            : 'bg-white/5'
+                          : 'bg-transparent'
                       )}
                     />
 
@@ -1177,7 +1222,9 @@ export default function PipelinePage() {
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p className="text-xs text-white/55">Lead</p>
-                <p className="mt-0.5 text-lg font-semibold text-white truncate">{selectedLead.full_name ?? 'Sin nombre'}</p>
+                <p className="mt-0.5 text-lg font-semibold text-white truncate">
+                  {selectedLead.full_name ?? 'Sin nombre'}
+                </p>
                 <p className="mt-0.5 text-xs text-white/55 truncate">{selectedLead.id}</p>
               </div>
 
@@ -1271,10 +1318,7 @@ export default function PipelinePage() {
               <div className="mt-2 flex flex-wrap gap-2">
                 {(selectedLead.labels ?? []).length > 0 ? (
                   (selectedLead.labels ?? []).map((lab) => (
-                    <span
-                      key={lab}
-                      className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75"
-                    >
+                    <span key={lab} className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
                       {lab}
                     </span>
                   ))
