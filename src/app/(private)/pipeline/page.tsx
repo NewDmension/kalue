@@ -1,7 +1,7 @@
 // src/app/(private)/pipeline/page.tsx
 'use client';
 
-import { useEffect, useMemo, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { useWorkspace } from '@/components/app/WorkspaceContext';
@@ -143,7 +143,6 @@ async function copyToClipboard(text: string): Promise<boolean> {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    // fallback clásico
     try {
       const el = document.createElement('textarea');
       el.value = text;
@@ -159,6 +158,20 @@ async function copyToClipboard(text: string): Promise<boolean> {
       return false;
     }
   }
+}
+
+function cloneLeadsByStage(src: Record<string, LeadRow[]>): Record<string, LeadRow[]> {
+  // structuredClone es ideal en navegadores modernos; fallback seguro
+  try {
+    return structuredClone(src);
+  } catch {
+    return JSON.parse(JSON.stringify(src)) as Record<string, LeadRow[]>;
+  }
+}
+
+function hasType(e: DragEvent, type: string): boolean {
+  const types = Array.from(e.dataTransfer.types);
+  return types.includes(type);
 }
 
 export default function PipelinePage() {
@@ -202,6 +215,23 @@ export default function PipelinePage() {
   const [deleteStageId, setDeleteStageId] = useState<string | null>(null);
   const [deleteToStageId, setDeleteToStageId] = useState<string>('');
   const [deleting, setDeleting] = useState(false);
+
+  // ✅ Anti doble-drop + anti race (muy importante)
+  const dropHandledRef = useRef(false);
+  const pendingMoveIdRef = useRef<string | null>(null);
+
+  function nextMoveId(): string {
+    return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  }
+
+  function markDropHandledThisTick(): boolean {
+    if (dropHandledRef.current) return true;
+    dropHandledRef.current = true;
+    queueMicrotask(() => {
+      dropHandledRef.current = false;
+    });
+    return false;
+  }
 
   const selectedPipeline = useMemo(() => {
     if (!selectedPipelineId) return null;
@@ -384,7 +414,7 @@ export default function PipelinePage() {
     setBoardLoading(false);
   }
 
-  // mover o reordenar lead por índice (mismo stage o stage distinto)
+  // ✅ mover o reordenar lead por índice (mismo stage o stage distinto) — FIXED
   function optimisticUpsertLead(args: {
     leadId: string;
     fromStageId: string;
@@ -395,12 +425,12 @@ export default function PipelinePage() {
       const next: Record<string, LeadRow[]> = { ...prev };
 
       const fromArr = Array.isArray(next[args.fromStageId]) ? [...next[args.fromStageId]!] : [];
-      const toArr =
-        args.fromStageId === args.toStageId
-          ? fromArr
-          : Array.isArray(next[args.toStageId])
-            ? [...next[args.toStageId]!]
-            : [];
+      const sameStage = args.fromStageId === args.toStageId;
+      const toArr = sameStage
+        ? fromArr
+        : Array.isArray(next[args.toStageId])
+          ? [...next[args.toStageId]!]
+          : [];
 
       const fromIndex = fromArr.findIndex((l) => l.id === args.leadId);
       if (fromIndex < 0) return prev;
@@ -408,74 +438,84 @@ export default function PipelinePage() {
       const lead = fromArr[fromIndex]!;
       fromArr.splice(fromIndex, 1);
 
-      const boundedIndex = Math.max(0, Math.min(args.toIndex, toArr.length));
+      // ✅ Ajuste CLAVE: si es el mismo stage y mueves hacia abajo, el índice real baja 1
+      let insertIndex = args.toIndex;
+      if (sameStage && fromIndex < insertIndex) insertIndex = insertIndex - 1;
+
+      // bound
+      insertIndex = Math.max(0, Math.min(insertIndex, toArr.length));
 
       const moved: LeadRow = {
         ...lead,
         stage_id: args.toStageId,
         stage_changed_at: new Date().toISOString(),
-        position: 999999,
+        position: insertIndex,
       };
 
-      toArr.splice(boundedIndex, 0, moved);
+      toArr.splice(insertIndex, 0, moved);
 
-      next[args.toStageId] = toArr;
-      if (args.fromStageId !== args.toStageId) {
-        next[args.fromStageId] = fromArr;
-      } else {
-        next[args.fromStageId] = toArr;
-      }
+      // Normaliza posiciones para evitar renders raros
+      const normalizedTo = toArr.map((l, idx) => ({ ...l, position: idx }));
+      const normalizedFrom = fromArr.map((l, idx) => ({ ...l, position: idx }));
+
+      next[args.toStageId] = normalizedTo;
+      if (!sameStage) next[args.fromStageId] = normalizedFrom;
+      else next[args.fromStageId] = normalizedTo;
 
       return next;
     });
   }
 
-  // 🔥 SOLO TE PONGO LAS PARTES MODIFICADAS PARA QUE NO TE ROMPA NADA
+  // ✅ persistMoveLead con razón mínima (para saber si estás revirtiendo por ok=false)
+  async function persistMoveLead(args: {
+    leadId: string;
+    toStageId: string;
+    pipelineId: string;
+    toPosition: number;
+    moveId: string;
+  }): Promise<{ ok: boolean; reason?: string }> {
+    if (!activeWorkspaceId) return { ok: false, reason: 'no_workspace' };
 
-// 1️⃣ REEMPLAZA persistMoveLead POR ESTO:
-
-async function persistMoveLead(args: {
-  leadId: string;
-  toStageId: string;
-  pipelineId: string;
-  toPosition: number;
-}): Promise<{ ok: boolean }> {
-  if (!activeWorkspaceId) return { ok: false };
-
-  const token = await getAccessToken();
-  if (!token) {
-    setError('login_required');
-    return { ok: false };
-  }
-
-  try {
-    const res = await fetch('/api/pipelines/move-lead', {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'x-workspace-id': activeWorkspaceId,
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        pipelineId: args.pipelineId,
-        leadId: args.leadId,
-        toStageId: args.toStageId,
-        toPosition: args.toPosition,
-      }),
-    });
-
-    const raw = await res.json();
-
-    if (!res.ok || raw?.ok !== true) {
-      return { ok: false };
+    const token = await getAccessToken();
+    if (!token) {
+      setError('login_required');
+      return { ok: false, reason: 'no_token' };
     }
 
-    return { ok: true };
-  } catch {
-    return { ok: false };
-  }
-}
+    try {
+      const res = await fetch('/api/pipelines/move-lead', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-workspace-id': activeWorkspaceId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          pipelineId: args.pipelineId,
+          leadId: args.leadId,
+          toStageId: args.toStageId,
+          toPosition: args.toPosition,
+          clientMoveId: args.moveId,
+        }),
+      });
 
+      const raw = (await res.json().catch(() => null)) as unknown;
+
+      // shape esperado: { ok: true } | { ok:false, error?, detail? }
+      const parsed = raw as MoveLeadResponse | null;
+
+      if (!res.ok || !parsed || parsed.ok !== true) {
+        const err = parsed && parsed.ok === false ? parsed.error : undefined;
+        const det = parsed && parsed.ok === false ? parsed.detail : undefined;
+        const reason = err ? (det ? `${err}: ${det}` : err) : `http_${res.status}`;
+        return { ok: false, reason };
+      }
+
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: 'network_error' };
+    }
+  }
 
   async function persistReorderStages(args: { pipelineId: string; stageIds: string[] }): Promise<boolean> {
     if (!activeWorkspaceId) return false;
@@ -732,19 +772,22 @@ async function persistMoveLead(args: {
   function onDragEndLead(): void {
     setDraggingLeadId(null);
     setDragOverLead(null);
+    dropHandledRef.current = false; // reset duro por seguridad
   }
 
   function onDragOverColumn(e: DragEvent): void {
+    if (!hasType(e, DND_KEY_LEAD)) return;
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
   }
 
   // gaps para insertar leads
   function onDragOverLeadGap(e: DragEvent, stageId: string, index: number): void {
-    const types = Array.from(e.dataTransfer.types);
-    if (!types.includes(DND_KEY_LEAD)) return;
+    if (!hasType(e, DND_KEY_LEAD)) return;
 
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
     setDragOverLead({ stageId, index });
   }
@@ -754,57 +797,67 @@ async function persistMoveLead(args: {
   }
 
   async function onDropLeadGap(e: DragEvent, toStageId: string, toIndex: number): Promise<void> {
-  const types = Array.from(e.dataTransfer.types);
-  if (!types.includes(DND_KEY_LEAD)) return;
+    if (!hasType(e, DND_KEY_LEAD)) return;
 
-  e.preventDefault();
-  e.stopPropagation();
+    e.preventDefault();
+    e.stopPropagation();
 
-  const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
-  const payload = safeParseDragPayload(raw);
-  if (!payload) return;
-  if (!selectedPipelineId) return;
-  if (payload.pipelineId !== selectedPipelineId) return;
+    // ✅ evita doble drop
+    if (markDropHandledThisTick()) return;
 
-  const snapshot = JSON.parse(JSON.stringify(leadsByStage));
+    const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
+    const payload = safeParseDragPayload(raw);
+    if (!payload) return;
+    if (!selectedPipelineId) return;
+    if (payload.pipelineId !== selectedPipelineId) return;
 
-  optimisticUpsertLead({
-    leadId: payload.leadId,
-    fromStageId: payload.fromStageId,
-    toStageId,
-    toIndex,
-  });
+    const moveId = nextMoveId();
+    pendingMoveIdRef.current = moveId;
 
-  const result = await persistMoveLead({
-    leadId: payload.leadId,
-    pipelineId: payload.pipelineId,
-    toStageId,
-    toPosition: toIndex,
-  });
+    const snapshot = cloneLeadsByStage(leadsByStage);
 
-  if (!result.ok) {
-    setLeadsByStage(snapshot); // revertimos sin reload global
+    optimisticUpsertLead({
+      leadId: payload.leadId,
+      fromStageId: payload.fromStageId,
+      toStageId,
+      toIndex,
+    });
+
+    const result = await persistMoveLead({
+      leadId: payload.leadId,
+      pipelineId: payload.pipelineId,
+      toStageId,
+      toPosition: toIndex,
+      moveId,
+    });
+
+    // ✅ si hubo otro move después, ignora este resultado
+    if (pendingMoveIdRef.current !== moveId) return;
+
+    if (!result.ok) {
+      setLeadsByStage(snapshot);
+      if (result.reason) setError(`move_lead_failed: ${result.reason}`);
+    }
+
+    setDragOverLead(null);
+    setDraggingLeadId(null);
   }
-
-  setDragOverLead(null);
-  setDraggingLeadId(null);
-}
 
   // Stage gaps
   function onDragOverStageGap(e: DragEvent, index: number): void {
-    const types = Array.from(e.dataTransfer.types);
-    if (!types.includes(DND_KEY_STAGE)) return;
+    if (!hasType(e, DND_KEY_STAGE)) return;
 
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
     setDragOverStageIndex(index);
   }
 
   async function onDropStageGap(e: DragEvent, targetIndex: number): Promise<void> {
-    const types = Array.from(e.dataTransfer.types);
-    if (!types.includes(DND_KEY_STAGE)) return;
+    if (!hasType(e, DND_KEY_STAGE)) return;
 
     e.preventDefault();
+    e.stopPropagation();
 
     const raw = e.dataTransfer.getData(DND_KEY_STAGE) || e.dataTransfer.getData('text/plain');
     const payload = safeParseStageDragPayload(raw);
@@ -844,43 +897,54 @@ async function persistMoveLead(args: {
   }
 
   async function onDropColumn(e: DragEvent, toStageId: string): Promise<void> {
-  e.preventDefault();
-  e.stopPropagation();
+    if (!hasType(e, DND_KEY_LEAD)) return;
 
-  const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
-  const payload = safeParseDragPayload(raw);
-  if (!payload) return;
+    e.preventDefault();
+    e.stopPropagation();
 
-  if (!selectedPipelineId) return;
-  if (payload.pipelineId !== selectedPipelineId) return;
+    // ✅ evita doble drop (si ya lo manejó un gap)
+    if (markDropHandledThisTick()) return;
 
-  const items = Array.isArray(leadsByStage[toStageId]) ? leadsByStage[toStageId]! : [];
-  const toIndex = items.length;
+    const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
+    const payload = safeParseDragPayload(raw);
+    if (!payload) return;
 
-  // snapshot para revertir si el backend falla (sin recargar el board)
-  const snapshot = JSON.parse(JSON.stringify(leadsByStage)) as Record<string, LeadRow[]>;
+    if (!selectedPipelineId) return;
+    if (payload.pipelineId !== selectedPipelineId) return;
 
-  optimisticUpsertLead({
-    leadId: payload.leadId,
-    fromStageId: payload.fromStageId,
-    toStageId,
-    toIndex,
-  });
+    const items = Array.isArray(leadsByStage[toStageId]) ? leadsByStage[toStageId]! : [];
+    const toIndex = items.length;
 
-  const result = await persistMoveLead({
-    leadId: payload.leadId,
-    pipelineId: payload.pipelineId,
-    toStageId,
-    toPosition: toIndex,
-  });
+    const moveId = nextMoveId();
+    pendingMoveIdRef.current = moveId;
 
-  if (!result.ok) {
-    setLeadsByStage(snapshot);
+    const snapshot = cloneLeadsByStage(leadsByStage);
+
+    optimisticUpsertLead({
+      leadId: payload.leadId,
+      fromStageId: payload.fromStageId,
+      toStageId,
+      toIndex,
+    });
+
+    const result = await persistMoveLead({
+      leadId: payload.leadId,
+      pipelineId: payload.pipelineId,
+      toStageId,
+      toPosition: toIndex,
+      moveId,
+    });
+
+    if (pendingMoveIdRef.current !== moveId) return;
+
+    if (!result.ok) {
+      setLeadsByStage(snapshot);
+      if (result.reason) setError(`move_lead_failed: ${result.reason}`);
+    }
+
+    setDragOverLead(null);
+    setDraggingLeadId(null);
   }
-
-  setDragOverLead(null);
-  setDraggingLeadId(null);
-}
 
   const boardHasStages = stages.length > 0;
   const canCreateStage = Boolean(activeWorkspaceId && selectedPipelineId);
