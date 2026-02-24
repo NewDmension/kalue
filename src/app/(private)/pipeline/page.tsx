@@ -1227,13 +1227,12 @@ export default function PipelinePage() {
                   </button>
 
                   {selectedLead?.id ? (
-                 <Link
-  href={`/leads/${encodeURIComponent(selectedLead.id)}`}
-  className="inline-flex items-center justify-center rounded-xl border border-indigo-400/25 bg-indigo-500/10 px-3 py-2 text-xs text-white hover:bg-indigo-500/15"
->
-  Ver lead
-</Link>
-
+                    <Link
+                      href={`/leads?selected=${encodeURIComponent(selectedLead.id)}`}
+                      className="inline-flex items-center justify-center rounded-xl border border-indigo-400/25 bg-indigo-500/10 px-3 py-2 text-xs text-white hover:bg-indigo-500/15"
+                    >
+                      Ver lead
+                    </Link>
                   ) : null}
                 </div>
 
