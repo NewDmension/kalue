@@ -50,21 +50,13 @@ type BoardResponse =
   | { ok: true; stages: StageRow[]; leadsByStage: Record<string, LeadRow[]> }
   | { ok: false; error: string; detail?: string };
 
-type MoveLeadResponse =
-  | { ok: true }
-  | { ok: false; error: string; detail?: string };
+type MoveLeadResponse = { ok: true } | { ok: false; error: string; detail?: string };
 
-type StageCreateResponse =
-  | { ok: true; stage: StageRow }
-  | { ok: false; error: string; detail?: string };
+type StageCreateResponse = { ok: true; stage: StageRow } | { ok: false; error: string; detail?: string };
 
-type StageRenameResponse =
-  | { ok: true; stage: StageRow }
-  | { ok: false; error: string; detail?: string };
+type StageRenameResponse = { ok: true; stage: StageRow } | { ok: false; error: string; detail?: string };
 
-type StageDeleteResponse =
-  | { ok: true }
-  | { ok: false; error: string; detail?: string };
+type StageDeleteResponse = { ok: true } | { ok: false; error: string; detail?: string };
 
 type DragPayload = {
   leadId: string;
@@ -77,9 +69,7 @@ type StageDragPayload = {
   pipelineId: string;
 };
 
-type StageReorderResponse =
-  | { ok: true }
-  | { ok: false; error: string; detail?: string };
+type StageReorderResponse = { ok: true } | { ok: false; error: string; detail?: string };
 
 const DND_KEY_LEAD = 'application/x-kalue-lead';
 const DND_KEY_STAGE = 'application/x-kalue-stage';
@@ -161,7 +151,6 @@ async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 function cloneLeadsByStage(src: Record<string, LeadRow[]>): Record<string, LeadRow[]> {
-  // structuredClone es ideal en navegadores modernos; fallback seguro
   try {
     return structuredClone(src);
   } catch {
@@ -296,9 +285,7 @@ export default function PipelinePage() {
           ? (parsed as { error: string }).error
           : 'failed_to_load_pipelines';
       const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setPipelines([]);
       setSelectedPipelineId(null);
@@ -399,9 +386,7 @@ export default function PipelinePage() {
           ? (parsed as { error: string }).error
           : 'failed_to_load_board';
       const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setStages([]);
       setLeadsByStage({});
@@ -415,22 +400,13 @@ export default function PipelinePage() {
   }
 
   // ✅ mover o reordenar lead por índice (mismo stage o stage distinto) — FIXED
-  function optimisticUpsertLead(args: {
-    leadId: string;
-    fromStageId: string;
-    toStageId: string;
-    toIndex: number;
-  }): void {
+  function optimisticUpsertLead(args: { leadId: string; fromStageId: string; toStageId: string; toIndex: number }): void {
     setLeadsByStage((prev) => {
       const next: Record<string, LeadRow[]> = { ...prev };
 
       const fromArr = Array.isArray(next[args.fromStageId]) ? [...next[args.fromStageId]!] : [];
       const sameStage = args.fromStageId === args.toStageId;
-      const toArr = sameStage
-        ? fromArr
-        : Array.isArray(next[args.toStageId])
-          ? [...next[args.toStageId]!]
-          : [];
+      const toArr = sameStage ? fromArr : Array.isArray(next[args.toStageId]) ? [...next[args.toStageId]!] : [];
 
       const fromIndex = fromArr.findIndex((l) => l.id === args.leadId);
       if (fromIndex < 0) return prev;
@@ -442,7 +418,6 @@ export default function PipelinePage() {
       let insertIndex = args.toIndex;
       if (sameStage && fromIndex < insertIndex) insertIndex = insertIndex - 1;
 
-      // bound
       insertIndex = Math.max(0, Math.min(insertIndex, toArr.length));
 
       const moved: LeadRow = {
@@ -500,8 +475,6 @@ export default function PipelinePage() {
       });
 
       const raw = (await res.json().catch(() => null)) as unknown;
-
-      // shape esperado: { ok: true } | { ok:false, error?, detail? }
       const parsed = raw as MoveLeadResponse | null;
 
       if (!res.ok || !parsed || parsed.ok !== true) {
@@ -545,9 +518,7 @@ export default function PipelinePage() {
           ? (parsed as { error: string }).error
           : 'reorder_failed';
       const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       return false;
     }
@@ -590,9 +561,7 @@ export default function PipelinePage() {
           ? (parsed as { error: string }).error
           : 'create_stage_failed';
       const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setCreatingStage(false);
       return;
@@ -642,13 +611,9 @@ export default function PipelinePage() {
 
     if (!res.ok || !parsed || parsed.ok !== true) {
       const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'rename_failed';
+        typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'rename_failed';
       const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setRenaming(false);
       return;
@@ -707,13 +672,9 @@ export default function PipelinePage() {
 
     if (!res.ok || !parsed || parsed.ok !== true) {
       const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'delete_failed';
+        typeof (parsed as { error?: string }).error === 'string' ? (parsed as { error: string }).error : 'delete_failed';
       const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
+        typeof (parsed as { detail?: string }).detail === 'string' ? (parsed as { detail: string }).detail : '';
       setError(detail ? `${msg}: ${detail}` : msg);
       setDeleting(false);
       return;
@@ -744,6 +705,18 @@ export default function PipelinePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPipelineId, activeWorkspaceId]);
 
+  // ✅ cerrar modal lead con ESC
+  useEffect(() => {
+    if (!selectedLeadId) return;
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') setSelectedLeadId(null);
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedLeadId]);
+
   // Drag handlers (STAGES)
   function onDragStartStage(e: DragEvent, payload: StageDragPayload): void {
     setDraggingStageId(payload.stageId);
@@ -772,7 +745,7 @@ export default function PipelinePage() {
   function onDragEndLead(): void {
     setDraggingLeadId(null);
     setDragOverLead(null);
-    dropHandledRef.current = false; // reset duro por seguridad
+    dropHandledRef.current = false;
   }
 
   function onDragOverColumn(e: DragEvent): void {
@@ -802,7 +775,6 @@ export default function PipelinePage() {
     e.preventDefault();
     e.stopPropagation();
 
-    // ✅ evita doble drop
     if (markDropHandledThisTick()) return;
 
     const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
@@ -831,7 +803,6 @@ export default function PipelinePage() {
       moveId,
     });
 
-    // ✅ si hubo otro move después, ignora este resultado
     if (pendingMoveIdRef.current !== moveId) return;
 
     if (!result.ok) {
@@ -902,7 +873,6 @@ export default function PipelinePage() {
     e.preventDefault();
     e.stopPropagation();
 
-    // ✅ evita doble drop (si ya lo manejó un gap)
     if (markDropHandledThisTick()) return;
 
     const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
@@ -950,7 +920,7 @@ export default function PipelinePage() {
   const canCreateStage = Boolean(activeWorkspaceId && selectedPipelineId);
   const canCreatePipeline = Boolean(activeWorkspaceId);
 
-  const rightPanelOpen = Boolean(selectedLead);
+  const leadModalOpen = Boolean(selectedLead);
 
   return (
     <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
@@ -1042,335 +1012,212 @@ export default function PipelinePage() {
         </div>
       ) : null}
 
-      {/* BOARD + RIGHT PANEL */}
+      {/* BOARD */}
       <div className="mt-6">
-        <div className={cx('flex gap-4', rightPanelOpen ? 'items-stretch' : '')}>
-          {/* LEFT: BOARD */}
-          <div className={cx('min-w-0 flex-1')}>
-            {boardLoading ? (
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">Cargando board…</div>
-            ) : !boardHasStages ? (
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
-                {selectedPipeline ? 'Este pipeline no tiene stages.' : 'Selecciona un pipeline.'}
-              </div>
-            ) : (
-              <div className={cx('rounded-2xl border border-white/10 bg-black/10 p-3', 'h-[calc(100vh-380px)] min-h-[440px]')}>
-                <div className="h-full overflow-x-auto">
-                  <div className="flex h-full pr-2">
-                    {/* GAP inicial (insertar columna al principio) */}
-                    <div
-                      onDragOver={(e) => onDragOverStageGap(e, 0)}
-                      onDrop={(e) => void onDropStageGap(e, 0)}
-                      onDragLeave={() => setDragOverStageIndex(null)}
-                      className={cx(
-                        'h-full w-2 shrink-0 rounded-xl transition',
-                        draggingStageId
-                          ? dragOverStageIndex === 0
-                            ? 'bg-indigo-400/25'
-                            : 'bg-white/5'
-                          : 'bg-transparent'
-                      )}
-                    />
+        <div className="min-w-0">
+          {boardLoading ? (
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">Cargando board…</div>
+          ) : !boardHasStages ? (
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
+              {selectedPipeline ? 'Este pipeline no tiene stages.' : 'Selecciona un pipeline.'}
+            </div>
+          ) : (
+            <div className={cx('rounded-2xl border border-white/10 bg-black/10 p-3', 'h-[calc(100vh-380px)] min-h-[440px]')}>
+              <div className="h-full overflow-x-auto">
+                <div className="flex h-full pr-2">
+                  {/* GAP inicial (insertar columna al principio) */}
+                  <div
+                    onDragOver={(e) => onDragOverStageGap(e, 0)}
+                    onDrop={(e) => void onDropStageGap(e, 0)}
+                    onDragLeave={() => setDragOverStageIndex(null)}
+                    className={cx(
+                      'h-full w-2 shrink-0 rounded-xl transition',
+                      draggingStageId
+                        ? dragOverStageIndex === 0
+                          ? 'bg-indigo-400/25'
+                          : 'bg-white/5'
+                        : 'bg-transparent'
+                    )}
+                  />
 
-                    {stages.map((st, idx) => {
-                      const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
-                      const canDelete = stages.length > 1;
+                  {stages.map((st, idx) => {
+                    const items = Array.isArray(leadsByStage[st.id]) ? leadsByStage[st.id]! : [];
+                    const canDelete = stages.length > 1;
 
-                      const stageAura =
-                        draggingStageId === st.id
-                          ? 'border-indigo-400/45 ring-2 ring-indigo-400/25 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_0_28px_rgba(99,102,241,0.22)] bg-indigo-500/10'
-                          : 'border-white/10';
+                    const stageAura =
+                      draggingStageId === st.id
+                        ? 'border-indigo-400/45 ring-2 ring-indigo-400/25 shadow-[0_0_0_1px_rgba(99,102,241,0.18),0_0_28px_rgba(99,102,241,0.22)] bg-indigo-500/10'
+                        : 'border-white/10';
 
-                      return (
-                        <div key={st.id} className="flex h-full">
+                    return (
+                      <div key={st.id} className="flex h-full">
+                        <div
+                          onDragOver={onDragOverColumn}
+                          onDrop={(e) => void onDropColumn(e, st.id)}
+                          className={cx('flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3 transition', stageAura)}
+                        >
+                          {/* HEADER: drag columnas */}
                           <div
-                            onDragOver={onDragOverColumn}
-                            onDrop={(e) => void onDropColumn(e, st.id)}
-                            className={cx('flex h-full w-[300px] shrink-0 flex-col rounded-2xl border bg-white/5 p-3 transition', stageAura)}
+                            draggable
+                            onDragStart={(e) => {
+                              if (!selectedPipelineId) return;
+                              onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
+                            }}
+                            onDragEnd={onDragEndStage}
+                            className="cursor-grab active:cursor-grabbing select-none pb-2 mb-2 border-b border-white/10"
+                            title="Arrastra para reordenar columnas"
                           >
-                            {/* HEADER: drag columnas */}
-                            <div
-                              draggable
-                              onDragStart={(e) => {
-                                if (!selectedPipelineId) return;
-                                onDragStartStage(e, { stageId: st.id, pipelineId: selectedPipelineId });
-                              }}
-                              onDragEnd={onDragEndStage}
-                              className="cursor-grab active:cursor-grabbing select-none pb-2 mb-2 border-b border-white/10"
-                              title="Arrastra para reordenar columnas"
-                            >
-                              <div className="flex items-center justify-between gap-2 min-w-0">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <GripVertical className="h-4 w-4 text-white/35 shrink-0" />
-                                  <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
-                                </div>
-                                <span className="text-[11px] text-white/45">{items.length}</span>
+                            <div className="flex items-center justify-between gap-2 min-w-0">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <GripVertical className="h-4 w-4 text-white/35 shrink-0" />
+                                <p className="text-sm font-semibold text-white/90 truncate">{st.name}</p>
                               </div>
-                              <p className="mt-0.5 text-[11px] text-white/45">Arrastra para reordenar</p>
+                              <span className="text-[11px] text-white/45">{items.length}</span>
                             </div>
-
-                            {/* Acciones */}
-                            <div className="mb-3 flex items-center justify-end gap-2">
-                              <button
-                                type="button"
-                                onClick={() => openRename(st.id)}
-                                className="rounded-lg border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-white/80 hover:bg-black/30"
-                              >
-                                Renombrar
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => openDelete(st.id)}
-                                disabled={!canDelete}
-                                className={cx(
-                                  'rounded-lg border px-2 py-1 text-[11px]',
-                                  !canDelete
-                                    ? 'border-white/10 bg-white/5 text-white/35'
-                                    : 'border-red-400/20 bg-red-500/10 text-red-100 hover:bg-red-500/15'
-                                )}
-                              >
-                                Eliminar
-                              </button>
-                            </div>
-
-                            {/* Lista con scroll */}
-                            <div className="flex-1 overflow-y-auto pr-2" style={{ scrollbarGutter: 'stable' }}>
-                              <div className="flex flex-col">
-                                {/* GAP inicial (insertar lead al principio) */}
-                                <div
-                                  onDragOver={(e) => onDragOverLeadGap(e, st.id, 0)}
-                                  onDrop={(e) => void onDropLeadGap(e, st.id, 0)}
-                                  onDragLeave={onDragLeaveLeadGap}
-                                  className={cx(
-                                    'h-2 rounded-lg transition',
-                                    draggingLeadId
-                                      ? dragOverLead?.stageId === st.id && dragOverLead.index === 0
-                                        ? 'bg-emerald-400/25'
-                                        : 'bg-white/5'
-                                      : 'bg-transparent'
-                                  )}
-                                />
-
-                                {items.map((lead, leadIdx) => {
-                                  const isSelected = selectedLeadId === lead.id;
-                                  const isDragging = draggingLeadId === lead.id;
-
-                                  const aura =
-                                    isDragging || isSelected
-                                      ? 'border-emerald-400/45 ring-2 ring-emerald-400/25 shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_0_24px_rgba(16,185,129,0.18)]'
-                                      : 'border-white/10 hover:border-white/20';
-
-                                  return (
-                                    <div key={lead.id} className="flex flex-col">
-                                      <div
-                                        draggable
-                                        onDragStart={(e) => {
-                                          if (!selectedPipelineId) return;
-                                          setSelectedLeadId(lead.id);
-                                          onDragStartLead(e, {
-                                            leadId: lead.id,
-                                            fromStageId: st.id,
-                                            pipelineId: selectedPipelineId,
-                                          });
-                                        }}
-                                        onDragEnd={onDragEndLead}
-                                        onClick={() => setSelectedLeadId(lead.id)}
-                                        className={cx(
-                                          'cursor-grab active:cursor-grabbing rounded-xl border bg-black/25 p-3 transition',
-                                          aura,
-                                          isDragging ? 'opacity-95' : '',
-                                          'hover:bg-black/30'
-                                        )}
-                                        role="button"
-                                        tabIndex={0}
-                                      >
-                                        <p className="text-sm font-semibold text-white truncate">{lead.full_name ?? 'Sin nombre'}</p>
-
-                                        <div className="mt-1 space-y-1">
-                                          {lead.email ? <p className="text-[12px] text-white/70 truncate">{lead.email}</p> : null}
-                                          {lead.phone ? <p className="text-[12px] text-white/70 truncate">{lead.phone}</p> : null}
-
-                                          <div className="flex items-center gap-2 pt-1">
-                                            {lead.source ? (
-                                              <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70">
-                                                {lead.source}
-                                              </span>
-                                            ) : null}
-                                            <span className="text-[11px] text-white/45">{formatLocal(lead.created_at)}</span>
-                                          </div>
-                                        </div>
-                                      </div>
-
-                                      {/* GAP después de este lead (insertar en leadIdx+1) */}
-                                      <div
-                                        onDragOver={(e) => onDragOverLeadGap(e, st.id, leadIdx + 1)}
-                                        onDrop={(e) => void onDropLeadGap(e, st.id, leadIdx + 1)}
-                                        onDragLeave={onDragLeaveLeadGap}
-                                        className={cx(
-                                          'h-2 mt-2 rounded-lg transition',
-                                          draggingLeadId
-                                            ? dragOverLead?.stageId === st.id && dragOverLead.index === leadIdx + 1
-                                              ? 'bg-emerald-400/25'
-                                              : 'bg-white/5'
-                                            : 'bg-transparent'
-                                        )}
-                                      />
-                                    </div>
-                                  );
-                                })}
-
-                                {items.length === 0 ? (
-                                  <div className="mt-2 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">
-                                    Suelta aquí…
-                                  </div>
-                                ) : null}
-                              </div>
-                            </div>
+                            <p className="mt-0.5 text-[11px] text-white/45">Arrastra para reordenar</p>
                           </div>
 
-                          {/* GAP después de esta columna (insertar columna en idx+1) */}
-                          <div
-                            onDragOver={(e) => onDragOverStageGap(e, idx + 1)}
-                            onDrop={(e) => void onDropStageGap(e, idx + 1)}
-                            onDragLeave={() => setDragOverStageIndex(null)}
-                            className={cx(
-                              'h-full w-2 shrink-0 ml-3 rounded-xl transition',
-                              draggingStageId
-                                ? dragOverStageIndex === idx + 1
-                                  ? 'bg-indigo-400/25'
-                                  : 'bg-white/5'
-                                : 'bg-transparent'
-                            )}
-                          />
+                          {/* Acciones */}
+                          <div className="mb-3 flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openRename(st.id)}
+                              className="rounded-lg border border-white/10 bg-black/20 px-2 py-1 text-[11px] text-white/80 hover:bg-black/30"
+                            >
+                              Renombrar
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => openDelete(st.id)}
+                              disabled={!canDelete}
+                              className={cx(
+                                'rounded-lg border px-2 py-1 text-[11px]',
+                                !canDelete
+                                  ? 'border-white/10 bg-white/5 text-white/35'
+                                  : 'border-red-400/20 bg-red-500/10 text-red-100 hover:bg-red-500/15'
+                              )}
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+
+                          {/* Lista con scroll */}
+                          <div className="flex-1 overflow-y-auto pr-2" style={{ scrollbarGutter: 'stable' }}>
+                            <div className="flex flex-col">
+                              {/* GAP inicial (insertar lead al principio) */}
+                              <div
+                                onDragOver={(e) => onDragOverLeadGap(e, st.id, 0)}
+                                onDrop={(e) => void onDropLeadGap(e, st.id, 0)}
+                                onDragLeave={onDragLeaveLeadGap}
+                                className={cx(
+                                  'h-2 rounded-lg transition',
+                                  draggingLeadId
+                                    ? dragOverLead?.stageId === st.id && dragOverLead.index === 0
+                                      ? 'bg-emerald-400/25'
+                                      : 'bg-white/5'
+                                    : 'bg-transparent'
+                                )}
+                              />
+
+                              {items.map((lead, leadIdx) => {
+                                const isSelected = selectedLeadId === lead.id;
+                                const isDragging = draggingLeadId === lead.id;
+
+                                const aura =
+                                  isDragging || isSelected
+                                    ? 'border-emerald-400/45 ring-2 ring-emerald-400/25 shadow-[0_0_0_1px_rgba(16,185,129,0.15),0_0_24px_rgba(16,185,129,0.18)]'
+                                    : 'border-white/10 hover:border-white/20';
+
+                                return (
+                                  <div key={lead.id} className="flex flex-col">
+                                    <div
+                                      draggable
+                                      onDragStart={(e) => {
+                                        if (!selectedPipelineId) return;
+                                        setSelectedLeadId(lead.id);
+                                        onDragStartLead(e, {
+                                          leadId: lead.id,
+                                          fromStageId: st.id,
+                                          pipelineId: selectedPipelineId,
+                                        });
+                                      }}
+                                      onDragEnd={onDragEndLead}
+                                      onClick={() => setSelectedLeadId(lead.id)}
+                                      className={cx(
+                                        'cursor-grab active:cursor-grabbing rounded-xl border bg-black/25 p-3 transition',
+                                        aura,
+                                        isDragging ? 'opacity-95' : '',
+                                        'hover:bg-black/30'
+                                      )}
+                                      role="button"
+                                      tabIndex={0}
+                                    >
+                                      <p className="text-sm font-semibold text-white truncate">{lead.full_name ?? 'Sin nombre'}</p>
+
+                                      <div className="mt-1 space-y-1">
+                                        {lead.email ? <p className="text-[12px] text-white/70 truncate">{lead.email}</p> : null}
+                                        {lead.phone ? <p className="text-[12px] text-white/70 truncate">{lead.phone}</p> : null}
+
+                                        <div className="flex items-center gap-2 pt-1">
+                                          {lead.source ? (
+                                            <span className="rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70">
+                                              {lead.source}
+                                            </span>
+                                          ) : null}
+                                          <span className="text-[11px] text-white/45">{formatLocal(lead.created_at)}</span>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* GAP después de este lead (insertar en leadIdx+1) */}
+                                    <div
+                                      onDragOver={(e) => onDragOverLeadGap(e, st.id, leadIdx + 1)}
+                                      onDrop={(e) => void onDropLeadGap(e, st.id, leadIdx + 1)}
+                                      onDragLeave={onDragLeaveLeadGap}
+                                      className={cx(
+                                        'h-2 mt-2 rounded-lg transition',
+                                        draggingLeadId
+                                          ? dragOverLead?.stageId === st.id && dragOverLead.index === leadIdx + 1
+                                            ? 'bg-emerald-400/25'
+                                            : 'bg-white/5'
+                                          : 'bg-transparent'
+                                      )}
+                                    />
+                                  </div>
+                                );
+                              })}
+
+                              {items.length === 0 ? (
+                                <div className="mt-2 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/60">
+                                  Suelta aquí…
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
                         </div>
-                      );
-                    })}
-                  </div>
+
+                        {/* GAP después de esta columna (insertar columna en idx+1) */}
+                        <div
+                          onDragOver={(e) => onDragOverStageGap(e, idx + 1)}
+                          onDrop={(e) => void onDropStageGap(e, idx + 1)}
+                          onDragLeave={() => setDragOverStageIndex(null)}
+                          className={cx(
+                            'h-full w-2 shrink-0 ml-3 rounded-xl transition',
+                            draggingStageId
+                              ? dragOverStageIndex === idx + 1
+                                ? 'bg-indigo-400/25'
+                                : 'bg-white/5'
+                              : 'bg-transparent'
+                          )}
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
-            )}
-          </div>
-
-          {/* RIGHT: LEAD PANEL (desktop) */}
-          {rightPanelOpen ? (
-            <aside className="hidden lg:block w-[360px] shrink-0">
-              <div className="h-[calc(100vh-380px)] min-h-[440px] rounded-2xl border border-white/10 bg-black/20 backdrop-blur-[10px] p-4 flex flex-col">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-xs text-white/55">Lead</p>
-                    <p className="mt-0.5 text-lg font-semibold text-white truncate">
-                      {selectedLead?.full_name ?? 'Sin nombre'}
-                    </p>
-                    <p className="mt-0.5 text-xs text-white/55 truncate">{selectedLead?.id ?? '—'}</p>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setSelectedLeadId(null)}
-                    className="rounded-xl border border-white/10 bg-white/5 p-2 text-white/80 hover:bg-white/10"
-                    title="Cerrar"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <div className="mt-3 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void (selectedLead?.id ? copyToClipboard(selectedLead.id) : Promise.resolve(false))}
-                    className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
-                  >
-                    <Copy className="h-4 w-4 text-white/60" />
-                    Copiar ID
-                  </button>
-
-                  {selectedLead?.id ? (
-                    <Link
-                      href={`/leads?selected=${encodeURIComponent(selectedLead.id)}`}
-                      className="inline-flex items-center justify-center rounded-xl border border-indigo-400/25 bg-indigo-500/10 px-3 py-2 text-xs text-white hover:bg-indigo-500/15"
-                    >
-                      Ver lead
-                    </Link>
-                  ) : null}
-                </div>
-
-                <div className="mt-4 space-y-3 overflow-y-auto pr-1" style={{ scrollbarGutter: 'stable' }}>
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs text-white/55">Contacto</p>
-                    <div className="mt-2 space-y-1">
-                      {selectedLead?.email ? <p className="text-sm text-white/85 truncate">{selectedLead.email}</p> : <p className="text-sm text-white/50">—</p>}
-                      {selectedLead?.phone ? <p className="text-sm text-white/85 truncate">{selectedLead.phone}</p> : null}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs text-white/55">Estado</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {selectedLead?.source ? (
-                        <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
-                          {selectedLead.source}
-                        </span>
-                      ) : (
-                        <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/45">sin source</span>
-                      )}
-
-                      {selectedLead?.status ? (
-                        <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
-                          {selectedLead.status}
-                        </span>
-                      ) : null}
-
-                      {selectedLeadStageName ? (
-                        <span className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">
-                          {selectedLeadStageName}
-                        </span>
-                      ) : null}
-                    </div>
-
-                    <div className="mt-3 text-xs text-white/55 space-y-1">
-                      <p>
-                        Creado: <span className="text-white/75">{selectedLead?.created_at ? formatLocal(selectedLead.created_at) : '—'}</span>
-                      </p>
-                      <p>
-                        Último cambio stage:{' '}
-                        <span className="text-white/75">{selectedLead?.stage_changed_at ? formatLocal(selectedLead.stage_changed_at) : '—'}</span>
-                      </p>
-                      <p>
-                        Pipeline:{' '}
-                        <span className="text-white/75">{selectedPipeline?.name ?? '—'}</span>
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs text-white/55">Labels</p>
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {(selectedLead?.labels ?? []).length > 0 ? (
-                        (selectedLead?.labels ?? []).map((lab) => (
-                          <span
-                            key={lab}
-                            className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75"
-                          >
-                            {lab}
-                          </span>
-                        ))
-                      ) : (
-                        <p className="text-sm text-white/50">—</p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <p className="text-xs text-white/55">Notes</p>
-                    <p className="mt-2 whitespace-pre-wrap text-sm text-white/80">
-                      {selectedLead?.notes?.trim() ? selectedLead.notes : '—'}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </aside>
-          ) : null}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1382,6 +1229,135 @@ export default function PipelinePage() {
           <span className="text-white/85">{selectedPipeline?.name ?? '—'}</span>
         </p>
       </div>
+
+      {/* ✅ MODAL LEAD (centrado, reemplaza panel derecho) */}
+      {leadModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setSelectedLeadId(null)} />
+          <div className="relative w-full max-w-[720px] rounded-2xl border border-white/10 bg-black/60 backdrop-blur-[10px] p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs text-white/55">Lead</p>
+                <p className="mt-0.5 text-lg font-semibold text-white truncate">{selectedLead?.full_name ?? 'Sin nombre'}</p>
+                <p className="mt-0.5 text-xs text-white/55 truncate">{selectedLead?.id ?? '—'}</p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSelectedLeadId(null)}
+                className="rounded-xl border border-white/10 bg-white/5 p-2 text-white/80 hover:bg-white/10"
+                title="Cerrar"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void (selectedLead?.id ? copyToClipboard(selectedLead.id) : Promise.resolve(false))}
+                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
+              >
+                <Copy className="h-4 w-4 text-white/60" />
+                Copiar ID
+              </button>
+
+              {selectedLead?.id ? (
+                <Link
+                  href={`/leads?selected=${encodeURIComponent(selectedLead.id)}`}
+                  className="inline-flex items-center justify-center rounded-xl border border-indigo-400/25 bg-indigo-500/10 px-3 py-2 text-xs text-white hover:bg-indigo-500/15"
+                >
+                  Ver lead
+                </Link>
+              ) : null}
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                <p className="text-xs text-white/55">Contacto</p>
+                <div className="mt-2 space-y-1">
+                  {selectedLead?.email ? (
+                    <p className="text-sm text-white/85 truncate">{selectedLead.email}</p>
+                  ) : (
+                    <p className="text-sm text-white/50">—</p>
+                  )}
+                  {selectedLead?.phone ? <p className="text-sm text-white/85 truncate">{selectedLead.phone}</p> : null}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                <p className="text-xs text-white/55">Estado</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {selectedLead?.source ? (
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
+                      {selectedLead.source}
+                    </span>
+                  ) : (
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/45">
+                      sin source
+                    </span>
+                  )}
+
+                  {selectedLead?.status ? (
+                    <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
+                      {selectedLead.status}
+                    </span>
+                  ) : null}
+
+                  {selectedLeadStageName ? (
+                    <span className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">
+                      {selectedLeadStageName}
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="mt-3 text-xs text-white/55 space-y-1">
+                  <p>
+                    Creado: <span className="text-white/75">{selectedLead?.created_at ? formatLocal(selectedLead.created_at) : '—'}</span>
+                  </p>
+                  <p>
+                    Último cambio stage:{' '}
+                    <span className="text-white/75">{selectedLead?.stage_changed_at ? formatLocal(selectedLead.stage_changed_at) : '—'}</span>
+                  </p>
+                  <p>
+                    Pipeline: <span className="text-white/75">{selectedPipeline?.name ?? '—'}</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-3">
+                <p className="text-xs text-white/55">Labels</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(selectedLead?.labels ?? []).length > 0 ? (
+                    (selectedLead?.labels ?? []).map((lab) => (
+                      <span key={lab} className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
+                        {lab}
+                      </span>
+                    ))
+                  ) : (
+                    <p className="text-sm text-white/50">—</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-3">
+                <p className="text-xs text-white/55">Notes</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-white/80">{selectedLead?.notes?.trim() ? selectedLead.notes : '—'}</p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setSelectedLeadId(null)}
+                className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* MODAL RENOMBRAR */}
       {renameOpen ? (
