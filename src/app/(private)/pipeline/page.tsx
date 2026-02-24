@@ -430,20 +430,25 @@ export default function PipelinePage() {
     });
   }
 
-  async function persistMoveLead(args: {
-    leadId: string;
-    toStageId: string;
-    pipelineId: string;
-    toPosition: number;
-  }): Promise<boolean> {
-    if (!activeWorkspaceId) return false;
+  // 🔥 SOLO TE PONGO LAS PARTES MODIFICADAS PARA QUE NO TE ROMPA NADA
 
-    const token = await getAccessToken();
-    if (!token) {
-      setError('login_required');
-      return false;
-    }
+// 1️⃣ REEMPLAZA persistMoveLead POR ESTO:
 
+async function persistMoveLead(args: {
+  leadId: string;
+  toStageId: string;
+  pipelineId: string;
+  toPosition: number;
+}): Promise<{ ok: boolean }> {
+  if (!activeWorkspaceId) return { ok: false };
+
+  const token = await getAccessToken();
+  if (!token) {
+    setError('login_required');
+    return { ok: false };
+  }
+
+  try {
     const res = await fetch('/api/pipelines/move-lead', {
       method: 'POST',
       headers: {
@@ -459,24 +464,18 @@ export default function PipelinePage() {
       }),
     });
 
-    const raw = (await res.json()) as unknown;
-    const parsed = raw as MoveLeadResponse;
+    const raw = await res.json();
 
-    if (!res.ok || !parsed || parsed.ok !== true) {
-      const msg =
-        typeof (parsed as { error?: string }).error === 'string'
-          ? (parsed as { error: string }).error
-          : 'move_failed';
-      const detail =
-        typeof (parsed as { detail?: string }).detail === 'string'
-          ? (parsed as { detail: string }).detail
-          : '';
-      setError(detail ? `${msg}: ${detail}` : msg);
-      return false;
+    if (!res.ok || raw?.ok !== true) {
+      return { ok: false };
     }
 
-    return true;
+    return { ok: true };
+  } catch {
+    return { ok: false };
   }
+}
+
 
   async function persistReorderStages(args: { pipelineId: string; stageIds: string[] }): Promise<boolean> {
     if (!activeWorkspaceId) return false;
@@ -755,50 +754,41 @@ export default function PipelinePage() {
   }
 
   async function onDropLeadGap(e: DragEvent, toStageId: string, toIndex: number): Promise<void> {
-    const types = Array.from(e.dataTransfer.types);
-    if (!types.includes(DND_KEY_LEAD)) return;
+  const types = Array.from(e.dataTransfer.types);
+  if (!types.includes(DND_KEY_LEAD)) return;
 
-    e.preventDefault();
+  e.preventDefault();
+  e.stopPropagation();
 
-    const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
-    const payload = safeParseDragPayload(raw);
-    if (!payload) return;
+  const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
+  const payload = safeParseDragPayload(raw);
+  if (!payload) return;
+  if (!selectedPipelineId) return;
+  if (payload.pipelineId !== selectedPipelineId) return;
 
-    if (!selectedPipelineId) return;
-    if (payload.pipelineId !== selectedPipelineId) return;
+  const snapshot = JSON.parse(JSON.stringify(leadsByStage));
 
-    if (payload.fromStageId === toStageId) {
-      const current = Array.isArray(leadsByStage[toStageId]) ? leadsByStage[toStageId]! : [];
-      const fromIndex = current.findIndex((l) => l.id === payload.leadId);
-      if (fromIndex >= 0) {
-        if (fromIndex === toIndex || fromIndex + 1 === toIndex) {
-          setDragOverLead(null);
-          return;
-        }
-      }
-    }
+  optimisticUpsertLead({
+    leadId: payload.leadId,
+    fromStageId: payload.fromStageId,
+    toStageId,
+    toIndex,
+  });
 
-    optimisticUpsertLead({
-      leadId: payload.leadId,
-      fromStageId: payload.fromStageId,
-      toStageId,
-      toIndex,
-    });
+  const result = await persistMoveLead({
+    leadId: payload.leadId,
+    pipelineId: payload.pipelineId,
+    toStageId,
+    toPosition: toIndex,
+  });
 
-    const ok = await persistMoveLead({
-      leadId: payload.leadId,
-      pipelineId: payload.pipelineId,
-      toStageId,
-      toPosition: toIndex,
-    });
-
-    if (!ok) {
-      await loadBoard(payload.pipelineId);
-    }
-
-    setDragOverLead(null);
-    setDraggingLeadId(null);
+  if (!result.ok) {
+    setLeadsByStage(snapshot); // revertimos sin reload global
   }
+
+  setDragOverLead(null);
+  setDraggingLeadId(null);
+}
 
   // Stage gaps
   function onDragOverStageGap(e: DragEvent, index: number): void {
@@ -854,38 +844,43 @@ export default function PipelinePage() {
   }
 
   async function onDropColumn(e: DragEvent, toStageId: string): Promise<void> {
-    e.preventDefault();
-    setDragOverLead(null);
-    setDraggingLeadId(null);
+  e.preventDefault();
+  e.stopPropagation();
 
-    const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
-    const payload = safeParseDragPayload(raw);
-    if (!payload) return;
+  const raw = e.dataTransfer.getData(DND_KEY_LEAD) || e.dataTransfer.getData('text/plain');
+  const payload = safeParseDragPayload(raw);
+  if (!payload) return;
 
-    if (!selectedPipelineId) return;
-    if (payload.pipelineId !== selectedPipelineId) return;
+  if (!selectedPipelineId) return;
+  if (payload.pipelineId !== selectedPipelineId) return;
 
-    const items = Array.isArray(leadsByStage[toStageId]) ? leadsByStage[toStageId]! : [];
-    const toIndex = items.length;
+  const items = Array.isArray(leadsByStage[toStageId]) ? leadsByStage[toStageId]! : [];
+  const toIndex = items.length;
 
-    optimisticUpsertLead({
-      leadId: payload.leadId,
-      fromStageId: payload.fromStageId,
-      toStageId,
-      toIndex,
-    });
+  // snapshot para revertir si el backend falla (sin recargar el board)
+  const snapshot = JSON.parse(JSON.stringify(leadsByStage)) as Record<string, LeadRow[]>;
 
-    const ok = await persistMoveLead({
-      leadId: payload.leadId,
-      pipelineId: payload.pipelineId,
-      toStageId,
-      toPosition: toIndex,
-    });
+  optimisticUpsertLead({
+    leadId: payload.leadId,
+    fromStageId: payload.fromStageId,
+    toStageId,
+    toIndex,
+  });
 
-    if (!ok) {
-      await loadBoard(payload.pipelineId);
-    }
+  const result = await persistMoveLead({
+    leadId: payload.leadId,
+    pipelineId: payload.pipelineId,
+    toStageId,
+    toPosition: toIndex,
+  });
+
+  if (!result.ok) {
+    setLeadsByStage(snapshot);
   }
+
+  setDragOverLead(null);
+  setDraggingLeadId(null);
+}
 
   const boardHasStages = stages.length > 0;
   const canCreateStage = Boolean(activeWorkspaceId && selectedPipelineId);
