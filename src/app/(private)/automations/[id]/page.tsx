@@ -1,6 +1,7 @@
+// src/app/(private)/automations/workflows/[id]/page.tsx
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, useId } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
@@ -103,31 +104,20 @@ function uuidv4(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/* ======================
-   Canvas pro: pan + zoom + edges bezier + handles
-====================== */
-
-const NODE_W = 190;
-const NODE_H = 78;
-const GRID_BASE = 40;
-
 type Viewport = { x: number; y: number; scale: number };
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
-function toWorld(p: { x: number; y: number }, view: Viewport): { x: number; y: number } {
-  return { x: (p.x - view.x) / view.scale, y: (p.y - view.y) / view.scale };
-}
-
-function bezierPath(x1: number, y1: number, x2: number, y2: number): string {
-  const dx = Math.max(90, Math.abs(x2 - x1) * 0.5);
-  const c1x = x1 + dx;
-  const c1y = y1;
-  const c2x = x2 - dx;
-  const c2y = y2;
-  return `M ${x1} ${y1} C ${c1x} ${c1y}, ${c2x} ${c2y}, ${x2} ${y2}`;
+function buildNiceCurvePath(x1: number, y1: number, x2: number, y2: number): string {
+  const dx = x2 - x1;
+  const c = clamp(Math.abs(dx) * 0.55, 60, 320);
+  const cx1 = x1 + c;
+  const cy1 = y1;
+  const cx2 = x2 - c;
+  const cy2 = y2;
+  return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
 }
 
 export default function AutomationBuilderPage() {
@@ -145,49 +135,42 @@ export default function AutomationBuilderPage() {
   const [edges, setEdges] = useState<EdgeVM[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
-  // Connect mode (lo mantenemos para el botón, pero conectamos por handles)
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+
   const [connectMode, setConnectMode] = useState(false);
+  const [connectFromId, setConnectFromId] = useState<string | null>(null);
 
-  // Drag node
-  const draggingRef = useRef<{
-    nodeId: string;
-    startMouseX: number;
-    startMouseY: number;
-    startX: number;
-    startY: number;
-    viewAtStart: Viewport;
-  } | null>(null);
-
-  const canvasRef = useRef<HTMLDivElement | null>(null);
-
-  // Viewport: pan + zoom
+  // Pan/Zoom
   const [view, setView] = useState<Viewport>({ x: 0, y: 0, scale: 1 });
   const viewRef = useRef<Viewport>({ x: 0, y: 0, scale: 1 });
   useEffect(() => {
     viewRef.current = view;
   }, [view]);
 
-  // Panning state
   const isSpaceDownRef = useRef(false);
-  const panningRef = useRef<{
-    startClientX: number;
-    startClientY: number;
-    startViewX: number;
-    startViewY: number;
+  const panningRef = useRef<{ startClientX: number; startClientY: number; startViewX: number; startViewY: number } | null>(null);
+
+  const draggingNodeRef = useRef<{
+    nodeId: string;
+    startMouseX: number;
+    startMouseY: number;
+    startX: number;
+    startY: number;
   } | null>(null);
 
-  // Live connecting via handles
-  const connectDragRef = useRef<{
-    fromId: string;
-    mouseWorld: { x: number; y: number };
-  } | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
 
-  const arrowId = useId();
+  const [connectPreviewWorld, setConnectPreviewWorld] = useState<{ x: number; y: number } | null>(null);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
     return nodes.find((n) => n.id === selectedNodeId) ?? null;
   }, [nodes, selectedNodeId]);
+
+  const selectedEdge = useMemo(() => {
+    if (!selectedEdgeId) return null;
+    return edges.find((e) => e.id === selectedEdgeId) ?? null;
+  }, [edges, selectedEdgeId]);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -261,14 +244,32 @@ export default function AutomationBuilderPage() {
     const nodeIdSet = new Set(vmNodes.map((n) => n.id));
     setEdges(vmEdges.filter((e) => nodeIdSet.has(e.from_node_id) && nodeIdSet.has(e.to_node_id)));
 
-    // Fit-ish inicial (centrar algo si hay nodos)
-    if (vmNodes.length > 0) {
-      const minX = Math.min(...vmNodes.map((n) => n.ui.x));
-      const minY = Math.min(...vmNodes.map((n) => n.ui.y));
-      setView({ x: 60 - minX, y: 90 - minY, scale: 1 });
-    } else {
-      setView({ x: 0, y: 0, scale: 1 });
-    }
+    // Center view nicely around content on first load
+    queueMicrotask(() => {
+      const rect = canvasRef.current?.getBoundingClientRect() ?? null;
+      if (!rect) return;
+
+      if (vmNodes.length === 0) {
+        setView({ x: 0, y: 0, scale: 1 });
+        return;
+      }
+
+      const xs = vmNodes.map((n) => n.ui.x);
+      const ys = vmNodes.map((n) => n.ui.y);
+      const minX = Math.min(...xs);
+      const minY = Math.min(...ys);
+      const maxX = Math.max(...xs) + 260;
+      const maxY = Math.max(...ys) + 160;
+
+      const contentW = Math.max(1, maxX - minX);
+      const contentH = Math.max(1, maxY - minY);
+
+      const scale = clamp(Math.min(rect.width / contentW, rect.height / contentH) * 0.92, 0.6, 1.25);
+      const x = rect.width / 2 - (minX + contentW / 2) * scale;
+      const y = rect.height / 2 - (minY + contentH / 2) * scale;
+
+      setView({ x, y, scale });
+    });
 
     setLoading(false);
   }, [workflowId]);
@@ -277,68 +278,49 @@ export default function AutomationBuilderPage() {
     void load();
   }, [load]);
 
-  // Space to pan
+  // Space key helper (optional)
   useEffect(() => {
-    const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.code === 'Space') {
-        isSpaceDownRef.current = true;
-      }
+    const onDown = (ev: KeyboardEvent) => {
+      if (ev.code === 'Space') isSpaceDownRef.current = true;
     };
-    const onKeyUp = (ev: KeyboardEvent) => {
-      if (ev.code === 'Space') {
-        isSpaceDownRef.current = false;
-        panningRef.current = null;
-      }
+    const onUp = (ev: KeyboardEvent) => {
+      if (ev.code === 'Space') isSpaceDownRef.current = false;
     };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
     };
   }, []);
 
-  // Global mouse move/up for node drag + connect preview + pan
+  // Global mouse move for dragging node / panning
   useEffect(() => {
     const onMove = (ev: MouseEvent) => {
-      // Node drag
-      const d = draggingRef.current;
+      // node drag
+      const d = draggingNodeRef.current;
       if (d) {
         ev.preventDefault();
+        const dx = (ev.clientX - d.startMouseX) / viewRef.current.scale;
+        const dy = (ev.clientY - d.startMouseY) / viewRef.current.scale;
 
-        const dx = (ev.clientX - d.startMouseX) / d.viewAtStart.scale;
-        const dy = (ev.clientY - d.startMouseY) / d.viewAtStart.scale;
-
-        setNodes((prev) =>
-          prev.map((n) => (n.id === d.nodeId ? { ...n, ui: { x: d.startX + dx, y: d.startY + dy } } : n))
-        );
+        setNodes((prev) => prev.map((n) => (n.id === d.nodeId ? { ...n, ui: { x: d.startX + dx, y: d.startY + dy } } : n)));
         return;
       }
 
-      // Pan
+      // pan
       const p = panningRef.current;
       if (p) {
         ev.preventDefault();
         const dx = ev.clientX - p.startClientX;
         const dy = ev.clientY - p.startClientY;
         setView((prev) => ({ ...prev, x: p.startViewX + dx, y: p.startViewY + dy }));
-        return;
-      }
-
-      // Connect preview
-      const c = connectDragRef.current;
-      if (c && canvasRef.current) {
-        const rect = canvasRef.current.getBoundingClientRect();
-        const local = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-        c.mouseWorld = toWorld(local, viewRef.current);
       }
     };
 
     const onUp = () => {
-      draggingRef.current = null;
+      draggingNodeRef.current = null;
       panningRef.current = null;
-      // Si sueltas fuera de un input-handle, cancelamos el cable
-      connectDragRef.current = null;
     };
 
     window.addEventListener('mousemove', onMove);
@@ -349,6 +331,27 @@ export default function AutomationBuilderPage() {
     };
   }, []);
 
+  // Delete edge with Delete/Backspace
+  useEffect(() => {
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        if (selectedEdgeId) {
+          ev.preventDefault();
+          setEdges((prev) => prev.filter((e) => e.id !== selectedEdgeId));
+          setSelectedEdgeId(null);
+          setActionInfo('Conexión eliminada (no olvides Guardar).');
+        }
+      }
+      if (ev.key === 'Escape') {
+        setConnectFromId(null);
+        setConnectMode(false);
+        setConnectPreviewWorld(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedEdgeId]);
+
   const startDragNode = useCallback(
     (nodeId: string, ev: React.MouseEvent) => {
       ev.preventDefault();
@@ -357,24 +360,68 @@ export default function AutomationBuilderPage() {
       if (!n) return;
 
       setSelectedNodeId(nodeId);
+      setSelectedEdgeId(null);
 
-      draggingRef.current = {
+      draggingNodeRef.current = {
         nodeId,
         startMouseX: ev.clientX,
         startMouseY: ev.clientY,
         startX: n.ui.x,
         startY: n.ui.y,
-        viewAtStart: viewRef.current,
       };
     },
     [nodes]
   );
 
-  const onCanvasClick = useCallback(() => {
+  const clearSelections = useCallback(() => {
     setSelectedNodeId(null);
+    setSelectedEdgeId(null);
     setActionInfo(null);
     setActionError(null);
-  }, []);
+    if (connectMode) setConnectFromId(null);
+  }, [connectMode]);
+
+  const onCanvasClick = useCallback(() => {
+    clearSelections();
+  }, [clearSelections]);
+
+  const onNodeClick = useCallback(
+    (nodeId: string) => {
+      setActionError(null);
+      setActionInfo(null);
+      setSelectedEdgeId(null);
+
+      if (!connectMode) {
+        setSelectedNodeId(nodeId);
+        return;
+      }
+
+      if (!connectFromId) {
+        setConnectFromId(nodeId);
+        setSelectedNodeId(nodeId);
+        setActionInfo('Origen seleccionado. Ahora elige el destino…');
+        return;
+      }
+
+      if (connectFromId === nodeId) return;
+
+      const exists = edges.some((e) => e.from_node_id === connectFromId && e.to_node_id === nodeId);
+      if (exists) {
+        setActionInfo('Ese enlace ya existe.');
+        setConnectFromId(null);
+        setConnectPreviewWorld(null);
+        return;
+      }
+
+      const id = uuidv4();
+      setEdges((prev) => [...prev, { id, from_node_id: connectFromId, to_node_id: nodeId, condition_key: null }]);
+      setConnectFromId(null);
+      setConnectPreviewWorld(null);
+      setSelectedNodeId(nodeId);
+      setActionInfo('Conexión creada (no olvides Guardar).');
+    },
+    [connectMode, connectFromId, edges]
+  );
 
   const createNode = useCallback(
     async (type: 'trigger' | 'action'): Promise<void> => {
@@ -392,12 +439,16 @@ export default function AutomationBuilderPage() {
 
       const rect = canvasRef.current?.getBoundingClientRect() ?? null;
 
-      // Centro visible del viewport → a world coords
-      const centerLocal = rect ? { x: rect.width / 2, y: rect.height / 2 } : { x: 240, y: 180 };
-      const centerWorld = toWorld(centerLocal, viewRef.current);
+      // Create in viewport center (world coords)
+      const v = viewRef.current;
+      const cx = rect ? rect.width / 2 : 320;
+      const cy = rect ? rect.height / 2 : 240;
 
-      const x = Math.max(40, centerWorld.x - NODE_W / 2);
-      const y = Math.max(40, centerWorld.y - NODE_H / 2);
+      const worldX = (cx - v.x) / v.scale;
+      const worldY = (cy - v.y) / v.scale;
+
+      const x = Math.max(40, worldX - 90);
+      const y = Math.max(40, worldY - 40);
 
       const res = await fetch('/api/automations/workflows/node-create', {
         method: 'POST',
@@ -481,6 +532,7 @@ export default function AutomationBuilderPage() {
 
       setNodes((prev) => [...prev, node]);
       setSelectedNodeId(node.id);
+      setSelectedEdgeId(null);
       setActionInfo(`${type === 'trigger' ? 'Trigger' : 'Acción'} creado.`);
     },
     [workflowId]
@@ -570,9 +622,7 @@ export default function AutomationBuilderPage() {
       }
 
       setWf((prev) => (prev ? { ...prev, status: nextStatus } : prev));
-      setActionInfo(
-        nextStatus === 'active' ? 'Workflow activado.' : nextStatus === 'paused' ? 'Workflow pausado.' : 'Workflow en borrador.'
-      );
+      setActionInfo(nextStatus === 'active' ? 'Workflow activado.' : nextStatus === 'paused' ? 'Workflow pausado.' : 'Workflow en borrador.');
     },
     [workflowId]
   );
@@ -591,63 +641,39 @@ export default function AutomationBuilderPage() {
     setNodes((prev) => prev.filter((n) => n.id !== id));
     setEdges((prev) => prev.filter((e) => e.from_node_id !== id && e.to_node_id !== id));
     setSelectedNodeId(null);
+    if (connectFromId === id) setConnectFromId(null);
     setActionInfo('Nodo eliminado (no olvides Guardar).');
-  }, [selectedNodeId]);
+  }, [selectedNodeId, connectFromId]);
+
+  const deleteSelectedEdge = useCallback(() => {
+    if (!selectedEdgeId) return;
+    setEdges((prev) => prev.filter((e) => e.id !== selectedEdgeId));
+    setSelectedEdgeId(null);
+    setActionInfo('Conexión eliminada (no olvides Guardar).');
+  }, [selectedEdgeId]);
 
   const updateSelectedTriggerConfig = useCallback(
     (next: TriggerConfig) => {
-      setNodes((prev) =>
-        prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next as unknown as Record<string, unknown> } : n))
-      );
+      setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next as unknown as Record<string, unknown> } : n)));
     },
     [selectedNodeId]
   );
 
   const updateSelectedActionConfig = useCallback(
     (next: ActionAddLabelConfig) => {
-      setNodes((prev) =>
-        prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next as unknown as Record<string, unknown> } : n))
-      );
+      setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next as unknown as Record<string, unknown> } : n)));
     },
     [selectedNodeId]
   );
 
-  // Zoom (wheel): zoom to cursor
-  const onWheel = useCallback((ev: React.WheelEvent) => {
-    if (!canvasRef.current) return;
-    ev.preventDefault();
-
-    const rect = canvasRef.current.getBoundingClientRect();
-    const local = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-
-    const prev = viewRef.current;
-    const worldBefore = toWorld(local, prev);
-
-    const delta = ev.deltaY;
-    const factor = delta > 0 ? 0.92 : 1.08;
-    const nextScale = clamp(prev.scale * factor, 0.35, 2.2);
-
-    const nextX = local.x - worldBefore.x * nextScale;
-    const nextY = local.y - worldBefore.y * nextScale;
-
-    setView({ x: nextX, y: nextY, scale: nextScale });
-  }, []);
-
-  const zoomBy = useCallback((dir: 'in' | 'out') => {
-    const prev = viewRef.current;
-    const factor = dir === 'in' ? 1.12 : 0.88;
-    const nextScale = clamp(prev.scale * factor, 0.35, 2.2);
-    setView((p) => ({ ...p, scale: nextScale }));
-  }, []);
-
-  const resetView = useCallback(() => {
-    setView({ x: 0, y: 0, scale: 1 });
-  }, []);
-
-  const startPan = useCallback((ev: React.MouseEvent) => {
-    // Pan si: space pulsado o botón central
+  const startPan = useCallback((ev: React.MouseEvent<HTMLDivElement>) => {
     const isMiddle = ev.button === 1;
-    if (!isSpaceDownRef.current && !isMiddle) return;
+    const isLeft = ev.button === 0;
+
+    // Pan con LEFT sólo si clicas el fondo (no un nodo)
+    const isBackground = ev.currentTarget === ev.target;
+
+    if (!(isMiddle || isSpaceDownRef.current || (isLeft && isBackground))) return;
 
     ev.preventDefault();
     ev.stopPropagation();
@@ -661,143 +687,188 @@ export default function AutomationBuilderPage() {
     };
   }, []);
 
-  const onNodeClick = useCallback(
-    (nodeId: string) => {
-      setActionError(null);
-      setActionInfo(null);
-      setSelectedNodeId(nodeId);
+  const onCanvasMouseMove = useCallback(
+    (ev: React.MouseEvent<HTMLDivElement>) => {
+      if (!connectMode || !connectFromId) return;
+      const rect = canvasRef.current?.getBoundingClientRect() ?? null;
+      if (!rect) return;
+
+      const v = viewRef.current;
+      const sx = ev.clientX - rect.left;
+      const sy = ev.clientY - rect.top;
+
+      const wx = (sx - v.x) / v.scale;
+      const wy = (sy - v.y) / v.scale;
+
+      setConnectPreviewWorld({ x: wx, y: wy });
     },
-    []
+    [connectMode, connectFromId]
   );
 
-  const beginConnectFrom = useCallback(
-    (fromId: string, ev: React.PointerEvent) => {
-      if (!connectMode) return;
-      ev.preventDefault();
-      ev.stopPropagation();
+  const onWheelZoom = useCallback((ev: React.WheelEvent<HTMLDivElement>) => {
+    const rect = canvasRef.current?.getBoundingClientRect() ?? null;
+    if (!rect) return;
 
-      if (!canvasRef.current) return;
+    // Trackpad/Mouse wheel
+    const delta = ev.deltaY;
+    const zoomFactor = delta > 0 ? 0.92 : 1.08;
 
-      const rect = canvasRef.current.getBoundingClientRect();
-      const local = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-      const mouseWorld = toWorld(local, viewRef.current);
+    const prev = viewRef.current;
+    const nextScale = clamp(prev.scale * zoomFactor, 0.35, 2.5);
+    if (nextScale === prev.scale) return;
 
-      connectDragRef.current = { fromId, mouseWorld };
-      setActionInfo('Arrastra y suelta en el punto de entrada del nodo destino…');
-    },
-    [connectMode]
-  );
+    ev.preventDefault();
 
-  const completeConnectTo = useCallback(
-    (toId: string) => {
-      const c = connectDragRef.current;
-      if (!connectMode || !c) return;
+    const sx = ev.clientX - rect.left;
+    const sy = ev.clientY - rect.top;
 
-      if (c.fromId === toId) {
-        connectDragRef.current = null;
-        return;
-      }
+    const wx = (sx - prev.x) / prev.scale;
+    const wy = (sy - prev.y) / prev.scale;
 
-      const exists = edges.some((e) => e.from_node_id === c.fromId && e.to_node_id === toId);
-      if (exists) {
-        setActionInfo('Ese enlace ya existe.');
-        connectDragRef.current = null;
-        return;
-      }
+    const nextX = sx - wx * nextScale;
+    const nextY = sy - wy * nextScale;
 
-      const id = uuidv4();
-      setEdges((prev) => [...prev, { id, from_node_id: c.fromId, to_node_id: toId, condition_key: null }]);
-      setSelectedNodeId(toId);
-      setActionInfo('Conexión creada (no olvides Guardar).');
-      connectDragRef.current = null;
-    },
-    [connectMode, edges]
-  );
+    setView({ x: nextX, y: nextY, scale: nextScale });
+  }, []);
 
-  // Edges SVG (curvos + flecha) + preview
-  const edgesSvg = useMemo((): ReactElement => {
+  const zoomBy = useCallback((factor: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect() ?? null;
+    const prev = viewRef.current;
+    const nextScale = clamp(prev.scale * factor, 0.35, 2.5);
+    if (!rect || nextScale === prev.scale) {
+      setView((p) => ({ ...p, scale: nextScale }));
+      return;
+    }
+
+    const sx = rect.width / 2;
+    const sy = rect.height / 2;
+
+    const wx = (sx - prev.x) / prev.scale;
+    const wy = (sy - prev.y) / prev.scale;
+
+    const nextX = sx - wx * nextScale;
+    const nextY = sy - wy * nextScale;
+
+    setView({ x: nextX, y: nextY, scale: nextScale });
+  }, []);
+
+  const centerGraph = useCallback(() => {
+    const rect = canvasRef.current?.getBoundingClientRect() ?? null;
+    if (!rect) return;
+
+    if (nodes.length === 0) {
+      setView({ x: 0, y: 0, scale: 1 });
+      return;
+    }
+
+    const xs = nodes.map((n) => n.ui.x);
+    const ys = nodes.map((n) => n.ui.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const maxX = Math.max(...xs) + 260;
+    const maxY = Math.max(...ys) + 160;
+
+    const contentW = Math.max(1, maxX - minX);
+    const contentH = Math.max(1, maxY - minY);
+
+    const scale = clamp(Math.min(rect.width / contentW, rect.height / contentH) * 0.92, 0.6, 1.25);
+    const x = rect.width / 2 - (minX + contentW / 2) * scale;
+    const y = rect.height / 2 - (minY + contentH / 2) * scale;
+
+    setView({ x, y, scale });
+  }, [nodes]);
+
+  const edgesSvg = useMemo((): ReactElement[] => {
     const map = new Map<string, NodeVM>();
     for (const n of nodes) map.set(n.id, n);
 
-    const lines: ReactElement[] = [];
+    const out: ReactElement[] = [];
 
+    // Real edges
     for (const e of edges) {
       const a = map.get(e.from_node_id);
       const b = map.get(e.to_node_id);
       if (!a || !b) continue;
 
-      const x1 = a.ui.x + NODE_W;
-      const y1 = a.ui.y + NODE_H / 2;
-      const x2 = b.ui.x;
-      const y2 = b.ui.y + NODE_H / 2;
+      // anchor points (world)
+      const x1 = a.ui.x + 240;
+      const y1 = a.ui.y + 52;
+      const x2 = b.ui.x - 10;
+      const y2 = b.ui.y + 52;
 
-      const d = bezierPath(x1, y1, x2, y2);
+      const d = buildNiceCurvePath(x1, y1, x2, y2);
+      const isSelected = selectedEdgeId === e.id;
 
-      lines.push(
+      // clickable stroke (slightly thicker but invisible)
+      out.push(
+        <path
+          key={`${e.id}__hit`}
+          d={d}
+          fill="none"
+          stroke="rgba(0,0,0,0)"
+          strokeWidth={10}
+          style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
+          onClick={(ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            setSelectedEdgeId(e.id);
+            setSelectedNodeId(null);
+            setActionInfo(null);
+            setActionError(null);
+          }}
+        />
+      );
+
+      // visual stroke
+      out.push(
         <path
           key={e.id}
           d={d}
           fill="none"
-          stroke="rgba(255,255,255,0.22)"
-          strokeWidth={2.2}
-          markerEnd={`url(#arrow-${arrowId})`}
+          stroke={isSelected ? 'rgba(99,102,241,0.55)' : 'rgba(255,255,255,0.18)'}
+          strokeWidth={isSelected ? 2.2 : 1.6}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ pointerEvents: 'none' }}
         />
       );
+
+      // end dot
+      out.push(<circle key={`${e.id}__dot`} cx={x2} cy={y2} r={3} fill={isSelected ? 'rgba(99,102,241,0.55)' : 'rgba(255,255,255,0.22)'} />);
     }
 
-    // Preview cable
-    const c = connectDragRef.current;
-    if (connectMode && c) {
-      const a = map.get(c.fromId);
+    // Preview edge while connecting
+    if (connectMode && connectFromId && connectPreviewWorld) {
+      const a = map.get(connectFromId);
       if (a) {
-        const x1 = a.ui.x + NODE_W;
-        const y1 = a.ui.y + NODE_H / 2;
-        const x2 = c.mouseWorld.x;
-        const y2 = c.mouseWorld.y;
-        const d = bezierPath(x1, y1, x2, y2);
+        const x1 = a.ui.x + 240;
+        const y1 = a.ui.y + 52;
+        const x2 = connectPreviewWorld.x;
+        const y2 = connectPreviewWorld.y;
+        const d = buildNiceCurvePath(x1, y1, x2, y2);
 
-        lines.push(
+        out.push(
           <path
             key="__preview__"
             d={d}
             fill="none"
             stroke="rgba(99,102,241,0.55)"
-            strokeWidth={2.6}
+            strokeWidth={2.0}
+            strokeLinecap="round"
             strokeDasharray="6 6"
-            markerEnd={`url(#arrow-${arrowId})`}
+            style={{ pointerEvents: 'none' }}
           />
         );
       }
     }
 
-    return (
-      <svg className="absolute inset-0 h-full w-full">
-        <defs>
-          <marker
-            id={`arrow-${arrowId}`}
-            markerWidth="12"
-            markerHeight="12"
-            refX="10"
-            refY="6"
-            orient="auto"
-            markerUnits="strokeWidth"
-          >
-            <path d="M 0 0 L 12 6 L 0 12 z" fill="rgba(255,255,255,0.28)" />
-          </marker>
-        </defs>
-
-        {/* todo el contenido se renderiza dentro de un <g> con la misma transform que los nodos */}
-        <g transform={`translate(${view.x} ${view.y}) scale(${view.scale})`}>{lines}</g>
-      </svg>
-    );
-  }, [nodes, edges, connectMode, view.x, view.y, view.scale, arrowId]);
+    return out;
+  }, [nodes, edges, selectedEdgeId, connectMode, connectFromId, connectPreviewWorld]);
 
   if (loading) {
     return (
       <div className="p-6">
-        <div className="card-glass rounded-2xl border border-white/10 bg-black/20 p-6 backdrop-blur">
-          Cargando workflow…
-        </div>
+        <div className="card-glass rounded-2xl border border-white/10 bg-black/20 p-6 backdrop-blur">Cargando workflow…</div>
       </div>
     );
   }
@@ -813,15 +884,12 @@ export default function AutomationBuilderPage() {
     );
   }
 
-  const connectHint = connectMode ? 'Modo conectar: arrastra desde el punto de salida al punto de entrada.' : null;
+  const connectHint =
+    connectMode && connectFromId ? 'Selecciona un nodo destino…' : connectMode ? 'Selecciona un nodo origen…' : null;
 
-  // Grid style que se mueve con pan/zoom
-  const gridSize = GRID_BASE * view.scale;
-  const gridStyle: React.CSSProperties = {
-    backgroundImage:
-      'linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.06) 1px, transparent 1px)',
-    backgroundSize: `${gridSize}px ${gridSize}px`,
-    backgroundPosition: `${view.x}px ${view.y}px`,
+  const worldTransformStyle: React.CSSProperties = {
+    transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
+    transformOrigin: '0 0',
   };
 
   return (
@@ -869,13 +937,12 @@ export default function AutomationBuilderPage() {
               setActionError(null);
               setActionInfo(null);
               setConnectMode((v) => !v);
-              connectDragRef.current = null;
+              setConnectFromId(null);
+              setConnectPreviewWorld(null);
             }}
             className={cx(
               'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition',
-              connectMode
-                ? 'border-indigo-400/30 bg-indigo-500/20 text-white'
-                : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
+              connectMode ? 'border-indigo-400/30 bg-indigo-500/20 text-white' : 'border-white/10 bg-white/5 text-white/80 hover:bg-white/10'
             )}
             title="Conectar nodos"
           >
@@ -896,21 +963,16 @@ export default function AutomationBuilderPage() {
       </div>
 
       {actionError ? (
-        <div className="mb-3 card-glass rounded-2xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-white/80">
-          {actionError}
-        </div>
+        <div className="mb-3 card-glass rounded-2xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-white/80">{actionError}</div>
       ) : null}
 
       {actionInfo ? (
-        <div className="mb-3 card-glass rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-white/75">
-          {actionInfo}
-        </div>
+        <div className="mb-3 card-glass rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-white/75">{actionInfo}</div>
       ) : null}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* CANVAS */}
         <div className="card-glass relative h-[70vh] rounded-2xl border border-white/10 bg-black/20 backdrop-blur lg:col-span-2">
-          {/* Top-left actions */}
+          {/* Toolbar left */}
           <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
             <button
               type="button"
@@ -931,148 +993,114 @@ export default function AutomationBuilderPage() {
             </button>
           </div>
 
-          {/* Zoom controls */}
+          {/* Toolbar right (zoom/pan helpers) */}
           <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
-            <div className="rounded-xl border border-white/10 bg-black/30 p-1 backdrop-blur">
-              <button
-                type="button"
-                onClick={() => zoomBy('out')}
-                className="inline-flex items-center justify-center rounded-lg px-2 py-2 text-white/80 hover:bg-white/10"
-                title="Zoom out"
-              >
-                <ZoomOut className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => zoomBy('in')}
-                className="inline-flex items-center justify-center rounded-lg px-2 py-2 text-white/80 hover:bg-white/10"
-                title="Zoom in"
-              >
-                <ZoomIn className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={resetView}
-                className="inline-flex items-center justify-center rounded-lg px-2 py-2 text-white/80 hover:bg-white/10"
-                title="Reset view"
-              >
-                <LocateFixed className="h-4 w-4" />
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => zoomBy(1.12)}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/85 hover:bg-white/10"
+              title="Zoom in"
+            >
+              <ZoomIn className="h-4 w-4" />
+            </button>
 
-            <div className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-white/70">
-              {Math.round(view.scale * 100)}%
-            </div>
+            <button
+              type="button"
+              onClick={() => zoomBy(1 / 1.12)}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/85 hover:bg-white/10"
+              title="Zoom out"
+            >
+              <ZoomOut className="h-4 w-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={centerGraph}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/85 hover:bg-white/10"
+              title="Centrar"
+            >
+              <LocateFixed className="h-4 w-4" />
+            </button>
           </div>
 
-          {/* Canvas surface */}
+          {/* Canvas */}
           <div
             ref={canvasRef}
             onClick={onCanvasClick}
-            onWheel={onWheel}
             onMouseDown={startPan}
-            className="absolute inset-0 overflow-hidden rounded-2xl"
-            style={gridStyle}
+            onMouseMove={onCanvasMouseMove}
+            onWheel={onWheelZoom}
+            className={cx(
+              'absolute inset-0 overflow-hidden rounded-2xl',
+              'cursor-grab active:cursor-grabbing',
+              'bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.08)_1px,transparent_0)] bg-[length:28px_28px]'
+            )}
           >
-            {/* Edges */}
-            {edgesSvg}
+            {/* World layer */}
+            <div className="absolute inset-0" style={worldTransformStyle}>
+              {/* SVG edges */}
+              <svg className="absolute inset-0 h-full w-full" style={{ overflow: 'visible' }}>
+                {edgesSvg}
+              </svg>
 
-            {/* Nodes layer: same transform as edges */}
-            <div
-              className="absolute left-0 top-0 h-full w-full"
-              style={{
-                transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
-                transformOrigin: '0 0',
-              }}
-            >
+              {/* Nodes */}
               {nodes.map((n) => {
                 const isSelected = n.id === selectedNodeId;
-
-                const isTrigger = n.type === 'trigger';
-                const baseBg = isTrigger ? 'bg-indigo-500/12' : 'bg-white/6';
-                const baseBorder = isTrigger ? 'border-indigo-400/20' : 'border-white/10';
+                const isConnectFrom = connectMode && connectFromId === n.id;
 
                 return (
                   <div
                     key={n.id}
+                    onMouseDown={(ev) => ev.stopPropagation()}
                     onClick={(ev) => {
                       ev.stopPropagation();
                       onNodeClick(n.id);
                     }}
                     style={{ transform: `translate(${n.ui.x}px, ${n.ui.y}px)` }}
                     className={cx(
-                      'absolute left-0 top-0',
-                      'w-[190px] rounded-2xl border p-3 shadow-[0_10px_30px_rgba(0,0,0,0.35)]',
-                      'backdrop-blur-[6px] transition',
-                      baseBg,
-                      baseBorder,
-                      isSelected ? 'ring-2 ring-indigo-300/35 border-indigo-300/30' : 'hover:bg-white/10'
+                      'absolute left-0 top-0 w-[250px] cursor-default select-none rounded-2xl border p-4 shadow-sm transition',
+                      isSelected ? 'border-indigo-400/35 bg-indigo-500/15' : 'border-white/10 bg-white/5 hover:bg-white/10',
+                      isConnectFrom ? 'ring-2 ring-indigo-300/50' : null
                     )}
+                    role="button"
+                    tabIndex={0}
                   >
-                    {/* Input handle (izquierda) */}
-                    <button
-                      type="button"
-                      title={connectMode ? 'Suelta aquí para conectar' : 'Entrada'}
-                      onPointerUp={(ev) => {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        completeConnectTo(n.id);
-                      }}
-                      className={cx(
-                        'absolute -left-2 top-1/2 -translate-y-1/2',
-                        'h-4 w-4 rounded-full border',
-                        connectMode ? 'border-indigo-300/60 bg-indigo-500/40' : 'border-white/20 bg-white/10'
-                      )}
-                    />
-
-                    {/* Output handle (derecha) */}
-                    <button
-                      type="button"
-                      title={connectMode ? 'Arrastra para conectar' : 'Salida'}
-                      onPointerDown={(ev) => beginConnectFrom(n.id, ev)}
-                      className={cx(
-                        'absolute -right-2 top-1/2 -translate-y-1/2',
-                        'h-4 w-4 rounded-full border',
-                        connectMode ? 'border-indigo-300/60 bg-indigo-500/40' : 'border-white/20 bg-white/10'
-                      )}
-                    />
-
-                    <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-white/90">{n.name}</div>
-                        <div className="text-[11px] text-white/50">{n.type}</div>
+                        <div className="truncate text-base font-semibold text-white/90">{n.name}</div>
+                        <div className="text-[12px] text-white/50">{n.type}</div>
                       </div>
 
                       <button
                         type="button"
                         onMouseDown={(ev) => startDragNode(n.id, ev)}
-                        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/70 hover:bg-white/10"
+                        className="rounded-xl border border-white/10 bg-white/5 px-2.5 py-2 text-[11px] text-white/70 hover:bg-white/10"
                         title="Arrastrar"
                       >
                         ⋮⋮
                       </button>
                     </div>
 
-                    {/* mini hint */}
-                    {connectMode ? (
-                      <div className="mt-2 text-[11px] text-white/50">Conecta usando los puntos</div>
-                    ) : null}
+                    {/* tiny connection hints (visual only) */}
+                    <div className="pointer-events-none absolute -left-2 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border border-white/10 bg-white/5" />
+                    <div className="pointer-events-none absolute -right-2 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border border-white/10 bg-white/5" />
                   </div>
                 );
               })}
             </div>
 
-            {/* Pan hint */}
-            <div className="absolute bottom-3 left-3 z-10 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-white/70 backdrop-blur">
-              Pan: <span className="text-white/85">Space + arrastrar</span> · Zoom: <span className="text-white/85">rueda</span>
+            {/* Hint overlay */}
+            <div className="pointer-events-none absolute bottom-3 left-3 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[11px] text-white/70">
+              Arrastra el fondo para mover · Rueda para zoom · (Delete) borra conexión seleccionada
             </div>
           </div>
         </div>
 
-        {/* RIGHT PANEL */}
+        {/* Right panel */}
         <div className="card-glass rounded-2xl border border-white/10 bg-black/20 p-5 backdrop-blur">
           <div className="flex items-center justify-between">
             <div className="text-white/90 font-medium">Configuración</div>
+
             {selectedNode ? (
               <button
                 type="button"
@@ -1083,8 +1111,28 @@ export default function AutomationBuilderPage() {
                 <X className="h-4 w-4" />
                 Eliminar
               </button>
+            ) : selectedEdge ? (
+              <button
+                type="button"
+                onClick={deleteSelectedEdge}
+                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
+                title="Quitar conexión"
+              >
+                <X className="h-4 w-4" />
+                Eliminar
+              </button>
             ) : null}
           </div>
+
+          {selectedEdge ? (
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <div className="text-sm font-medium text-white/85">Conexión</div>
+              <div className="mt-2 text-xs text-white/60">
+                {selectedEdge.from_node_id} → {selectedEdge.to_node_id}
+              </div>
+              <div className="mt-2 text-[11px] text-white/55">Pulsa Guardar para persistir.</div>
+            </div>
+          ) : null}
 
           {selectedNode ? (
             <div className="mt-4 space-y-4">
@@ -1099,9 +1147,7 @@ export default function AutomationBuilderPage() {
 
               <div>
                 <label className="text-xs text-white/60">Tipo</label>
-                <div className="mt-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80">
-                  {selectedNode.type}
-                </div>
+                <div className="mt-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80">{selectedNode.type}</div>
               </div>
 
               {selectedNode.type === 'trigger' ? (
@@ -1109,19 +1155,16 @@ export default function AutomationBuilderPage() {
               ) : null}
 
               {selectedNode.type === 'action' ? (
-                <ActionAddLabelEditor
-                  config={asActionAddLabelConfig(selectedNode.config)}
-                  onChange={(next) => updateSelectedActionConfig(next)}
-                />
+                <ActionAddLabelEditor config={asActionAddLabelConfig(selectedNode.config)} onChange={(next) => updateSelectedActionConfig(next)} />
               ) : null}
 
               <div className="text-xs text-white/55">
                 Recuerda pulsar <span className="text-white/75">Guardar</span> para persistir cambios.
               </div>
             </div>
-          ) : (
-            <div className="mt-4 text-sm text-white/60">Selecciona un nodo para editar.</div>
-          )}
+          ) : !selectedEdge ? (
+            <div className="mt-4 text-sm text-white/60">Selecciona un nodo (o una conexión) para editar.</div>
+          ) : null}
         </div>
       </div>
     </div>
