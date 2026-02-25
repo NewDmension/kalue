@@ -6,7 +6,7 @@ import type { ReactElement } from 'react';
 import { useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { getActiveWorkspaceId } from '@/lib/activeWorkspace';
-import { Plus, Save, Link2, X, ZoomIn, ZoomOut, LocateFixed } from 'lucide-react';
+import { Plus, Save, Link2, X, ZoomIn, ZoomOut, LocateFixed, ChevronDown, Mail, MessageSquare } from 'lucide-react';
 
 type WorkflowStatus = 'draft' | 'active' | 'paused';
 
@@ -26,14 +26,6 @@ type NodeRow = {
   ui: unknown;
 };
 
-type NodeVM = {
-  id: string;
-  type: string;
-  name: string;
-  config: Record<string, unknown>;
-  ui: NodeUI;
-};
-
 type EdgeRow = {
   id: string;
   from_node_id: string;
@@ -51,29 +43,47 @@ type UpsertGraphResponse = { ok: true } | { ok: false; error: string; detail?: s
 
 type SetStatusResponse = { ok: true } | { ok: false; error: string; detail?: string };
 
-// ---- Tipos/config tipados (MVP) ----
+// ---- Tipos/config tipados (PASO 2) ----
 type TriggerEvent = 'lead.stage_changed';
-type ActionKind = 'lead.add_label';
-
 type TriggerConfig = { event: TriggerEvent; toStageId?: string };
-type ActionAddLabelConfig = { action: ActionKind; label: string };
+
+// ActionKinds
+type ActionKind = 'lead.add_label' | 'action.send_email' | 'action.send_sms';
+
+type ActionAddLabelConfig = { action: 'lead.add_label'; label: string };
+
+type ActionSendEmailConfig = {
+  action: 'action.send_email';
+  to: string; // e.g. {{lead.email}}
+  subject: string;
+  body: string; // html/markdown/plain (engine decide)
+};
+
+type ActionSendSmsConfig = {
+  action: 'action.send_sms';
+  to: string; // e.g. {{lead.phone}}
+  body: string;
+};
+
+type ActionConfig = ActionAddLabelConfig | ActionSendEmailConfig | ActionSendSmsConfig;
+type NodeConfig = TriggerConfig | ActionConfig;
+
+type NodeVM = {
+  id: string;
+  type: 'trigger' | 'action' | string;
+  name: string;
+  config: NodeConfig;
+  ui: NodeUI;
+};
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-function asTriggerConfig(v: unknown): TriggerConfig {
-  if (!isRecord(v)) return { event: 'lead.stage_changed' };
-  const event: TriggerEvent = v.event === 'lead.stage_changed' ? 'lead.stage_changed' : 'lead.stage_changed';
-  const toStageId = typeof v.toStageId === 'string' && v.toStageId.trim() ? v.toStageId.trim() : undefined;
-  return { event, toStageId };
-}
-
-function asActionAddLabelConfig(v: unknown): ActionAddLabelConfig {
-  if (!isRecord(v)) return { action: 'lead.add_label', label: '' };
-  const action: ActionKind = 'lead.add_label';
-  const label = typeof v.label === 'string' ? v.label : '';
-  return { action, label };
+function pickString(v: unknown, key: string): string | null {
+  if (!isRecord(v)) return null;
+  const out = v[key];
+  return typeof out === 'string' ? out : null;
 }
 
 function parseNodeUi(ui: unknown): NodeUI {
@@ -127,7 +137,6 @@ const NODE_PORT_HALF = NODE_PORT_SIZE / 2; // 6
 const NODE_PORT_Y = 56; // px from top of card (visually centered)
 
 function getPortWorld(n: NodeVM, side: 'left' | 'right'): { x: number; y: number } {
-  // We position port dots at left:-6 (center at x=0) and left:(NODE_W-6) (center at x=NODE_W)
   const x = side === 'left' ? n.ui.x : n.ui.x + NODE_W;
   const y = n.ui.y + NODE_PORT_Y;
   return { x, y };
@@ -144,6 +153,69 @@ function closestData(el: HTMLElement, attr: string): HTMLElement | null {
     cur = cur.parentElement;
   }
   return null;
+}
+
+/* ---------------- Normalizadores config ---------------- */
+
+function asTriggerConfig(v: unknown): TriggerConfig {
+  if (!isRecord(v)) return { event: 'lead.stage_changed' };
+  const event: TriggerEvent = v.event === 'lead.stage_changed' ? 'lead.stage_changed' : 'lead.stage_changed';
+  const toStageId = typeof v.toStageId === 'string' && v.toStageId.trim() ? v.toStageId.trim() : undefined;
+  return { event, toStageId };
+}
+
+function defaultActionConfig(kind: ActionKind): ActionConfig {
+  if (kind === 'lead.add_label') return { action: 'lead.add_label', label: '' };
+  if (kind === 'action.send_email') return { action: 'action.send_email', to: '{{lead.email}}', subject: '', body: '' };
+  return { action: 'action.send_sms', to: '{{lead.phone}}', body: '' };
+}
+
+function asActionConfig(v: unknown): ActionConfig {
+  if (!isRecord(v)) return defaultActionConfig('lead.add_label');
+
+  const action = pickString(v, 'action');
+
+  if (action === 'lead.add_label') {
+    const label = typeof v.label === 'string' ? v.label : '';
+    return { action: 'lead.add_label', label };
+  }
+
+  if (action === 'action.send_email') {
+    const to = typeof v.to === 'string' && v.to.trim() ? v.to : '{{lead.email}}';
+    const subject = typeof v.subject === 'string' ? v.subject : '';
+    const body = typeof v.body === 'string' ? v.body : '';
+    return { action: 'action.send_email', to, subject, body };
+  }
+
+  if (action === 'action.send_sms') {
+    const to = typeof v.to === 'string' && v.to.trim() ? v.to : '{{lead.phone}}';
+    const body = typeof v.body === 'string' ? v.body : '';
+    return { action: 'action.send_sms', to, body };
+  }
+
+  return defaultActionConfig('lead.add_label');
+}
+
+function nodeSubtitle(n: NodeVM): string {
+  if (n.type === 'trigger') return 'trigger';
+  if (n.type === 'action') {
+    const c = n.config;
+    if ('action' in c) return c.action;
+    return 'action';
+  }
+  return n.type;
+}
+
+function actionLabel(kind: ActionKind): string {
+  if (kind === 'lead.add_label') return 'Añadir etiqueta';
+  if (kind === 'action.send_email') return 'Enviar Email';
+  return 'Enviar SMS';
+}
+
+function actionIcon(kind: ActionKind): ReactElement {
+  if (kind === 'action.send_email') return <Mail className="h-4 w-4" />;
+  if (kind === 'action.send_sms') return <MessageSquare className="h-4 w-4" />;
+  return <Plus className="h-4 w-4" />;
 }
 
 export default function AutomationBuilderPage() {
@@ -187,6 +259,9 @@ export default function AutomationBuilderPage() {
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
   const [connectPreviewWorld, setConnectPreviewWorld] = useState<{ x: number; y: number } | null>(null);
+
+  // Create Action dropdown (UI)
+  const [actionMenuOpen, setActionMenuOpen] = useState(false);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -239,13 +314,15 @@ export default function AutomationBuilderPage() {
     const vmNodes: NodeVM[] = (Array.isArray(j.nodes) ? j.nodes : [])
       .filter((n): n is NodeRow => Boolean(n && typeof n.id === 'string'))
       .map((n) => {
-        const baseConfig: Record<string, unknown> = isRecord(n.config) ? n.config : {};
-        const normalizedConfig: Record<string, unknown> =
+        const rawConfig: unknown = n.config;
+
+        const normalizedConfig: NodeConfig =
           n.type === 'trigger'
-            ? (asTriggerConfig(baseConfig) as unknown as Record<string, unknown>)
+            ? asTriggerConfig(rawConfig)
             : n.type === 'action'
-              ? (asActionAddLabelConfig(baseConfig) as unknown as Record<string, unknown>)
-              : baseConfig;
+              ? asActionConfig(rawConfig)
+              : // fallback safe
+                asActionConfig(rawConfig);
 
         return {
           id: n.id,
@@ -370,6 +447,7 @@ export default function AutomationBuilderPage() {
         setConnectFromId(null);
         setConnectMode(false);
         setConnectPreviewWorld(null);
+        setActionMenuOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -448,7 +526,7 @@ export default function AutomationBuilderPage() {
   );
 
   const createNode = useCallback(
-    async (type: 'trigger' | 'action'): Promise<void> => {
+    async (type: 'trigger' | 'action', actionKind?: ActionKind): Promise<void> => {
       setActionError(null);
       setActionInfo(null);
 
@@ -465,15 +543,30 @@ export default function AutomationBuilderPage() {
 
       // Create in viewport center (world coords)
       const v = viewRef.current;
-      const cx = rect ? rect.width / 2 : 320;
-      const cy = rect ? rect.height / 2 : 240;
+      const cx0 = rect ? rect.width / 2 : 320;
+      const cy0 = rect ? rect.height / 2 : 240;
 
-      const worldX = (cx - v.x) / v.scale;
-      const worldY = (cy - v.y) / v.scale;
+      const worldX = (cx0 - v.x) / v.scale;
+      const worldY = (cy0 - v.y) / v.scale;
 
       const x = Math.max(40, worldX - 90);
       const y = Math.max(40, worldY - 40);
 
+      const initialConfig: NodeConfig =
+        type === 'trigger'
+          ? { event: 'lead.stage_changed' }
+          : defaultActionConfig(actionKind ?? 'lead.add_label');
+
+      const name =
+        type === 'trigger'
+          ? 'Trigger'
+          : actionKind === 'action.send_email'
+            ? 'Enviar Email'
+            : actionKind === 'action.send_sms'
+              ? 'Enviar SMS'
+              : 'Acción';
+
+      // Enviamos config también; si el backend lo ignora, no rompe.
       const res = await fetch('/api/automations/workflows/node-create', {
         method: 'POST',
         headers: {
@@ -484,9 +577,10 @@ export default function AutomationBuilderPage() {
         body: JSON.stringify({
           workflowId,
           type,
-          name: type === 'trigger' ? 'Trigger' : 'Acción',
+          name,
           x,
           y,
+          config: initialConfig,
         }),
       });
 
@@ -531,7 +625,7 @@ export default function AutomationBuilderPage() {
 
       const id = typeof nodeUnknown.id === 'string' ? nodeUnknown.id : '';
       const nodeType = typeof nodeUnknown.type === 'string' ? nodeUnknown.type : type;
-      const name = typeof nodeUnknown.name === 'string' ? nodeUnknown.name : type === 'trigger' ? 'Trigger' : 'Acción';
+      const nodeName = typeof nodeUnknown.name === 'string' ? nodeUnknown.name : name;
 
       if (!id) {
         // eslint-disable-next-line no-console
@@ -542,17 +636,12 @@ export default function AutomationBuilderPage() {
 
       const ui = parseNodeUi(nodeUnknown.ui);
 
-      const rawConfig: unknown = nodeUnknown.config;
-      const normalizedConfig: Record<string, unknown> =
-        nodeType === 'trigger'
-          ? (asTriggerConfig(rawConfig) as unknown as Record<string, unknown>)
-          : nodeType === 'action'
-            ? (asActionAddLabelConfig(rawConfig) as unknown as Record<string, unknown>)
-            : isRecord(rawConfig)
-              ? rawConfig
-              : {};
+      // Si backend no devuelve config, usamos el inicial
+      const rawConfig: unknown = nodeUnknown.config ?? initialConfig;
+      const normalizedConfig: NodeConfig =
+        nodeType === 'trigger' ? asTriggerConfig(rawConfig) : nodeType === 'action' ? asActionConfig(rawConfig) : asActionConfig(rawConfig);
 
-      const node: NodeVM = { id, type: nodeType, name, config: normalizedConfig, ui };
+      const node: NodeVM = { id, type: nodeType, name: nodeName, config: normalizedConfig, ui };
 
       setNodes((prev) => [...prev, node]);
       setSelectedNodeId(node.id);
@@ -678,14 +767,14 @@ export default function AutomationBuilderPage() {
 
   const updateSelectedTriggerConfig = useCallback(
     (next: TriggerConfig) => {
-      setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next as unknown as Record<string, unknown> } : n)));
+      setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next } : n)));
     },
     [selectedNodeId]
   );
 
   const updateSelectedActionConfig = useCallback(
-    (next: ActionAddLabelConfig) => {
-      setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next as unknown as Record<string, unknown> } : n)));
+    (next: ActionConfig) => {
+      setNodes((prev) => prev.map((n) => (n.id === selectedNodeId ? { ...n, config: next } : n)));
     },
     [selectedNodeId]
   );
@@ -818,7 +907,6 @@ export default function AutomationBuilderPage() {
       const p1 = getPortWorld(a, 'right');
       const p2 = getPortWorld(b, 'left');
 
-      // slight visual offsets so the curve doesn't “bite” into the dot
       const x1 = p1.x + 2;
       const y1 = p1.y;
       const x2 = p2.x - 2;
@@ -827,7 +915,6 @@ export default function AutomationBuilderPage() {
       const d = buildNiceCurvePath(x1, y1, x2, y2);
       const isSelected = selectedEdgeId === e.id;
 
-      // hit path
       out.push(
         <path
           key={`${e.id}__hit`}
@@ -847,7 +934,6 @@ export default function AutomationBuilderPage() {
         />
       );
 
-      // visual path (thin, no arrow)
       out.push(
         <path
           key={e.id}
@@ -966,6 +1052,7 @@ export default function AutomationBuilderPage() {
               setConnectMode((v) => !v);
               setConnectFromId(null);
               setConnectPreviewWorld(null);
+              setActionMenuOpen(false);
             }}
             className={cx(
               'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition',
@@ -1010,14 +1097,37 @@ export default function AutomationBuilderPage() {
               Trigger
             </button>
 
-            <button
-              type="button"
-              onClick={() => void createNode('action')}
-              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/85 hover:bg-white/10"
-            >
-              <Plus className="h-4 w-4" />
-              Acción
-            </button>
+            {/* Action dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setActionMenuOpen((v) => !v)}
+                className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/85 hover:bg-white/10"
+              >
+                <Plus className="h-4 w-4" />
+                Acción
+                <ChevronDown className="h-4 w-4 opacity-70" />
+              </button>
+
+              {actionMenuOpen ? (
+                <div className="absolute left-0 mt-2 w-64 rounded-2xl border border-white/10 bg-black/60 p-2 backdrop-blur">
+                  {(['lead.add_label', 'action.send_email', 'action.send_sms'] as const).map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => {
+                        setActionMenuOpen(false);
+                        void createNode('action', k);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-xl border border-transparent px-3 py-2 text-left text-sm text-white/85 hover:border-white/10 hover:bg-white/10"
+                    >
+                      {actionIcon(k)}
+                      {actionLabel(k)}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </div>
 
           {/* Toolbar right */}
@@ -1057,15 +1167,11 @@ export default function AutomationBuilderPage() {
             onMouseDown={startPan}
             onMouseMove={onCanvasMouseMove}
             onWheel={onWheelZoom}
-            className={cx(
-              'absolute inset-0 overflow-hidden rounded-2xl',
-              'cursor-grab active:cursor-grabbing',
-              'bg-black/10'
-            )}
+            className={cx('absolute inset-0 overflow-hidden rounded-2xl', 'cursor-grab active:cursor-grabbing', 'bg-black/10')}
           >
-            {/* World layer (everything inside pans/zooms together, INCLUDING the dotted background) */}
+            {/* World layer */}
             <div className="absolute inset-0" style={worldTransformStyle}>
-              {/* Dotted background that MOVES with pan */}
+              {/* Dotted background */}
               <div
                 className="absolute"
                 style={{
@@ -1078,7 +1184,7 @@ export default function AutomationBuilderPage() {
                   opacity: 0.55,
                 }}
               />
-              {/* Subtle vignette */}
+              {/* Vignette */}
               <div
                 className="pointer-events-none absolute"
                 style={{
@@ -1120,7 +1226,7 @@ export default function AutomationBuilderPage() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="truncate text-base font-semibold text-white/90">{n.name}</div>
-                        <div className="text-[12px] text-white/50">{n.type}</div>
+                        <div className="text-[12px] text-white/50">{nodeSubtitle(n)}</div>
                       </div>
 
                       <button
@@ -1133,7 +1239,7 @@ export default function AutomationBuilderPage() {
                       </button>
                     </div>
 
-                    {/* Ports (the curve endpoints are computed to match these) */}
+                    {/* Ports */}
                     <div
                       className="pointer-events-none absolute rounded-full border border-white/10 bg-white/5"
                       style={{
@@ -1223,7 +1329,7 @@ export default function AutomationBuilderPage() {
               ) : null}
 
               {selectedNode.type === 'action' ? (
-                <ActionAddLabelEditor config={asActionAddLabelConfig(selectedNode.config)} onChange={(next) => updateSelectedActionConfig(next)} />
+                <ActionEditor config={asActionConfig(selectedNode.config)} onChange={(next) => updateSelectedActionConfig(next)} />
               ) : null}
 
               <div className="text-xs text-white/55">
@@ -1238,6 +1344,8 @@ export default function AutomationBuilderPage() {
     </div>
   );
 }
+
+/* ------------------ Editors ------------------ */
 
 function TriggerEditor(props: { config: TriggerConfig; onChange: (next: TriggerConfig) => void }) {
   return (
@@ -1268,7 +1376,9 @@ function TriggerEditor(props: { config: TriggerConfig; onChange: (next: TriggerC
   );
 }
 
-function ActionAddLabelEditor(props: { config: ActionAddLabelConfig; onChange: (next: ActionAddLabelConfig) => void }) {
+function ActionEditor(props: { config: ActionConfig; onChange: (next: ActionConfig) => void }) {
+  const c = props.config;
+
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
       <div className="text-sm font-medium text-white/85">Acción</div>
@@ -1276,21 +1386,102 @@ function ActionAddLabelEditor(props: { config: ActionAddLabelConfig; onChange: (
       <div className="mt-3">
         <label className="text-xs text-white/60">Tipo</label>
         <select
-          value={props.config.action}
-          onChange={() => props.onChange({ ...props.config, action: 'lead.add_label' })}
+          value={c.action}
+          onChange={(e) => {
+            const next = e.target.value as ActionKind;
+            props.onChange(defaultActionConfig(next));
+          }}
           className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
         >
           <option value="lead.add_label">Añadir etiqueta (label)</option>
+          <option value="action.send_email">Enviar Email</option>
+          <option value="action.send_sms">Enviar SMS</option>
         </select>
       </div>
 
-      <div className="mt-3">
-        <label className="text-xs text-white/60">Label</label>
+      {c.action === 'lead.add_label' ? <ActionAddLabelFields config={c} onChange={props.onChange} /> : null}
+      {c.action === 'action.send_email' ? <ActionSendEmailFields config={c} onChange={props.onChange} /> : null}
+      {c.action === 'action.send_sms' ? <ActionSendSmsFields config={c} onChange={props.onChange} /> : null}
+    </div>
+  );
+}
+
+function ActionAddLabelFields(props: { config: ActionAddLabelConfig; onChange: (next: ActionConfig) => void }) {
+  return (
+    <div className="mt-3">
+      <label className="text-xs text-white/60">Label</label>
+      <input
+        value={props.config.label}
+        onChange={(e) => props.onChange({ ...props.config, label: e.target.value })}
+        placeholder="Ej: Movido a Contactado"
+        className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+      />
+    </div>
+  );
+}
+
+function ActionSendEmailFields(props: { config: ActionSendEmailConfig; onChange: (next: ActionConfig) => void }) {
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="text-[11px] text-white/55">Tip: usa variables como {'{{lead.email}}'} o {'{{lead.first_name}}'}.</div>
+
+      <div>
+        <label className="text-xs text-white/60">To</label>
         <input
-          value={props.config.label}
-          onChange={(e) => props.onChange({ ...props.config, label: e.target.value })}
-          placeholder="Ej: Movido a Contactado"
+          value={props.config.to}
+          onChange={(e) => props.onChange({ ...props.config, to: e.target.value })}
+          placeholder="{{lead.email}}"
           className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+        />
+      </div>
+
+      <div>
+        <label className="text-xs text-white/60">Subject</label>
+        <input
+          value={props.config.subject}
+          onChange={(e) => props.onChange({ ...props.config, subject: e.target.value })}
+          placeholder="Asunto del email"
+          className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+        />
+      </div>
+
+      <div>
+        <label className="text-xs text-white/60">Body</label>
+        <textarea
+          value={props.config.body}
+          onChange={(e) => props.onChange({ ...props.config, body: e.target.value })}
+          placeholder="Hola {{lead.first_name}}, …"
+          rows={8}
+          className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+        />
+      </div>
+    </div>
+  );
+}
+
+function ActionSendSmsFields(props: { config: ActionSendSmsConfig; onChange: (next: ActionConfig) => void }) {
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="text-[11px] text-white/55">Tip: SMS recomendado 160–300 caracteres. Variables: {'{{lead.phone}}'}.</div>
+
+      <div>
+        <label className="text-xs text-white/60">To</label>
+        <input
+          value={props.config.to}
+          onChange={(e) => props.onChange({ ...props.config, to: e.target.value })}
+          placeholder="{{lead.phone}}"
+          className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
+        />
+      </div>
+
+      <div>
+        <label className="text-xs text-white/60">Body</label>
+        <textarea
+          value={props.config.body}
+          onChange={(e) => props.onChange({ ...props.config, body: e.target.value })}
+          placeholder="Hola {{lead.first_name}}…"
+          rows={6}
+          className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/40"
         />
       </div>
     </div>
