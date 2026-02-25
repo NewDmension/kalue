@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { useWorkspace } from '@/components/app/WorkspaceContext';
-import { GripVertical, X, Copy } from 'lucide-react';
+import { GripVertical, X, Copy, FileText } from 'lucide-react';
 
 type PipelineRow = {
   id: string;
@@ -168,8 +168,13 @@ export default function PipelinePage() {
 
   const [error, setError] = useState<string | null>(null);
 
-  // Selección + drag “aura”
+  // Selección
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+
+  // Modal lead (SOLO se abre desde el icono)
+  const [leadModalId, setLeadModalId] = useState<string | null>(null);
+
+  // Selección + drag “aura”
   const [draggingLeadId, setDraggingLeadId] = useState<string | null>(null);
   const [draggingStageId, setDraggingStageId] = useState<string | null>(null);
   const [dragOverStageIndex, setDragOverStageIndex] = useState<number | null>(null);
@@ -208,6 +213,15 @@ export default function PipelinePage() {
   // ✅ Anti doble-drop + anti race (muy importante)
   const dropHandledRef = useRef(false);
   const pendingMoveIdRef = useRef<string | null>(null);
+
+  // ✅ Bloqueo “click fantasma” post-drag (evita abrir modal / seleccionar raro al soltar)
+  const justDraggedRef = useRef(false);
+  function markJustDragged(): void {
+    justDraggedRef.current = true;
+    window.setTimeout(() => {
+      justDraggedRef.current = false;
+    }, 250);
+  }
 
   function nextMoveId(): string {
     return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -248,10 +262,19 @@ export default function PipelinePage() {
     return null;
   }, [leadsByStage, selectedLeadId]);
 
-  const selectedLeadStageName = useMemo(() => {
-    if (!selectedLead) return null;
-    return stageNameById.get(selectedLead.stage_id) ?? null;
-  }, [selectedLead, stageNameById]);
+  const modalLead = useMemo(() => {
+    if (!leadModalId) return null;
+    for (const arr of Object.values(leadsByStage)) {
+      const found = arr.find((l) => l.id === leadModalId);
+      if (found) return found;
+    }
+    return null;
+  }, [leadsByStage, leadModalId]);
+
+  const modalLeadStageName = useMemo(() => {
+    if (!modalLead) return null;
+    return stageNameById.get(modalLead.stage_id) ?? null;
+  }, [modalLead, stageNameById]);
 
   async function loadPipelines(): Promise<void> {
     if (!activeWorkspaceId) {
@@ -696,6 +719,7 @@ export default function PipelinePage() {
   // Load board when pipeline selected
   useEffect(() => {
     setSelectedLeadId(null);
+    setLeadModalId(null);
     if (!selectedPipelineId || !activeWorkspaceId) {
       setStages([]);
       setLeadsByStage({});
@@ -707,15 +731,15 @@ export default function PipelinePage() {
 
   // ✅ cerrar modal lead con ESC
   useEffect(() => {
-    if (!selectedLeadId) return;
+    if (!leadModalId) return;
 
     const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === 'Escape') setSelectedLeadId(null);
+      if (ev.key === 'Escape') setLeadModalId(null);
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedLeadId]);
+  }, [leadModalId]);
 
   // Drag handlers (STAGES)
   function onDragStartStage(e: DragEvent, payload: StageDragPayload): void {
@@ -746,6 +770,7 @@ export default function PipelinePage() {
     setDraggingLeadId(null);
     setDragOverLead(null);
     dropHandledRef.current = false;
+    markJustDragged(); // ✅ evita click fantasma al soltar
   }
 
   function onDragOverColumn(e: DragEvent): void {
@@ -920,7 +945,7 @@ export default function PipelinePage() {
   const canCreateStage = Boolean(activeWorkspaceId && selectedPipelineId);
   const canCreatePipeline = Boolean(activeWorkspaceId);
 
-  const leadModalOpen = Boolean(selectedLead);
+  const leadModalOpen = Boolean(modalLead);
 
   return (
     <div className="card-glass border border-white/10 rounded-2xl p-6 text-white">
@@ -1143,7 +1168,10 @@ export default function PipelinePage() {
                                         });
                                       }}
                                       onDragEnd={onDragEndLead}
-                                      onClick={() => setSelectedLeadId(lead.id)}
+                                      onClick={() => {
+                                        if (justDraggedRef.current) return;
+                                        setSelectedLeadId(lead.id);
+                                      }}
                                       className={cx(
                                         'cursor-grab active:cursor-grabbing rounded-xl border bg-black/25 p-3 transition',
                                         aura,
@@ -1153,7 +1181,28 @@ export default function PipelinePage() {
                                       role="button"
                                       tabIndex={0}
                                     >
-                                      <p className="text-sm font-semibold text-white truncate">{lead.full_name ?? 'Sin nombre'}</p>
+                                      <div className="flex items-start justify-between gap-2">
+                                        <p className="text-sm font-semibold text-white truncate">{lead.full_name ?? 'Sin nombre'}</p>
+
+                                        {/* ✅ Icono “ficha”: SOLO aquí se abre el modal */}
+                                        <button
+                                          type="button"
+                                          title="Ver ficha"
+                                          onMouseDown={(ev) => {
+                                            ev.preventDefault();
+                                            ev.stopPropagation();
+                                          }}
+                                          onClick={(ev) => {
+                                            ev.preventDefault();
+                                            ev.stopPropagation();
+                                            setSelectedLeadId(lead.id); // mantiene aura
+                                            setLeadModalId(lead.id); // ✅ abre modal
+                                          }}
+                                          className="shrink-0 rounded-lg border border-white/10 bg-white/5 p-1.5 text-white/80 hover:bg-white/10"
+                                        >
+                                          <FileText className="h-4 w-4 text-white/65" />
+                                        </button>
+                                      </div>
 
                                       <div className="mt-1 space-y-1">
                                         {lead.email ? <p className="text-[12px] text-white/70 truncate">{lead.email}</p> : null}
@@ -1230,21 +1279,21 @@ export default function PipelinePage() {
         </p>
       </div>
 
-      {/* ✅ MODAL LEAD (centrado, reemplaza panel derecho) */}
+      {/* ✅ MODAL LEAD (centrado) — SOLO icono */}
       {leadModalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
-          <div className="absolute inset-0 bg-black/60" onClick={() => setSelectedLeadId(null)} />
+          <div className="absolute inset-0 bg-black/60" onClick={() => setLeadModalId(null)} />
           <div className="relative w-full max-w-[720px] rounded-2xl border border-white/10 bg-black/60 backdrop-blur-[10px] p-5">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-xs text-white/55">Lead</p>
-                <p className="mt-0.5 text-lg font-semibold text-white truncate">{selectedLead?.full_name ?? 'Sin nombre'}</p>
-                <p className="mt-0.5 text-xs text-white/55 truncate">{selectedLead?.id ?? '—'}</p>
+                <p className="mt-0.5 text-lg font-semibold text-white truncate">{modalLead?.full_name ?? 'Sin nombre'}</p>
+                <p className="mt-0.5 text-xs text-white/55 truncate">{modalLead?.id ?? '—'}</p>
               </div>
 
               <button
                 type="button"
-                onClick={() => setSelectedLeadId(null)}
+                onClick={() => setLeadModalId(null)}
                 className="rounded-xl border border-white/10 bg-white/5 p-2 text-white/80 hover:bg-white/10"
                 title="Cerrar"
               >
@@ -1255,16 +1304,16 @@ export default function PipelinePage() {
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => void (selectedLead?.id ? copyToClipboard(selectedLead.id) : Promise.resolve(false))}
+                onClick={() => void (modalLead?.id ? copyToClipboard(modalLead.id) : Promise.resolve(false))}
                 className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/80 hover:bg-white/10"
               >
                 <Copy className="h-4 w-4 text-white/60" />
                 Copiar ID
               </button>
 
-              {selectedLead?.id ? (
+              {modalLead?.id ? (
                 <Link
-                  href={`/leads?selected=${encodeURIComponent(selectedLead.id)}`}
+                  href={`/leads?selected=${encodeURIComponent(modalLead.id)}`}
                   className="inline-flex items-center justify-center rounded-xl border border-indigo-400/25 bg-indigo-500/10 px-3 py-2 text-xs text-white hover:bg-indigo-500/15"
                 >
                   Ver lead
@@ -1276,21 +1325,21 @@ export default function PipelinePage() {
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <p className="text-xs text-white/55">Contacto</p>
                 <div className="mt-2 space-y-1">
-                  {selectedLead?.email ? (
-                    <p className="text-sm text-white/85 truncate">{selectedLead.email}</p>
+                  {modalLead?.email ? (
+                    <p className="text-sm text-white/85 truncate">{modalLead.email}</p>
                   ) : (
                     <p className="text-sm text-white/50">—</p>
                   )}
-                  {selectedLead?.phone ? <p className="text-sm text-white/85 truncate">{selectedLead.phone}</p> : null}
+                  {modalLead?.phone ? <p className="text-sm text-white/85 truncate">{modalLead.phone}</p> : null}
                 </div>
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <p className="text-xs text-white/55">Estado</p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {selectedLead?.source ? (
+                  {modalLead?.source ? (
                     <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
-                      {selectedLead.source}
+                      {modalLead.source}
                     </span>
                   ) : (
                     <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/45">
@@ -1298,26 +1347,29 @@ export default function PipelinePage() {
                     </span>
                   )}
 
-                  {selectedLead?.status ? (
+                  {modalLead?.status ? (
                     <span className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
-                      {selectedLead.status}
+                      {modalLead.status}
                     </span>
                   ) : null}
 
-                  {selectedLeadStageName ? (
+                  {modalLeadStageName ? (
                     <span className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-100">
-                      {selectedLeadStageName}
+                      {modalLeadStageName}
                     </span>
                   ) : null}
                 </div>
 
                 <div className="mt-3 text-xs text-white/55 space-y-1">
                   <p>
-                    Creado: <span className="text-white/75">{selectedLead?.created_at ? formatLocal(selectedLead.created_at) : '—'}</span>
+                    Creado:{' '}
+                    <span className="text-white/75">{modalLead?.created_at ? formatLocal(modalLead.created_at) : '—'}</span>
                   </p>
                   <p>
                     Último cambio stage:{' '}
-                    <span className="text-white/75">{selectedLead?.stage_changed_at ? formatLocal(selectedLead.stage_changed_at) : '—'}</span>
+                    <span className="text-white/75">
+                      {modalLead?.stage_changed_at ? formatLocal(modalLead.stage_changed_at) : '—'}
+                    </span>
                   </p>
                   <p>
                     Pipeline: <span className="text-white/75">{selectedPipeline?.name ?? '—'}</span>
@@ -1328,9 +1380,12 @@ export default function PipelinePage() {
               <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-3">
                 <p className="text-xs text-white/55">Labels</p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {(selectedLead?.labels ?? []).length > 0 ? (
-                    (selectedLead?.labels ?? []).map((lab) => (
-                      <span key={lab} className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75">
+                  {(modalLead?.labels ?? []).length > 0 ? (
+                    (modalLead?.labels ?? []).map((lab) => (
+                      <span
+                        key={lab}
+                        className="rounded-lg border border-white/10 bg-black/20 px-2 py-0.5 text-[11px] text-white/75"
+                      >
                         {lab}
                       </span>
                     ))
@@ -1342,14 +1397,14 @@ export default function PipelinePage() {
 
               <div className="md:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-3">
                 <p className="text-xs text-white/55">Notes</p>
-                <p className="mt-2 whitespace-pre-wrap text-sm text-white/80">{selectedLead?.notes?.trim() ? selectedLead.notes : '—'}</p>
+                <p className="mt-2 whitespace-pre-wrap text-sm text-white/80">{modalLead?.notes?.trim() ? modalLead.notes : '—'}</p>
               </div>
             </div>
 
             <div className="mt-5 flex items-center justify-end">
               <button
                 type="button"
-                onClick={() => setSelectedLeadId(null)}
+                onClick={() => setLeadModalId(null)}
                 className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm text-white/80 hover:bg-white/10"
               >
                 Cerrar
