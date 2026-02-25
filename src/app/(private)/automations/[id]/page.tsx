@@ -120,6 +120,32 @@ function buildNiceCurvePath(x1: number, y1: number, x2: number, y2: number): str
   return `M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`;
 }
 
+/** UI constants (keep ports aligned with visuals) */
+const NODE_W = 250;
+const NODE_PORT_SIZE = 12; // px
+const NODE_PORT_HALF = NODE_PORT_SIZE / 2; // 6
+const NODE_PORT_Y = 56; // px from top of card (visually centered)
+
+function getPortWorld(n: NodeVM, side: 'left' | 'right'): { x: number; y: number } {
+  // We position port dots at left:-6 (center at x=0) and left:(NODE_W-6) (center at x=NODE_W)
+  const x = side === 'left' ? n.ui.x : n.ui.x + NODE_W;
+  const y = n.ui.y + NODE_PORT_Y;
+  return { x, y };
+}
+
+function isHTMLElement(v: unknown): v is HTMLElement {
+  return typeof v === 'object' && v !== null && 'nodeType' in (v as Record<string, unknown>);
+}
+
+function closestData(el: HTMLElement, attr: string): HTMLElement | null {
+  let cur: HTMLElement | null = el;
+  while (cur) {
+    if (cur.getAttribute(attr) !== null) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
 export default function AutomationBuilderPage() {
   const params = useParams<{ id: string }>();
   const workflowId = params.id;
@@ -244,7 +270,7 @@ export default function AutomationBuilderPage() {
     const nodeIdSet = new Set(vmNodes.map((n) => n.id));
     setEdges(vmEdges.filter((e) => nodeIdSet.has(e.from_node_id) && nodeIdSet.has(e.to_node_id)));
 
-    // Center view nicely around content on first load
+    // Center view around content on load
     queueMicrotask(() => {
       const rect = canvasRef.current?.getBoundingClientRect() ?? null;
       if (!rect) return;
@@ -258,8 +284,8 @@ export default function AutomationBuilderPage() {
       const ys = vmNodes.map((n) => n.ui.y);
       const minX = Math.min(...xs);
       const minY = Math.min(...ys);
-      const maxX = Math.max(...xs) + 260;
-      const maxY = Math.max(...ys) + 160;
+      const maxX = Math.max(...xs) + NODE_W + 120;
+      const maxY = Math.max(...ys) + 180;
 
       const contentW = Math.max(1, maxX - minX);
       const contentH = Math.max(1, maxY - minY);
@@ -278,7 +304,7 @@ export default function AutomationBuilderPage() {
     void load();
   }, [load]);
 
-  // Space key helper (optional)
+  // Space helper
   useEffect(() => {
     const onDown = (ev: KeyboardEvent) => {
       if (ev.code === 'Space') isSpaceDownRef.current = true;
@@ -294,10 +320,9 @@ export default function AutomationBuilderPage() {
     };
   }, []);
 
-  // Global mouse move for dragging node / panning
+  // Global mouse move for node drag / pan
   useEffect(() => {
     const onMove = (ev: MouseEvent) => {
-      // node drag
       const d = draggingNodeRef.current;
       if (d) {
         ev.preventDefault();
@@ -308,7 +333,6 @@ export default function AutomationBuilderPage() {
         return;
       }
 
-      // pan
       const p = panningRef.current;
       if (p) {
         ev.preventDefault();
@@ -670,10 +694,12 @@ export default function AutomationBuilderPage() {
     const isMiddle = ev.button === 1;
     const isLeft = ev.button === 0;
 
-    // Pan con LEFT sólo si clicas el fondo (no un nodo)
-    const isBackground = ev.currentTarget === ev.target;
+    // Pan ONLY if clicking on background (not on node or toolbar overlay).
+    const targetEl = isHTMLElement(ev.target) ? ev.target : null;
+    const clickedNode = targetEl ? closestData(targetEl, 'data-node') : null;
+    if (clickedNode) return;
 
-    if (!(isMiddle || isSpaceDownRef.current || (isLeft && isBackground))) return;
+    if (!(isMiddle || isSpaceDownRef.current || isLeft)) return;
 
     ev.preventDefault();
     ev.stopPropagation();
@@ -709,7 +735,6 @@ export default function AutomationBuilderPage() {
     const rect = canvasRef.current?.getBoundingClientRect() ?? null;
     if (!rect) return;
 
-    // Trackpad/Mouse wheel
     const delta = ev.deltaY;
     const zoomFactor = delta > 0 ? 0.92 : 1.08;
 
@@ -735,7 +760,8 @@ export default function AutomationBuilderPage() {
     const rect = canvasRef.current?.getBoundingClientRect() ?? null;
     const prev = viewRef.current;
     const nextScale = clamp(prev.scale * factor, 0.35, 2.5);
-    if (!rect || nextScale === prev.scale) {
+
+    if (!rect) {
       setView((p) => ({ ...p, scale: nextScale }));
       return;
     }
@@ -765,8 +791,8 @@ export default function AutomationBuilderPage() {
     const ys = nodes.map((n) => n.ui.y);
     const minX = Math.min(...xs);
     const minY = Math.min(...ys);
-    const maxX = Math.max(...xs) + 260;
-    const maxY = Math.max(...ys) + 160;
+    const maxX = Math.max(...xs) + NODE_W + 120;
+    const maxY = Math.max(...ys) + 180;
 
     const contentW = Math.max(1, maxX - minX);
     const contentH = Math.max(1, maxY - minY);
@@ -784,29 +810,31 @@ export default function AutomationBuilderPage() {
 
     const out: ReactElement[] = [];
 
-    // Real edges
     for (const e of edges) {
       const a = map.get(e.from_node_id);
       const b = map.get(e.to_node_id);
       if (!a || !b) continue;
 
-      // anchor points (world)
-      const x1 = a.ui.x + 240;
-      const y1 = a.ui.y + 52;
-      const x2 = b.ui.x - 10;
-      const y2 = b.ui.y + 52;
+      const p1 = getPortWorld(a, 'right');
+      const p2 = getPortWorld(b, 'left');
+
+      // slight visual offsets so the curve doesn't “bite” into the dot
+      const x1 = p1.x + 2;
+      const y1 = p1.y;
+      const x2 = p2.x - 2;
+      const y2 = p2.y;
 
       const d = buildNiceCurvePath(x1, y1, x2, y2);
       const isSelected = selectedEdgeId === e.id;
 
-      // clickable stroke (slightly thicker but invisible)
+      // hit path
       out.push(
         <path
           key={`${e.id}__hit`}
           d={d}
           fill="none"
           stroke="rgba(0,0,0,0)"
-          strokeWidth={10}
+          strokeWidth={14}
           style={{ cursor: 'pointer', pointerEvents: 'stroke' }}
           onClick={(ev) => {
             ev.preventDefault();
@@ -819,32 +847,31 @@ export default function AutomationBuilderPage() {
         />
       );
 
-      // visual stroke
+      // visual path (thin, no arrow)
       out.push(
         <path
           key={e.id}
           d={d}
           fill="none"
           stroke={isSelected ? 'rgba(99,102,241,0.55)' : 'rgba(255,255,255,0.18)'}
-          strokeWidth={isSelected ? 2.2 : 1.6}
+          strokeWidth={isSelected ? 2.0 : 1.4}
           strokeLinecap="round"
           strokeLinejoin="round"
           style={{ pointerEvents: 'none' }}
         />
       );
-
-      // end dot
-      out.push(<circle key={`${e.id}__dot`} cx={x2} cy={y2} r={3} fill={isSelected ? 'rgba(99,102,241,0.55)' : 'rgba(255,255,255,0.22)'} />);
     }
 
-    // Preview edge while connecting
+    // Preview
     if (connectMode && connectFromId && connectPreviewWorld) {
       const a = map.get(connectFromId);
       if (a) {
-        const x1 = a.ui.x + 240;
-        const y1 = a.ui.y + 52;
+        const p1 = getPortWorld(a, 'right');
+        const x1 = p1.x + 2;
+        const y1 = p1.y;
         const x2 = connectPreviewWorld.x;
         const y2 = connectPreviewWorld.y;
+
         const d = buildNiceCurvePath(x1, y1, x2, y2);
 
         out.push(
@@ -853,7 +880,7 @@ export default function AutomationBuilderPage() {
             d={d}
             fill="none"
             stroke="rgba(99,102,241,0.55)"
-            strokeWidth={2.0}
+            strokeWidth={1.8}
             strokeLinecap="round"
             strokeDasharray="6 6"
             style={{ pointerEvents: 'none' }}
@@ -973,7 +1000,7 @@ export default function AutomationBuilderPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="card-glass relative h-[70vh] rounded-2xl border border-white/10 bg-black/20 backdrop-blur lg:col-span-2">
           {/* Toolbar left */}
-          <div className="absolute left-3 top-3 z-10 flex items-center gap-2">
+          <div className="absolute left-3 top-3 z-20 flex items-center gap-2">
             <button
               type="button"
               onClick={() => void createNode('trigger')}
@@ -993,8 +1020,8 @@ export default function AutomationBuilderPage() {
             </button>
           </div>
 
-          {/* Toolbar right (zoom/pan helpers) */}
-          <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+          {/* Toolbar right */}
+          <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
             <button
               type="button"
               onClick={() => zoomBy(1.12)}
@@ -1033,11 +1060,36 @@ export default function AutomationBuilderPage() {
             className={cx(
               'absolute inset-0 overflow-hidden rounded-2xl',
               'cursor-grab active:cursor-grabbing',
-              'bg-[radial-gradient(circle_at_1px_1px,rgba(255,255,255,0.08)_1px,transparent_0)] bg-[length:28px_28px]'
+              'bg-black/10'
             )}
           >
-            {/* World layer */}
+            {/* World layer (everything inside pans/zooms together, INCLUDING the dotted background) */}
             <div className="absolute inset-0" style={worldTransformStyle}>
+              {/* Dotted background that MOVES with pan */}
+              <div
+                className="absolute"
+                style={{
+                  left: -4000,
+                  top: -4000,
+                  width: 8000,
+                  height: 8000,
+                  backgroundImage: 'radial-gradient(circle at 1px 1px, rgba(255,255,255,0.10) 1px, transparent 0)',
+                  backgroundSize: '26px 26px',
+                  opacity: 0.55,
+                }}
+              />
+              {/* Subtle vignette */}
+              <div
+                className="pointer-events-none absolute"
+                style={{
+                  left: -4000,
+                  top: -4000,
+                  width: 8000,
+                  height: 8000,
+                  background: 'radial-gradient(ellipse at center, rgba(0,0,0,0) 0%, rgba(0,0,0,0.55) 70%, rgba(0,0,0,0.75) 100%)',
+                }}
+              />
+
               {/* SVG edges */}
               <svg className="absolute inset-0 h-full w-full" style={{ overflow: 'visible' }}>
                 {edgesSvg}
@@ -1051,7 +1103,7 @@ export default function AutomationBuilderPage() {
                 return (
                   <div
                     key={n.id}
-                    onMouseDown={(ev) => ev.stopPropagation()}
+                    data-node=""
                     onClick={(ev) => {
                       ev.stopPropagation();
                       onNodeClick(n.id);
@@ -1081,9 +1133,25 @@ export default function AutomationBuilderPage() {
                       </button>
                     </div>
 
-                    {/* tiny connection hints (visual only) */}
-                    <div className="pointer-events-none absolute -left-2 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border border-white/10 bg-white/5" />
-                    <div className="pointer-events-none absolute -right-2 top-1/2 h-3 w-3 -translate-y-1/2 rounded-full border border-white/10 bg-white/5" />
+                    {/* Ports (the curve endpoints are computed to match these) */}
+                    <div
+                      className="pointer-events-none absolute rounded-full border border-white/10 bg-white/5"
+                      style={{
+                        width: NODE_PORT_SIZE,
+                        height: NODE_PORT_SIZE,
+                        left: -NODE_PORT_HALF,
+                        top: NODE_PORT_Y - NODE_PORT_HALF,
+                      }}
+                    />
+                    <div
+                      className="pointer-events-none absolute rounded-full border border-white/10 bg-white/5"
+                      style={{
+                        width: NODE_PORT_SIZE,
+                        height: NODE_PORT_SIZE,
+                        left: NODE_W - NODE_PORT_HALF,
+                        top: NODE_PORT_Y - NODE_PORT_HALF,
+                      }}
+                    />
                   </div>
                 );
               })}
@@ -1091,7 +1159,7 @@ export default function AutomationBuilderPage() {
 
             {/* Hint overlay */}
             <div className="pointer-events-none absolute bottom-3 left-3 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[11px] text-white/70">
-              Arrastra el fondo para mover · Rueda para zoom · (Delete) borra conexión seleccionada
+              Arrastra el fondo para mover · Rueda para zoom · Click en cable para seleccionar · (Delete) borra cable
             </div>
           </div>
         </div>
