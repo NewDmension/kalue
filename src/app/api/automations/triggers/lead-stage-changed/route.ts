@@ -14,6 +14,27 @@ type Body = {
   toStageId: string;
 };
 
+type WorkflowRow = { id: string; status: string };
+
+type NodeRow = {
+  id: string;
+  workflow_id: string;
+  type: string;
+  config: unknown;
+};
+
+type EdgeRow = {
+  id: string;
+  workflow_id: string;
+  from_node_id: string;
+  to_node_id: string;
+};
+
+type TriggerConfig = {
+  event: 'lead.stage_changed';
+  toStageId?: string;
+};
+
 function json(status: number, payload: Record<string, unknown>) {
   return new NextResponse(JSON.stringify(payload), {
     status,
@@ -27,7 +48,56 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function pickStr(obj: Record<string, unknown>, key: string): string | null {
   const v = obj[key];
-  return typeof v === 'string' && v.trim() ? v : null;
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
+function pickPgErrorCode(err: unknown): string | null {
+  if (!isRecord(err)) return null;
+  const code = err.code;
+  return typeof code === 'string' && code.trim() ? code.trim() : null;
+}
+
+function asTriggerConfig(v: unknown): TriggerConfig | null {
+  if (!isRecord(v)) return null;
+  const ev = v.event;
+  if (ev !== 'lead.stage_changed') return null;
+
+  const toStageRaw = v.toStageId;
+  const toStageId = typeof toStageRaw === 'string' && toStageRaw.trim() ? toStageRaw.trim() : undefined;
+
+  return { event: 'lead.stage_changed', toStageId };
+}
+
+function toNodeRows(rows: unknown): NodeRow[] {
+  if (!Array.isArray(rows)) return [];
+  const out: NodeRow[] = [];
+  for (const r of rows) {
+    if (!isRecord(r)) continue;
+    const id = pickStr(r, 'id');
+    const workflowId = pickStr(r, 'workflow_id');
+    const type = pickStr(r, 'type');
+    // config puede ser cualquier cosa
+    const config = (r as { config?: unknown }).config;
+
+    if (!id || !workflowId || !type) continue;
+    out.push({ id, workflow_id: workflowId, type, config });
+  }
+  return out;
+}
+
+function toEdgeRows(rows: unknown): EdgeRow[] {
+  if (!Array.isArray(rows)) return [];
+  const out: EdgeRow[] = [];
+  for (const r of rows) {
+    if (!isRecord(r)) continue;
+    const id = pickStr(r, 'id');
+    const workflowId = pickStr(r, 'workflow_id');
+    const from = pickStr(r, 'from_node_id');
+    const to = pickStr(r, 'to_node_id');
+    if (!id || !workflowId || !from || !to) continue;
+    out.push({ id, workflow_id: workflowId, from_node_id: from, to_node_id: to });
+  }
+  return out;
 }
 
 export async function POST(req: NextRequest) {
@@ -51,8 +121,7 @@ export async function POST(req: NextRequest) {
     return json(400, { ok: false, error: 'missing_fields' });
   }
 
-  // 1) Busca workflows activos del workspace
-  // Nota: asumimos que workflow_nodes.config contiene trigger {event,toStageId?}
+  // 1) Workflows activos del workspace
   const { data: wfs, error: wErr } = await sb
     .from('workflows')
     .select('id, status')
@@ -60,53 +129,64 @@ export async function POST(req: NextRequest) {
     .eq('status', 'active');
 
   if (wErr) return json(500, { ok: false, error: 'workflows_fetch_failed', detail: wErr.message });
-  const workflowIds = (wfs ?? []).map((w) => w.id).filter((x): x is string => typeof x === 'string');
+
+  const workflowIds: string[] = Array.isArray(wfs)
+    ? (wfs as WorkflowRow[])
+        .map((w) => (typeof w.id === 'string' ? w.id : ''))
+        .filter((id) => id.length > 0)
+    : [];
 
   if (workflowIds.length === 0) return json(200, { ok: true, triggered: 0 });
 
-  // 2) Para cada workflow, localiza nodos trigger compatibles y edges desde trigger → actions
-  // (v1 simple: si hay múltiples triggers, disparará el primero que matchee)
-  const { data: nodes, error: nErr } = await sb
+  // 2) Nodes + edges del grafo
+  const { data: nodesRaw, error: nErr } = await sb
     .from('workflow_nodes')
     .select('id, workflow_id, type, config')
     .in('workflow_id', workflowIds);
 
   if (nErr) return json(500, { ok: false, error: 'nodes_fetch_failed', detail: nErr.message });
 
-  const { data: edges, error: eErr } = await sb
+  const { data: edgesRaw, error: eErr } = await sb
     .from('workflow_edges')
     .select('id, workflow_id, from_node_id, to_node_id')
     .in('workflow_id', workflowIds);
 
-  // Si tu tabla de edges se llama distinto, cambia "workflow_edges".
   if (eErr) return json(500, { ok: false, error: 'edges_fetch_failed', detail: eErr.message });
 
-  type TriggerNode = { id: string; workflow_id: string; config: unknown };
-  const triggers: TriggerNode[] =
-    (nodes ?? [])
-      .filter((r) => r && r.type === 'trigger' && typeof r.id === 'string' && typeof r.workflow_id === 'string')
-      .map((r) => ({ id: r.id as string, workflow_id: r.workflow_id as string, config: (r as { config: unknown }).config }));
+  const nodes: NodeRow[] = toNodeRows(nodesRaw);
+  const edges: EdgeRow[] = toEdgeRows(edgesRaw);
 
+  // 2.1) triggers que matchean lead.stage_changed (+ filtro opcional toStageId)
   const matches: Array<{ workflowId: string; triggerNodeId: string }> = [];
-  for (const t of triggers) {
-    const cfg = isRecord(t.config) ? t.config : {};
-    if (cfg.event !== 'lead.stage_changed') continue;
-    const onlyToStage = typeof cfg.toStageId === 'string' && cfg.toStageId.trim() ? cfg.toStageId.trim() : null;
-    if (onlyToStage && onlyToStage !== toStageId) continue;
-    matches.push({ workflowId: t.workflow_id, triggerNodeId: t.id });
+
+  for (const n of nodes) {
+    if (n.type !== 'trigger') continue;
+    const cfg = asTriggerConfig(n.config);
+    if (!cfg) continue;
+
+    if (cfg.toStageId && cfg.toStageId !== toStageId) continue;
+
+    matches.push({ workflowId: n.workflow_id, triggerNodeId: n.id });
   }
 
   if (matches.length === 0) return json(200, { ok: true, triggered: 0 });
 
-  // 3) Crea workflow_runs + steps iniciales (nodos destino de edges desde trigger)
+  // 3) Crea workflow_runs + steps iniciales (destinos de edges desde trigger)
   let triggered = 0;
 
   for (const m of matches) {
-    const outgoing = (edges ?? [])
-      .filter((e) => e && e.from_node_id === m.triggerNodeId && typeof e.to_node_id === 'string')
-      .map((e) => e.to_node_id as string);
+    const outgoing: string[] = edges
+      .filter((e) => e.from_node_id === m.triggerNodeId)
+      .map((e) => e.to_node_id);
 
     if (outgoing.length === 0) continue;
+
+    const context: Record<string, unknown> = {
+      leadId,
+      pipelineId,
+      fromStageId: fromStageId ?? null,
+      toStageId,
+    };
 
     const { data: runRow, error: rErr2 } = await sb
       .from('workflow_runs')
@@ -114,24 +194,36 @@ export async function POST(req: NextRequest) {
         workflow_id: m.workflowId,
         workspace_id: workspaceId,
         status: 'running',
-        context: { leadId, pipelineId, fromStageId, toStageId },
+        context,
       })
       .select('id')
       .single();
 
     if (rErr2 || !runRow?.id) continue;
 
-    const runId = runRow.id as string;
+    const runId = String(runRow.id);
 
     // Insert steps (idempotencia por unique(run_id,node_id))
-    const stepRows = outgoing.map((nodeId) => ({
-      run_id: runId,
-      node_id: nodeId,
-      status: 'queued',
-      scheduled_for: new Date().toISOString(),
-    }));
+    const nowIso = new Date().toISOString();
+    const stepRows: Array<{ run_id: string; node_id: string; status: 'queued'; scheduled_for: string }> = outgoing.map(
+      (nodeId: string) => ({
+        run_id: runId,
+        node_id: nodeId,
+        status: 'queued',
+        scheduled_for: nowIso,
+      })
+    );
 
-    await sb.from('workflow_run_steps').insert(stepRows, { returning: 'minimal' });
+    const ins = await sb.from('workflow_run_steps').insert(stepRows);
+    if (ins.error) {
+      // 23505 = unique violation (idempotencia). Lo ignoramos.
+      const code = pickPgErrorCode(ins.error);
+      if (code !== '23505') {
+        // eslint-disable-next-line no-console
+        console.error('insert workflow_run_steps failed', ins.error.message);
+        continue;
+      }
+    }
 
     triggered += 1;
   }
