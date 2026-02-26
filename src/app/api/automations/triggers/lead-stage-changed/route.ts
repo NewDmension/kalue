@@ -170,7 +170,6 @@ export async function POST(req: NextRequest) {
   }
 
   if (matches.length === 0) return json(200, { ok: true, triggered: 0 });
-
   // 3) Crea workflow_runs + steps iniciales (destinos de edges desde trigger)
   let triggered = 0;
 
