@@ -4,6 +4,10 @@
     {
       "path": "/api/automations/runner/cron",
       "schedule": "*/1 * * * *"
+    },
+    {
+      "path": "/api/automations/outbox/cron",
+      "schedule": "*/1 * * * *"
     }
   ]
 }
