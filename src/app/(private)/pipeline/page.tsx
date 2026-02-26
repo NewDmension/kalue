@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { useWorkspace } from '@/components/app/WorkspaceContext';
 import { GripVertical, X, Copy, FileText } from 'lucide-react';
+import { triggerLeadStageChanged } from '@/lib/automations/triggers/triggerLeadStageChanged';
 
 type PipelineRow = {
   id: string;
@@ -821,22 +822,32 @@ export default function PipelinePage() {
     });
 
     const result = await persistMoveLead({
+  leadId: payload.leadId,
+  pipelineId: payload.pipelineId,
+  toStageId,
+  toPosition: toIndex,
+  moveId,
+});
+
+if (pendingMoveIdRef.current !== moveId) return;
+
+if (!result.ok) {
+  setLeadsByStage(snapshot);
+  if (result.reason) setError(`move_lead_failed: ${result.reason}`);
+} else {
+  // ✅ SOLO si el move se ha persistido OK
+  if (payload.fromStageId !== toStageId) {
+    await triggerLeadStageChanged({
       leadId: payload.leadId,
       pipelineId: payload.pipelineId,
+      fromStageId: payload.fromStageId,
       toStageId,
-      toPosition: toIndex,
-      moveId,
     });
+  }
+}
 
-    if (pendingMoveIdRef.current !== moveId) return;
-
-    if (!result.ok) {
-      setLeadsByStage(snapshot);
-      if (result.reason) setError(`move_lead_failed: ${result.reason}`);
-    }
-
-    setDragOverLead(null);
-    setDraggingLeadId(null);
+setDragOverLead(null);
+setDraggingLeadId(null);
   }
 
   // Stage gaps
@@ -923,22 +934,32 @@ export default function PipelinePage() {
     });
 
     const result = await persistMoveLead({
+  leadId: payload.leadId,
+  pipelineId: payload.pipelineId,
+  toStageId,
+  toPosition: toIndex,
+  moveId,
+});
+
+if (pendingMoveIdRef.current !== moveId) return;
+
+if (!result.ok) {
+  setLeadsByStage(snapshot);
+  if (result.reason) setError(`move_lead_failed: ${result.reason}`);
+} else {
+  // ✅ SOLO si el move se ha persistido OK
+  if (payload.fromStageId !== toStageId) {
+    await triggerLeadStageChanged({
       leadId: payload.leadId,
       pipelineId: payload.pipelineId,
+      fromStageId: payload.fromStageId,
       toStageId,
-      toPosition: toIndex,
-      moveId,
     });
+  }
+}
 
-    if (pendingMoveIdRef.current !== moveId) return;
-
-    if (!result.ok) {
-      setLeadsByStage(snapshot);
-      if (result.reason) setError(`move_lead_failed: ${result.reason}`);
-    }
-
-    setDragOverLead(null);
-    setDraggingLeadId(null);
+setDragOverLead(null);
+setDraggingLeadId(null);
   }
 
   const boardHasStages = stages.length > 0;
