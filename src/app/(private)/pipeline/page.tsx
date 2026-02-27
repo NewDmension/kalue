@@ -6,7 +6,6 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { useWorkspace } from '@/components/app/WorkspaceContext';
 import { GripVertical, X, Copy, FileText } from 'lucide-react';
-import { triggerLeadStageChanged } from '@/lib/automations/triggers/triggerLeadStageChanged';
 
 type PipelineRow = {
   id: string;
@@ -465,6 +464,35 @@ export default function PipelinePage() {
     });
   }
 
+  // ✅ FIX: no requiere workspaceId en args (usa activeWorkspaceId)
+  async function triggerLeadStageChanged(args: {
+    leadId: string;
+    pipelineId: string;
+    fromStageId?: string;
+    toStageId: string;
+  }): Promise<void> {
+    if (!activeWorkspaceId) return;
+
+    const token = await getAccessToken();
+    if (!token) return;
+
+    await fetch('/api/automations/triggers/lead-stage-changed', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'x-workspace-id': activeWorkspaceId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        workspaceId: activeWorkspaceId,
+        leadId: args.leadId,
+        pipelineId: args.pipelineId,
+        fromStageId: args.fromStageId ?? undefined,
+        toStageId: args.toStageId,
+      }),
+    }).catch(() => null);
+  }
+
   // ✅ persistMoveLead con razón mínima (para saber si estás revirtiendo por ok=false)
   async function persistMoveLead(args: {
     leadId: string;
@@ -822,32 +850,32 @@ export default function PipelinePage() {
     });
 
     const result = await persistMoveLead({
-  leadId: payload.leadId,
-  pipelineId: payload.pipelineId,
-  toStageId,
-  toPosition: toIndex,
-  moveId,
-});
-
-if (pendingMoveIdRef.current !== moveId) return;
-
-if (!result.ok) {
-  setLeadsByStage(snapshot);
-  if (result.reason) setError(`move_lead_failed: ${result.reason}`);
-} else {
-  // ✅ SOLO si el move se ha persistido OK
-  if (payload.fromStageId !== toStageId) {
-    await triggerLeadStageChanged({
       leadId: payload.leadId,
       pipelineId: payload.pipelineId,
-      fromStageId: payload.fromStageId,
       toStageId,
+      toPosition: toIndex,
+      moveId,
     });
-  }
-}
 
-setDragOverLead(null);
-setDraggingLeadId(null);
+    if (pendingMoveIdRef.current !== moveId) return;
+
+    if (!result.ok) {
+      setLeadsByStage(snapshot);
+      if (result.reason) setError(`move_lead_failed: ${result.reason}`);
+    } else {
+      // ✅ SOLO si el move se ha persistido OK
+      if (payload.fromStageId !== toStageId) {
+        void triggerLeadStageChanged({
+          leadId: payload.leadId,
+          pipelineId: payload.pipelineId,
+          fromStageId: payload.fromStageId,
+          toStageId,
+        });
+      }
+    }
+
+    setDragOverLead(null);
+    setDraggingLeadId(null);
   }
 
   // Stage gaps
@@ -934,32 +962,32 @@ setDraggingLeadId(null);
     });
 
     const result = await persistMoveLead({
-  leadId: payload.leadId,
-  pipelineId: payload.pipelineId,
-  toStageId,
-  toPosition: toIndex,
-  moveId,
-});
-
-if (pendingMoveIdRef.current !== moveId) return;
-
-if (!result.ok) {
-  setLeadsByStage(snapshot);
-  if (result.reason) setError(`move_lead_failed: ${result.reason}`);
-} else {
-  // ✅ SOLO si el move se ha persistido OK
-  if (payload.fromStageId !== toStageId) {
-    await triggerLeadStageChanged({
       leadId: payload.leadId,
       pipelineId: payload.pipelineId,
-      fromStageId: payload.fromStageId,
       toStageId,
+      toPosition: toIndex,
+      moveId,
     });
-  }
-}
 
-setDragOverLead(null);
-setDraggingLeadId(null);
+    if (pendingMoveIdRef.current !== moveId) return;
+
+    if (!result.ok) {
+      setLeadsByStage(snapshot);
+      if (result.reason) setError(`move_lead_failed: ${result.reason}`);
+    } else {
+      // ✅ SOLO si el move se ha persistido OK
+      if (payload.fromStageId !== toStageId) {
+        void triggerLeadStageChanged({
+          leadId: payload.leadId,
+          pipelineId: payload.pipelineId,
+          fromStageId: payload.fromStageId,
+          toStageId,
+        });
+      }
+    }
+
+    setDragOverLead(null);
+    setDraggingLeadId(null);
   }
 
   const boardHasStages = stages.length > 0;
